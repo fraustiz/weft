@@ -1,9 +1,11 @@
 // Weft wire protocol, version 1.
 //
 // Implements docs/protocol.md: device identities, session keys between two
-// devices, the encrypted message envelope and the relay authentication
-// frames. Mirrors the Rust reference (crates/weft-protocol) and must produce
-// byte-identical output (see crates/weft-protocol/vectors/v1.json).
+// devices, the encrypted message envelope, the relay authentication frames,
+// the group change plaintexts and frame dispatch. Pairing (pairing code, pair
+// request MAC, control frames) lives in Pairing.kt. Mirrors the Rust
+// reference (crates/weft-protocol) and must produce byte-identical output
+// (see crates/weft-protocol/vectors/v1.json).
 
 package fr.frohub.weft.protocol
 
@@ -28,6 +30,37 @@ object Weft {
     const val DEVICE_ID_LENGTH = Sodium.DEVICE_ID_BYTES
     /** Size of a message id. */
     const val MESSAGE_ID_LENGTH = 16
+    /** Largest number of devices in one group. */
+    const val MAX_GROUP_SIZE = 10
+    /**
+     * Largest number of devices a Welcome plaintext can list: the group
+     * without its sender and its recipient.
+     */
+    const val MAX_WELCOME_DEVICES = MAX_GROUP_SIZE - 2
+    /** Size of one `sign_pk || kx_pk` entry in a group change plaintext. */
+    const val PEER_KEYS_LENGTH = Sodium.SIGN_PK_BYTES + Sodium.KX_PK_BYTES
+
+    /** Prefix of the pairing code string. */
+    const val PAIRING_CODE_PREFIX = "WEFT1:"
+    /** Largest relay url in a pairing code, in bytes. */
+    const val MAX_RELAY_URL_LENGTH = 255
+    /** Size of a pairing id. */
+    const val PAIRING_ID_LENGTH = 16
+    /** Size of a pairing secret. */
+    const val PAIRING_SECRET_LENGTH = 32
+    /** Size of a pair request MAC. */
+    const val PAIR_REQUEST_MAC_LENGTH = Sodium.GENERIC_HASH_32_BYTES
+
+    /** First byte of the frame that opens a pairing slot. */
+    const val CONTROL_PAIR_OPEN: UByte = 0xB0u
+    /** First byte of the frame a device sends to join. */
+    const val CONTROL_PAIR_REQUEST: UByte = 0xB1u
+    /** First byte of the frame that confirms a device into the group. */
+    const val CONTROL_GROUP_ADD: UByte = 0xB2u
+    /** First byte of the frame that removes a device from the group. */
+    const val CONTROL_GROUP_REMOVE: UByte = 0xB3u
+    /** First byte of the relay's error frame. */
+    const val CONTROL_ERROR: UByte = 0xBEu
 
     /** First byte of the relay challenge frame. */
     const val AUTH_CHALLENGE: UByte = 0xA0u
@@ -44,15 +77,15 @@ object Weft {
 // region Helpers
 
 /** Copies [data], checking its size. */
-private fun fixed(data: ByteArray, count: Int, field: String): ByteArray {
+internal fun fixed(data: ByteArray, count: Int, field: String): ByteArray {
     if (data.size != count) fail(WeftError.InvalidLength(field, count, data.size))
     return data.copyOf()
 }
 
-private fun ByteArray.u8(index: Int): UByte = this[index].toUByte()
+internal fun ByteArray.u8(index: Int): UByte = this[index].toUByte()
 
 /** Strict UTF-8 encoding: a string with unpaired surrogates is an error, never replaced. */
-private fun encodeUtf8(text: String): ByteArray? = try {
+internal fun encodeUtf8(text: String): ByteArray? = try {
     val buffer = Charsets.UTF_8.newEncoder()
         .onMalformedInput(CodingErrorAction.REPORT)
         .onUnmappableCharacter(CodingErrorAction.REPORT)
@@ -63,7 +96,7 @@ private fun encodeUtf8(text: String): ByteArray? = try {
 }
 
 /** Strict UTF-8 decoding: malformed or unmappable input is an error, never replaced. */
-private fun decodeUtf8(bytes: ByteArray, offset: Int = 0, length: Int = bytes.size): String? = try {
+internal fun decodeUtf8(bytes: ByteArray, offset: Int = 0, length: Int = bytes.size): String? = try {
     Charsets.UTF_8.newDecoder()
         .onMalformedInput(CodingErrorAction.REPORT)
         .onUnmappableCharacter(CodingErrorAction.REPORT)
@@ -237,22 +270,48 @@ enum class Kind(val value: UByte) {
     /** UTF-8 text, at most [Weft.MAX_CLIPBOARD_TEXT_LENGTH] bytes. */
     CLIPBOARD_TEXT(0x01u),
     /** Empty plaintext. */
-    PING(0x02u);
+    PING(0x02u),
+    /** The other members of the group a device just joined; see [encodeWelcome]. */
+    WELCOME(0x03u),
+    /** Keys of a device that joined the group; see [encodeDeviceAdded]. */
+    DEVICE_ADDED(0x04u),
+    /** Id of a device that left the group; see [encodeDeviceRemoved]. */
+    DEVICE_REMOVED(0x05u);
 
     /** Largest plaintext allowed for this kind. */
     internal val maxPlaintextLength: Int
         get() = when (this) {
             CLIPBOARD_TEXT -> Weft.MAX_CLIPBOARD_TEXT_LENGTH
             PING -> 0
+            WELCOME -> 1 + Weft.MAX_WELCOME_DEVICES * Weft.PEER_KEYS_LENGTH
+            DEVICE_ADDED -> Weft.PEER_KEYS_LENGTH
+            DEVICE_REMOVED -> Weft.DEVICE_ID_LENGTH
         }
 
+    /**
+     * Checks everything that can be known from the plaintext length alone,
+     * so [open] can reject a frame before decrypting it.
+     */
+    internal fun checkPlaintextLength(length: Int) {
+        if (length > maxPlaintextLength) {
+            fail(if (this == PING) WeftError.PingNotEmpty else WeftError.PlaintextTooLarge(length))
+        }
+        val valid = when (this) {
+            CLIPBOARD_TEXT, PING -> true
+            WELCOME -> length % Weft.PEER_KEYS_LENGTH == 1
+            DEVICE_ADDED -> length == Weft.PEER_KEYS_LENGTH
+            DEVICE_REMOVED -> length == Weft.DEVICE_ID_LENGTH
+        }
+        if (!valid) fail(WeftError.InvalidPlaintextLength(length))
+    }
+
     internal fun checkPlaintext(plaintext: ByteArray) {
+        checkPlaintextLength(plaintext.size)
         when (this) {
-            CLIPBOARD_TEXT -> {
-                if (plaintext.size > Weft.MAX_CLIPBOARD_TEXT_LENGTH) fail(WeftError.PlaintextTooLarge(plaintext.size))
-                if (decodeUtf8(plaintext) == null) fail(WeftError.InvalidUtf8)
-            }
-            PING -> if (plaintext.isNotEmpty()) fail(WeftError.PingNotEmpty)
+            CLIPBOARD_TEXT -> if (decodeUtf8(plaintext) == null) fail(WeftError.InvalidUtf8)
+            WELCOME -> decodeWelcome(plaintext)
+            // Fully checked by their length.
+            PING, DEVICE_ADDED, DEVICE_REMOVED -> Unit
         }
     }
 
@@ -377,13 +436,7 @@ fun open(frame: ByteArray, rx: ByteArray): Pair<Header, ByteArray> {
         val nonce = frame.copyOfRange(Weft.HEADER_LENGTH, Weft.HEADER_LENGTH + Weft.NONCE_LENGTH)
         val ciphertext = frame.copyOfRange(Weft.HEADER_LENGTH + Weft.NONCE_LENGTH, frame.size)
         val header = Header.decode(headerBytes)
-        val plaintextLength = ciphertext.size - Weft.TAG_LENGTH
-        if (plaintextLength > header.kind.maxPlaintextLength) {
-            when (header.kind) {
-                Kind.PING -> fail(WeftError.PingNotEmpty)
-                Kind.CLIPBOARD_TEXT -> fail(WeftError.PlaintextTooLarge(plaintextLength))
-            }
-        }
+        header.kind.checkPlaintextLength(ciphertext.size - Weft.TAG_LENGTH)
         val plaintext = Sodium.aeadDecrypt(ciphertext, headerBytes, nonce, key)
             ?: fail(WeftError.DecryptionFailed)
         header.kind.checkPlaintext(plaintext)
@@ -391,6 +444,92 @@ fun open(frame: ByteArray, rx: ByteArray): Pair<Header, ByteArray> {
     } finally {
         Sodium.memzero(key)
     }
+}
+
+/** A random 16-byte `message_id` for an envelope header. */
+fun randomMessageId(): ByteArray = Sodium.randomBytes(Weft.MESSAGE_ID_LENGTH)
+
+// endregion
+
+// region Group change plaintexts
+
+/**
+ * Public keys of one trusted device, as carried by the group change
+ * envelopes: `sign_pk (32) || kx_pk (32)`.
+ */
+class PeerKeys(signPublicKey: ByteArray, kxPublicKey: ByteArray) {
+    private val signPublicKeyBytes = fixed(signPublicKey, Sodium.SIGN_PK_BYTES, "signPublicKey")
+    private val kxPublicKeyBytes = fixed(kxPublicKey, Sodium.KX_PK_BYTES, "kxPublicKey")
+
+    /** 32-byte Ed25519 public key. */
+    val signPublicKey: ByteArray get() = signPublicKeyBytes.copyOf()
+    /** 32-byte X25519 public key. */
+    val kxPublicKey: ByteArray get() = kxPublicKeyBytes.copyOf()
+    /** The 16-byte device id derived from [signPublicKey]. */
+    val deviceId: ByteArray get() = Sodium.genericHash16(signPublicKeyBytes)
+
+    internal fun encode(): ByteArray = signPublicKeyBytes + kxPublicKeyBytes
+
+    override fun equals(other: Any?): Boolean =
+        other is PeerKeys &&
+            signPublicKeyBytes.contentEquals(other.signPublicKeyBytes) &&
+            kxPublicKeyBytes.contentEquals(other.kxPublicKeyBytes)
+
+    override fun hashCode(): Int = 31 * signPublicKeyBytes.contentHashCode() + kxPublicKeyBytes.contentHashCode()
+
+    override fun toString(): String =
+        "PeerKeys(signPublicKey=${signPublicKeyBytes.toHex()}, kxPublicKey=${kxPublicKeyBytes.toHex()})"
+
+    internal companion object {
+        /** Reads one entry at [offset]; the caller has checked the length. */
+        fun decode(bytes: ByteArray, offset: Int): PeerKeys = PeerKeys(
+            bytes.copyOfRange(offset, offset + Sodium.SIGN_PK_BYTES),
+            bytes.copyOfRange(offset + Sodium.SIGN_PK_BYTES, offset + Weft.PEER_KEYS_LENGTH),
+        )
+    }
+}
+
+/**
+ * Welcome plaintext (kind `0x03`): `count (1) || count × (sign_pk || kx_pk)`.
+ * Lists the other members of the group: neither the sender nor the
+ * recipient, so at most [Weft.MAX_WELCOME_DEVICES] entries.
+ */
+fun encodeWelcome(members: List<PeerKeys>): ByteArray {
+    if (members.size > Weft.MAX_WELCOME_DEVICES) fail(WeftError.TooManyDevices(members.size))
+    val buffer = ByteBuffer.allocate(1 + members.size * Weft.PEER_KEYS_LENGTH)
+    buffer.put(members.size.toByte())
+    for (member in members) buffer.put(member.encode())
+    return buffer.array()
+}
+
+/**
+ * Parses a Welcome plaintext. The length must be exactly `1 + count × 64`
+ * and `count` at most [Weft.MAX_WELCOME_DEVICES].
+ */
+fun decodeWelcome(plaintext: ByteArray): List<PeerKeys> {
+    if (plaintext.isEmpty()) fail(WeftError.InvalidPlaintextLength(0))
+    val count = plaintext.u8(0).toInt()
+    if (count > Weft.MAX_WELCOME_DEVICES) fail(WeftError.TooManyDevices(count))
+    if (plaintext.size - 1 != count * Weft.PEER_KEYS_LENGTH) fail(WeftError.InvalidPlaintextLength(plaintext.size))
+    return List(count) { i -> PeerKeys.decode(plaintext, 1 + i * Weft.PEER_KEYS_LENGTH) }
+}
+
+/** Device added plaintext (kind `0x04`): `sign_pk || kx_pk` of the new device. */
+fun encodeDeviceAdded(device: PeerKeys): ByteArray = device.encode()
+
+/** Parses a Device added plaintext: exactly 64 bytes. */
+fun decodeDeviceAdded(plaintext: ByteArray): PeerKeys {
+    if (plaintext.size != Weft.PEER_KEYS_LENGTH) fail(WeftError.InvalidPlaintextLength(plaintext.size))
+    return PeerKeys.decode(plaintext, 0)
+}
+
+/** Device removed plaintext (kind `0x05`): the 16-byte id of the removed device. */
+fun encodeDeviceRemoved(deviceId: ByteArray): ByteArray = fixed(deviceId, Weft.DEVICE_ID_LENGTH, "deviceId")
+
+/** Parses a Device removed plaintext: exactly 16 bytes. */
+fun decodeDeviceRemoved(plaintext: ByteArray): ByteArray {
+    if (plaintext.size != Weft.DEVICE_ID_LENGTH) fail(WeftError.InvalidPlaintextLength(plaintext.size))
+    return plaintext.copyOf()
 }
 
 // endregion
@@ -496,11 +635,52 @@ fun verifyAuth(challenge: Challenge, response: AuthResponse): ByteArray {
     return Sodium.genericHash16(response.signPublicKey)
 }
 
+/**
+ * Client side: checks that the relay name in the challenge is exactly the
+ * host the client connected to, before signing anything. [expectedHost] is
+ * the host without its port; stripping the port (and lowercasing) is the
+ * caller's job.
+ */
+fun checkRelayName(challenge: Challenge, expectedHost: String) {
+    if (challenge.relayName != expectedHost) fail(WeftError.RelayNameMismatch)
+}
+
+// endregion
+
+// region Frame dispatch
+
+/** What a frame received after authentication is, from its first byte. */
+enum class FrameType {
+    /** `0x01`: a message envelope, see [open] and [Header.decode]. */
+    ENVELOPE,
+    /** `0xB0`–`0xBF`: a control frame, see [ControlFrame.decode]. */
+    CONTROL,
+    /** Anything else, including an empty frame. To be dropped. */
+    UNKNOWN,
+}
+
+/**
+ * Tells an envelope from a control frame by the first byte. This only
+ * dispatches: the frame still has to be decoded and checked.
+ */
+fun classify(frame: ByteArray): FrameType {
+    if (frame.isEmpty()) return FrameType.UNKNOWN
+    val tag = frame.u8(0)
+    return when {
+        tag == Weft.VERSION -> FrameType.ENVELOPE
+        tag in Weft.CONTROL_PAIR_OPEN..CONTROL_RANGE_END -> FrameType.CONTROL
+        else -> FrameType.UNKNOWN
+    }
+}
+
+/** Last byte of the control frame range. */
+internal const val CONTROL_RANGE_END: UByte = 0xBFu
+
 // endregion
 
 private const val HEX_DIGITS = "0123456789abcdef"
 
-private fun ByteArray.toHex(): String = buildString(size * 2) {
+internal fun ByteArray.toHex(): String = buildString(size * 2) {
     for (byte in this@toHex) {
         val v = byte.toInt() and 0xff
         append(HEX_DIGITS[v ushr 4])

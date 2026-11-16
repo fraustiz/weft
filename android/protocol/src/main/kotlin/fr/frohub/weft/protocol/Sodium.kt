@@ -3,6 +3,8 @@ package fr.frohub.weft.protocol
 import com.goterl.lazysodium.LazySodiumAndroid
 import com.goterl.lazysodium.Sodium as NativeSodium
 import com.goterl.lazysodium.SodiumAndroid
+import com.sun.jna.Memory
+import com.sun.jna.Native
 
 /**
  * Thin wrapper over the libsodium functions the protocol uses, called through
@@ -22,6 +24,10 @@ internal object Sodium {
     const val AEAD_NONCE_BYTES = 24
     const val AEAD_TAG_BYTES = 16
     const val DEVICE_ID_BYTES = 16
+    const val GENERIC_HASH_32_BYTES = 32
+
+    /** libsodium's `sodium_base64_VARIANT_URLSAFE_NO_PADDING`. */
+    private const val BASE64_URLSAFE_NO_PADDING = 7
 
     private val native: NativeSodium by lazy {
         val sodium = LazySodiumAndroid(SodiumAndroid()).sodium
@@ -117,6 +123,58 @@ internal object Sodium {
             return null
         }
         return plaintext
+    }
+
+    /** BLAKE2b with a 32-byte output and a 32-byte key. */
+    fun genericHash32Keyed(input: ByteArray, key: ByteArray): ByteArray {
+        val out = ByteArray(GENERIC_HASH_32_BYTES)
+        check(native.crypto_generichash(out, out.size, input, input.size.toLong(), key, key.size) == 0) {
+            "crypto_generichash failed"
+        }
+        return out
+    }
+
+    /** `sodium_memcmp`: constant-time equality of two arrays of the same size. */
+    fun memcmp(a: ByteArray, b: ByteArray): Boolean {
+        require(a.size == b.size) { "memcmp needs arrays of the same size" }
+        return native.sodium_memcmp(a, b, a.size) == 0
+    }
+
+    /** `sodium_bin2base64`, URL-safe alphabet, no padding. */
+    fun base64UrlEncode(bin: ByteArray): String {
+        // The encoded length includes the trailing NUL byte.
+        val out = ByteArray(native.sodium_base64_encoded_len(bin.size, BASE64_URLSAFE_NO_PADDING))
+        native.sodium_bin2base64(out, out.size, bin, bin.size, BASE64_URLSAFE_NO_PADDING)
+        // Read the output buffer rather than the returned pointer: JNA copies
+        // the array back after the call, the returned pointer may not outlive it.
+        check(out.isNotEmpty() && out[out.size - 1] == 0.toByte()) { "sodium_bin2base64 failed" }
+        return String(out, 0, out.size - 1, Charsets.US_ASCII)
+    }
+
+    /**
+     * `sodium_base642bin`, URL-safe alphabet, no padding. Returns null if the
+     * input has any other byte (padding and whitespace included), a length
+     * the encoder cannot produce, or non-zero trailing bits.
+     */
+    fun base64UrlDecode(b64: ByteArray): ByteArray? {
+        val out = ByteArray(b64.size / 4 * 3 + 3)
+        Memory(Native.SIZE_T_SIZE.toLong()).use { binLength ->
+            binLength.clear()
+            // No `ignore` characters and no `b64_end` pointer: libsodium fails
+            // unless the whole input is valid.
+            val result = native.sodium_base642bin(
+                out, out.size, b64, b64.size, null, binLength, null, BASE64_URLSAFE_NO_PADDING,
+            )
+            if (result != 0) {
+                memzero(out)
+                return null
+            }
+            val length = if (Native.SIZE_T_SIZE == 8) binLength.getLong(0) else binLength.getInt(0).toLong()
+            check(length in 0..out.size) { "sodium_base642bin returned a bad length" }
+            val decoded = out.copyOf(length.toInt())
+            memzero(out)
+            return decoded
+        }
     }
 
     fun randomBytes(count: Int): ByteArray {
