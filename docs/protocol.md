@@ -51,6 +51,9 @@ Header layout:
 | --- | --- | --- |
 | `0x01` | Clipboard text | UTF-8 text, at most 256 KiB |
 | `0x02` | Ping | empty (exactly 0 bytes) |
+| `0x03` | Welcome (section 5) | `count (1 byte, 0..8) || count × (sign_pk 32 || kx_pk 32)` |
+| `0x04` | Device added (section 5) | `sign_pk (32) || kx_pk (32)` |
+| `0x05` | Device removed (section 5) | `device_id (16)` |
 
 Other values are reserved. A recipient drops a message with an unknown `version` or `kind`.
 
@@ -69,20 +72,62 @@ Transport: WebSocket over TLS. Each binary WebSocket frame carries one message.
    The signature is `crypto_sign_detached(message = "weft-auth-v1" || relay_name_len || relay_name || nonce, sign_sk)`.
 3. Both auth frames have an exact length; a frame with missing or extra bytes is rejected. The relay checks the signature against the name it actually serves, derives the device id from `sign_pk`, and answers `0xA2` (accepted) or closes the connection.
 
-After `0xA2`, every frame from the device is an envelope (section 3). The relay:
+After `0xA2`, the first byte of every frame tells what it is: `0x01` is an envelope (section 3), `0xB0`–`0xBF` are control frames (section 5). The relay drops anything else.
+
+For envelopes, the relay:
 - checks that the `sender` field equals the authenticated device id, and drops the frame otherwise;
-- forwards the frame unchanged to the `recipient` if it is connected;
+- forwards the frame unchanged only if `sender` and `recipient` are in the **same group** (section 5) and the recipient is connected;
 - never decrypts anything.
 
-Groups, pairing and offline delivery come in a later revision of this document.
+The client checks that the `relay_name` in the challenge equals the host it connected to (without port) before signing.
 
-## 5. Test vectors
+## 5. Groups and pairing
+
+### Principles
+- A **group** is the set of devices of one person, at most 10. A device belongs to at most one group.
+- **Each device keeps its own list of trusted devices** (sign_pk, kx_pk) and only ever encrypts to that list. The relay's copy of the group is used for routing and abuse control only: it can refuse to deliver, never add a device anyone will trust.
+- Trust changes travel as end-to-end encrypted envelopes between members (kinds `0x03`–`0x05`), so they are authenticated by the AEAD session keys.
+
+### Pairing code (QR)
+Device A (already in a group, or alone) shows a QR code with the string `WEFT1:` followed by the base64url (no padding) encoding of:
+
+```
+url_len (1) || relay_url (UTF-8, e.g. "wss://weft.frohub.eu/v1") || pairing_id (16) || sign_pk_A (32) || kx_pk_A (32) || secret (32)
+```
+
+`pairing_id` and `secret` are random. The **secret never goes through the relay**: it only travels through the QR code, from screen to camera. The code is single-use and expires after 5 minutes.
+
+### Control frames
+
+| Byte | Direction | Body | Meaning |
+| --- | --- | --- | --- |
+| `0xB0` | device → relay | `pairing_id (16)` | A opens a pairing slot (replaces any open slot of A; expires after 5 min) |
+| `0xB1` | B → relay → A | `pairing_id (16) || sign_pk_B (32) || kx_pk_B (32) || mac (32)` | B asks to join; the relay checks that `sign_pk_B` is the key B authenticated with, forwards the frame unchanged to the slot owner and closes the slot |
+| `0xB2` | A → relay | `device_id (16)` | A confirms B: the relay puts B in A's group (creating it if A had none; B leaves its previous group) |
+| `0xB3` | device → relay | `device_id (16)` | Removes that device (itself or another member) from the relay group |
+| `0xBE` | relay → device | `code (1)` | Error: `0x01` unknown or expired pairing, `0x02` not allowed, `0x03` rate limited, `0x04` group full |
+
+The relay accepts `0xB2` only for a device that sent a matching `0xB1` to this slot owner in the last 5 minutes; otherwise it answers `0xBE 0x02`.
+
+`mac = crypto_generichash(outlen = 32, input = "weft-pair-v1" || pairing_id || sign_pk_B || kx_pk_B, key = secret)` (keyed BLAKE2b). Without the secret, the relay cannot produce a valid request, so it cannot slip its own key in.
+
+### Flow
+1. A opens a slot (`0xB0`) and shows the QR code.
+2. B scans it, now trusts A's keys from the code, connects, authenticates and sends `0xB1`.
+3. A checks the MAC (constant-time). If it is wrong, A ignores the request. Otherwise A adds B to its trusted list and sends `0xB2`.
+4. A sends B a **Welcome** envelope (`0x03`) listing the other members (not A, not B), and sends each other member a **Device added** envelope (`0x04`) with B's keys. Each recipient adds the keys to its trusted list.
+5. Removing a device: any member sends `0xB3` to the relay and a **Device removed** envelope (`0x05`) to the remaining members, which drop that device from their list.
+
+Offline delivery comes in a later revision of this document.
+
+## 6. Test vectors
 
 `crates/weft-protocol/vectors/v1.json` contains fixed inputs (seeds, nonces, message ids) and the expected outputs:
 - keys and device ids;
 - session keys for both roles;
 - the encoded envelope;
-- the authentication signature.
+- the authentication signature;
+- a pairing code, a pairing request MAC and the control frames.
 
 Keys are derived from fixed seeds:
 - signing pair: `crypto_sign_seed_keypair` (32-byte seed) ;
