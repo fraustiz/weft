@@ -15,7 +15,7 @@ use weft_cli::{Error, Event, Session, State, StateDir};
 use weft_protocol::PairingCode;
 use weft_relay::Config;
 use weft_windows::worker::{
-    Command, Device, Direction, Handle, PairingState, Snapshot, Status, spawn_on,
+    Command, Device, Direction, Handle, PairingFailure, PairingState, Snapshot, Status, spawn_on,
 };
 
 /// Timeout for a single step.
@@ -378,12 +378,27 @@ async fn joins_a_group_from_a_pasted_code() {
         let tested = Tested::connected(&url).await;
         let mut phone = Peer::connect(&url, "Test phone").await;
 
-        tested.worker.send(Command::Join("WEFT1:not-a-code".into()));
-        tested
-            .wait(|snapshot| matches!(snapshot.pairing, PairingState::Failed(_)))
-            .await;
+        let fails = |code: String, failure: PairingFailure| {
+            tested.worker.send(Command::Join(code));
+            tested.wait(move |snapshot| snapshot.pairing == PairingState::Failed(failure.clone()))
+        };
+        fails("WEFT1:not-a-code".into(), PairingFailure::InvalidCode).await;
+        let own = tested.show_code().await;
+        fails(own.encode().unwrap(), PairingFailure::OwnCode).await;
 
         let code = phone.session.open_pairing().await.unwrap();
+        let elsewhere = PairingCode {
+            relay_url: "wss://relay.example/v1".into(),
+            ..code.clone()
+        };
+        fails(elsewhere.encode().unwrap(), PairingFailure::OtherRelay).await;
+        // A slot the relay does not know, as after it expired.
+        let unknown = PairingCode {
+            pairing_id: [7; 16],
+            ..code.clone()
+        };
+        fails(unknown.encode().unwrap(), PairingFailure::Expired).await;
+
         // Pasted codes often come with whitespace around them.
         let pasted = format!("  {}\n", code.encode().unwrap());
         tested.worker.send(Command::Join(pasted));
@@ -473,7 +488,7 @@ async fn stays_usable_while_the_relay_is_unreachable() {
             .await;
         tested.worker.send(Command::StartPairing);
         tested
-            .wait(|snapshot| matches!(snapshot.pairing, PairingState::Failed(_)))
+            .wait(|snapshot| snapshot.pairing == PairingState::Failed(PairingFailure::NotConnected))
             .await;
         tested.worker.send(Command::CancelPairing);
         tested.worker.send(Command::Rename("Test PC".into()));

@@ -59,6 +59,9 @@ pub trait Clipboard {
     /// Replaces the content with `text`. Returns the sequence number right
     /// after the write, or `None` if it failed.
     fn write(&mut self, text: &str) -> Option<u32>;
+    /// [`write`](Clipboard::write), with the content marked for clipboard
+    /// monitors and the clipboard history to leave alone.
+    fn write_private(&mut self, text: &str) -> Option<u32>;
 }
 
 /// What to do about a local clipboard change.
@@ -214,6 +217,21 @@ impl<C: Clipboard> Sync<C> {
             None => Incoming::Failed,
         }
     }
+
+    /// Puts a text from Weft's own window on the clipboard, such as a
+    /// pairing code to paste elsewhere on this computer. It stays on this
+    /// device whatever the pause says: the change it causes is Weft's own
+    /// and is never sent, and the content is marked private. Returns
+    /// whether the clipboard took it.
+    pub fn local_text(&mut self, text: &str) -> bool {
+        match self.clipboard.write_private(text) {
+            Some(sequence) => {
+                self.own = Some(sequence);
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -257,6 +275,13 @@ mod tests {
             self.sequence += 2;
             self.content = Content::Text(text.into());
             Some(self.sequence)
+        }
+
+        fn write_private(&mut self, text: &str) -> Option<u32> {
+            let sequence = self.write(text)?;
+            // What a monitor sees of content marked private.
+            self.content = Content::Excluded;
+            Some(sequence)
         }
     }
 
@@ -487,6 +512,25 @@ mod tests {
         // The failed text was not recorded: copying it locally sends it.
         copy_text(&mut sync, "from afar");
         assert_eq!(change(&mut sync, RUNNING, true), send("from afar"));
+    }
+
+    #[test]
+    fn a_local_text_stays_on_this_device() {
+        let mut sync = started("old");
+        assert!(sync.local_text("WEFT1:code"));
+        assert!(sync.clipboard.content == Content::Excluded);
+        // The change it causes is Weft's own: not read, not sent.
+        assert_eq!(change(&mut sync, RUNNING, true), Outgoing::OwnWrite);
+        assert_eq!(change(&mut sync, RUNNING, true), Outgoing::OwnWrite);
+        assert_eq!(sync.clipboard.reads, 0);
+        // The next real copy goes out as usual.
+        copy_text(&mut sync, "typed here");
+        assert_eq!(change(&mut sync, RUNNING, true), send("typed here"));
+
+        let mut sync = started("old");
+        sync.clipboard.fail_writes = true;
+        assert!(!sync.local_text("WEFT1:code"));
+        assert!(sync.clipboard.content == Content::Text("old".into()));
     }
 
     #[test]

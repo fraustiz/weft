@@ -1,6 +1,9 @@
 //! The Weft application for Windows. Logs go to stderr, at the level set
 //! by `WEFT_LOG`; release builds have no console, so they only show when
 //! stderr is redirected.
+//!
+//! Three threads: the main one runs the window, the tray thread owns the
+//! notification icon and the clipboard, and the worker talks to the relay.
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
@@ -16,13 +19,18 @@ fn main() -> ExitCode {
 fn main() -> ExitCode {
     use std::path::PathBuf;
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     use weft_cli::{StateDir, default_state_dir};
     use weft_windows::tray::{self, Link};
     use weft_windows::worker::{self, Command};
+    use weft_windows::{autostart, ui, window};
     use windows_sys::Win32::UI::HiDpi::{
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
     };
+
+    /// How long the worker gets to close the connection politely.
+    const SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
 
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -43,9 +51,14 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
     if !tray::single_instance(&state_dir) {
-        tracing::info!("already running on this state directory");
+        if tray::show_running_instance(&state_dir) {
+            tracing::info!("already running on this state directory: window shown");
+        } else {
+            tracing::info!("already running on this state directory");
+        }
         return ExitCode::SUCCESS;
     }
+    let hidden = std::env::args().any(|arg| arg == autostart::STARTUP_ARG);
     // Without it the menu is drawn for 96 dpi and stretched on scaled
     // displays.
     // SAFETY: called before any window exists; a failure changes nothing.
@@ -56,7 +69,7 @@ fn main() -> ExitCode {
         let link = link.clone();
         move |text| link.remote_text(text)
     };
-    let (worker, worker_thread) = match worker::spawn(StateDir::new(state_dir), on_text) {
+    let (worker, worker_thread) = match worker::spawn(StateDir::new(state_dir.clone()), on_text) {
         Ok(started) => started,
         Err(err) => {
             tracing::error!(error = %err, "could not start");
@@ -78,19 +91,45 @@ fn main() -> ExitCode {
     }
 
     let tray_thread = {
-        let worker = worker.clone();
+        let (worker, link) = (worker.clone(), link.clone());
         std::thread::Builder::new()
             .name("weft-tray".into())
-            .spawn(move || tray::run(worker, link))
+            .spawn(move || {
+                // Returns when the user quits; the window goes with it.
+                tray::run(worker, link, &state_dir);
+                window::quit();
+            })
     };
-    match tray_thread {
-        // Returns when the user quits.
-        Ok(thread) => {
-            let _ = thread.join();
+    let tray_thread = match tray_thread {
+        Ok(thread) => thread,
+        Err(err) => {
+            tracing::error!(error = %err, "could not start the tray thread");
+            worker.send(Command::Shutdown);
+            return ExitCode::FAILURE;
         }
-        Err(err) => tracing::error!(error = %err, "could not start the tray thread"),
+    };
+
+    let shell = ui::Shell {
+        worker: worker.clone(),
+        link: link.clone(),
+        hidden,
+    };
+    // Returns once the window is closed for good, by Quit or by the
+    // system. Without WinUI the app still works from the tray.
+    if let Err(err) = ui::run(shell) {
+        tracing::error!(error = %err, "the window could not start; the tray icon stays");
+    } else {
+        link.quit();
     }
+    let _ = tray_thread.join();
+
     worker.send(Command::Shutdown);
-    let _ = worker_thread.join();
+    let deadline = Instant::now() + SHUTDOWN_WAIT;
+    while !worker_thread.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if !worker_thread.is_finished() {
+        tracing::warn!("the connection did not close in time");
+    }
     ExitCode::SUCCESS
 }

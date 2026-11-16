@@ -19,7 +19,7 @@ use weft_cli::session::{
     JOIN_TIMEOUT, KEEPALIVE_INTERVAL, MAX_BACKOFF, MIN_BACKOFF, PAIRING_TIMEOUT, is_fatal,
 };
 use weft_cli::{Error, Event, Next, Result, Session, State, StateDir, hex, short_id};
-use weft_protocol::{PairingCode, device_id_from_sign_pk};
+use weft_protocol::{ControlError, PairingCode, device_id_from_sign_pk};
 
 use crate::sync::Pause;
 
@@ -89,7 +89,45 @@ pub enum PairingState {
         device: [u8; 16],
     },
     /// The pairing ended without a new device, and why.
-    Failed(String),
+    Failed(PairingFailure),
+}
+
+/// Why a pairing failed, in terms an interface can put into words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PairingFailure {
+    /// The text given to [`Command::Join`] is not a pairing code.
+    InvalidCode,
+    /// The code shown here expired unused, or the relay no longer knows
+    /// the code given to [`Command::Join`].
+    Expired,
+    /// The code given to [`Command::Join`] was made by this device.
+    OwnCode,
+    /// The code belongs to a group on another relay.
+    OtherRelay,
+    /// The group already has as many devices as it can hold.
+    GroupFull,
+    /// There was no connection to the relay.
+    NotConnected,
+    /// The connection to the relay was lost on the way.
+    ConnectionLost,
+    /// The device that showed the code did not answer in time.
+    NoAnswer,
+    /// Anything else, as the error put it.
+    Other(String),
+}
+
+impl PairingFailure {
+    /// The failure a refused or timed-out request stands for.
+    fn of(err: &Error) -> PairingFailure {
+        match err {
+            Error::Relay(ControlError::UnknownPairing) => PairingFailure::Expired,
+            Error::Relay(ControlError::GroupFull) | Error::GroupFull => PairingFailure::GroupFull,
+            Error::OwnCode => PairingFailure::OwnCode,
+            Error::RelayUrlMismatch { .. } => PairingFailure::OtherRelay,
+            Error::Timeout(_) => PairingFailure::NoAnswer,
+            err => PairingFailure::Other(err.to_string()),
+        }
+    }
 }
 
 /// Never shows the code.
@@ -371,7 +409,7 @@ impl<F: FnMut(String)> Worker<F> {
                 describe(&mut self.view, &state);
             }
             if self.pairing.take().is_some() || self.view.pairing == PairingState::Joining {
-                self.view.pairing = PairingState::Failed("the connection was lost".into());
+                self.view.pairing = PairingState::Failed(PairingFailure::ConnectionLost);
             }
             if is_fatal(&err) {
                 tracing::error!(error = %err, "stopped: reconnecting cannot fix this");
@@ -416,7 +454,7 @@ impl<F: FnMut(String)> Worker<F> {
             // Not kept for later: after a reconnection only new changes go.
             Command::SendText(_) => tracing::debug!("clipboard text not sent: {OFFLINE}"),
             Command::StartPairing | Command::Join(_) => {
-                self.view.pairing = PairingState::Failed(OFFLINE.into());
+                self.view.pairing = PairingState::Failed(PairingFailure::NotConnected);
             }
             Command::CancelPairing => self.view.pairing = PairingState::Idle,
             Command::RemoveDevice(device) => {
@@ -475,7 +513,7 @@ impl<F: FnMut(String)> Worker<F> {
         let now = Instant::now();
         if now >= pairing.expires_at {
             self.pairing = None;
-            self.view.pairing = PairingState::Failed("the pairing code expired".into());
+            self.view.pairing = PairingState::Failed(PairingFailure::Expired);
             self.publish();
             return Ok(());
         }
@@ -501,7 +539,7 @@ impl<F: FnMut(String)> Worker<F> {
             Err(err) if is_refusal(&err) => {
                 tracing::warn!(error = %err, "pairing failed");
                 self.pairing = None;
-                self.view.pairing = PairingState::Failed(err.to_string());
+                self.view.pairing = PairingState::Failed(PairingFailure::of(&err));
             }
             Err(err) => return Err(err),
         }
@@ -626,7 +664,7 @@ impl<F: FnMut(String)> Worker<F> {
                 Ok(())
             }
             Err(err) if is_refusal(&err) => {
-                self.view.pairing = PairingState::Failed(err.to_string());
+                self.view.pairing = PairingState::Failed(PairingFailure::of(&err));
                 Ok(())
             }
             Err(err) => Err(err),
@@ -637,8 +675,8 @@ impl<F: FnMut(String)> Worker<F> {
         self.pairing = None;
         let code = match PairingCode::decode(code.trim()) {
             Ok(code) => code,
-            Err(err) => {
-                self.view.pairing = PairingState::Failed(err.to_string());
+            Err(_) => {
+                self.view.pairing = PairingState::Failed(PairingFailure::InvalidCode);
                 return Ok(());
             }
         };
@@ -655,7 +693,7 @@ impl<F: FnMut(String)> Worker<F> {
             // No answer in time: the code expired, or its device is gone.
             Err(err) if is_refusal(&err) || matches!(err, Error::Timeout(_)) => {
                 tracing::warn!(error = %err, "joining failed");
-                self.view.pairing = PairingState::Failed(err.to_string());
+                self.view.pairing = PairingState::Failed(PairingFailure::of(&err));
                 Ok(())
             }
             Err(err) => Err(err),

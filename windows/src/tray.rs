@@ -3,7 +3,8 @@
 //! Both live on one thread, around a hidden window: Windows reports
 //! clipboard changes to a window, and every clipboard access happens on the
 //! thread that owns it. The other threads reach it through a [`Link`],
-//! which posts messages to that window.
+//! which posts messages to that window; a second launch of the app finds
+//! that window by its title and asks it to show the main window.
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -24,18 +25,20 @@ use windows_sys::Win32::UI::Shell::{
     NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-    DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics, HICON, IDI_APPLICATION,
-    IMAGE_ICON, LR_DEFAULTCOLOR, LoadIconW, LoadImageW, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG,
-    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON,
-    SM_CYSMICON, SetForegroundWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
-    TranslateMessage, WM_APP, WM_CLIPBOARDUPDATE, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONUP,
-    WM_NULL, WM_RBUTTONUP, WNDCLASSW,
+    AllowSetForegroundWindow, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+    DestroyMenu, DestroyWindow, DispatchMessageW, FindWindowW, GetCursorPos, GetMessageW,
+    GetSystemMetrics, GetWindowThreadProcessId, HICON, IDI_APPLICATION, IMAGE_ICON,
+    LR_DEFAULTCOLOR, LoadIconW, LoadImageW, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, PostMessageW,
+    PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON,
+    SetForegroundWindow, SetMenuDefaultItem, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    TrackPopupMenu, TranslateMessage, WM_APP, WM_CLIPBOARDUPDATE, WM_CLOSE, WM_CONTEXTMENU,
+    WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSW,
 };
 
 use crate::clipboard::{SystemClipboard, wide};
 use crate::i18n::t;
 use crate::sync::{Outgoing, Sync};
+use crate::window;
 use crate::worker::{Command, Handle, Snapshot, Status};
 
 /// Sent by the shell for mouse and keyboard actions on the icon.
@@ -44,12 +47,18 @@ const WM_ICON: u32 = WM_APP + 1;
 const WM_REMOTE_TEXT: u32 = WM_APP + 2;
 /// The worker published a new snapshot.
 const WM_SNAPSHOT: u32 = WM_APP + 3;
+/// A text from the main window waits in the [`Link`].
+const WM_LOCAL_TEXT: u32 = WM_APP + 4;
+/// Another launch of the app asks for the main window.
+const WM_SHOW_MAIN: u32 = WM_APP + 5;
 
+const CLASS_NAME: &str = "WeftTray";
 const ICON_ID: u32 = 1;
 /// The icon resource of the executable, set by the build script.
 const ICON_RESOURCE: usize = 1;
-const MENU_PAUSE: usize = 1;
-const MENU_QUIT: usize = 2;
+const MENU_OPEN: usize = 1;
+const MENU_PAUSE: usize = 2;
+const MENU_QUIT: usize = 3;
 
 /// The message Explorer broadcasts when it restarts, registered at startup.
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
@@ -66,6 +75,8 @@ pub struct Link {
     window: AtomicIsize,
     /// The received text waiting to be written. Only the latest counts.
     text: Mutex<Option<String>>,
+    /// The text from the main window waiting to be written.
+    local: Mutex<Option<String>>,
 }
 
 impl Link {
@@ -75,9 +86,22 @@ impl Link {
         self.post(WM_REMOTE_TEXT);
     }
 
+    /// Hands over a text from the main window to put on the clipboard for
+    /// this computer only: it is not sent, and stays out of the clipboard
+    /// history ([`Sync::local_text`]).
+    pub fn local_text(&self, text: String) {
+        *self.local.lock().unwrap() = Some(text);
+        self.post(WM_LOCAL_TEXT);
+    }
+
     /// Tells the tray that the worker's snapshot changed.
     pub fn snapshot_changed(&self) {
         self.post(WM_SNAPSHOT);
+    }
+
+    /// Removes the icon and ends the tray thread, as Quit does.
+    pub fn quit(&self) {
+        self.post(WM_CLOSE);
     }
 
     fn post(&self, message: u32) {
@@ -117,6 +141,26 @@ pub fn single_instance(state_dir: &Path) -> bool {
     }
 }
 
+/// From a second launch on the same state directory: asks the instance
+/// already running to show its main window. Returns whether it was found.
+pub fn show_running_instance(state_dir: &Path) -> bool {
+    let (class, title) = (wide(CLASS_NAME), wide(&instance_name(state_dir)));
+    // SAFETY: both strings are NUL-terminated and outlive the calls; the
+    // others take plain values and fail harmlessly on a stale window.
+    unsafe {
+        let window = FindWindowW(class.as_ptr(), title.as_ptr());
+        if window.is_null() {
+            return false;
+        }
+        // This process was just started by the user, so it may bring a
+        // window to the front: it hands that right to the running one.
+        let mut process = 0;
+        GetWindowThreadProcessId(window, &mut process);
+        AllowSetForegroundWindow(process);
+        PostMessageW(window, WM_SHOW_MAIN, 0, 0) != 0
+    }
+}
+
 /// How many other devices there are, in words.
 fn device_count(count: usize) -> String {
     match count {
@@ -149,12 +193,6 @@ fn capitalised(text: &str) -> String {
         Some(first) => first.to_uppercase().chain(chars).collect(),
         None => String::new(),
     }
-}
-
-/// Called when the user asks for the main window (a click on the icon).
-/// There is no window yet: this is where it will be opened.
-fn open_requested() {
-    tracing::debug!("open requested");
 }
 
 struct Tray {
@@ -234,6 +272,16 @@ impl Tray {
             tracing::debug!(?outcome, "received text");
         }
     }
+
+    /// Writes the text the main window handed over, if any.
+    fn apply_local_text(&mut self) {
+        let text = self.link.local.lock().unwrap().take();
+        if let Some(text) = text
+            && !self.sync.local_text(&text)
+        {
+            tracing::warn!("could not put the text on the clipboard");
+        }
+    }
 }
 
 /// Runs `action` on the tray state. Does nothing outside the tray thread,
@@ -244,7 +292,8 @@ fn with_tray<T>(action: impl FnOnce(&mut Tray) -> T) -> Option<T> {
     TRAY.with(|tray| tray.try_borrow_mut().ok()?.as_mut().map(action))
 }
 
-/// The context menu: a status line, the pause switch and Quit.
+/// The context menu: Open (the default, as a click does), a status line,
+/// the pause switch and Quit.
 fn show_menu(window: HWND) {
     let Some((status, paused)) = with_tray(|tray| {
         let snapshot = tray.worker.snapshot();
@@ -263,6 +312,14 @@ fn show_menu(window: HWND) {
     // copy them; the menu is destroyed before returning.
     let chosen = unsafe {
         let menu = CreatePopupMenu();
+        AppendMenuW(
+            menu,
+            MF_STRING,
+            MENU_OPEN,
+            wide(t("Open Weft", "Ouvrir Weft")).as_ptr(),
+        );
+        SetMenuDefaultItem(menu, MENU_OPEN as u32, 0);
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
         AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, wide(&status).as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
         AppendMenuW(menu, MF_STRING, MENU_PAUSE, wide(pause).as_ptr());
@@ -291,6 +348,7 @@ fn show_menu(window: HWND) {
         chosen as usize
     };
     match chosen {
+        MENU_OPEN => window::show(),
         MENU_PAUSE => {
             with_tray(|tray| tray.worker.send(Command::SetPaused(!paused)));
         }
@@ -319,8 +377,12 @@ extern "system" fn window_proc(
         WM_SNAPSHOT => {
             with_tray(Tray::refresh_icon);
         }
+        WM_LOCAL_TEXT => {
+            with_tray(Tray::apply_local_text);
+        }
+        WM_SHOW_MAIN => window::show(),
         WM_ICON => match (lparam as u32) & 0xffff {
-            WM_LBUTTONUP => open_requested(),
+            WM_LBUTTONUP => window::show(),
             WM_RBUTTONUP | WM_CONTEXTMENU => show_menu(window),
             _ => {}
         },
@@ -343,10 +405,11 @@ extern "system" fn window_proc(
 }
 
 /// Creates the hidden window, the icon and the clipboard listener, then
-/// runs the message loop until the user quits. Call it on a thread of its
+/// runs the message loop until the user quits. The window is named after
+/// `state_dir`, for [`show_running_instance`]. Call it on a thread of its
 /// own.
-pub fn run(worker: Handle, link: Arc<Link>) {
-    let class_name = wide("WeftTray");
+pub fn run(worker: Handle, link: Arc<Link>, state_dir: &Path) {
+    let (class_name, title) = (wide(CLASS_NAME), wide(&instance_name(state_dir)));
     // SAFETY: the class and window names are NUL-terminated and outlive
     // the calls; `window_proc` matches the signature Windows expects.
     let (window, icon) = unsafe {
@@ -365,7 +428,7 @@ pub fn run(worker: Handle, link: Arc<Link>) {
         let window = CreateWindowExW(
             0,
             class_name.as_ptr(),
-            wide("Weft").as_ptr(),
+            title.as_ptr(),
             0,
             0,
             0,
@@ -413,6 +476,7 @@ pub fn run(worker: Handle, link: Arc<Link>) {
     link.window.store(window as isize, Ordering::Release);
     // What arrived before the window existed.
     link.post(WM_REMOTE_TEXT);
+    link.post(WM_LOCAL_TEXT);
     link.post(WM_SNAPSHOT);
     tracing::info!("tray icon ready");
 

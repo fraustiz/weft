@@ -191,41 +191,80 @@ impl Clipboard for SystemClipboard {
     }
 
     fn write(&mut self, text: &str) -> Option<u32> {
+        self.write_marked(text, false)
+    }
+
+    fn write_private(&mut self, text: &str) -> Option<u32> {
+        self.write_marked(text, true)
+    }
+}
+
+impl SystemClipboard {
+    /// Writes `text`; when `private`, adds the formats that keep clipboard
+    /// monitors, the clipboard history and the cloud clipboard away from it.
+    fn write_marked(&mut self, text: &str, private: bool) -> Option<u32> {
         if text.contains('\0') {
-            tracing::warn!("received text holds a NUL character; not written");
+            tracing::warn!("text holds a NUL character; not written");
             return None;
         }
         let units = wide(text);
-        let bytes = size_of_val(units.as_slice());
-        // SAFETY: the block is `bytes` long and locked while it is filled.
-        // It belongs to this function until `SetClipboardData` succeeds,
-        // and is freed on every path where that does not happen.
+        let block = global_block(&units)?;
+        let Some(opened) = self.open() else {
+            // SAFETY: the block was never given to the clipboard.
+            unsafe { GlobalFree(block) };
+            return None;
+        };
+        // SAFETY: the clipboard is open on this thread. A block belongs to
+        // the clipboard once `SetClipboardData` accepts it, and is freed
+        // here when it does not.
         unsafe {
-            let block = GlobalAlloc(GMEM_MOVEABLE, bytes);
-            if block.is_null() {
-                return None;
-            }
-            let data = GlobalLock(block);
-            if data.is_null() {
-                GlobalFree(block);
-                return None;
-            }
-            std::ptr::copy_nonoverlapping(units.as_ptr(), data.cast::<u16>(), units.len());
-            GlobalUnlock(block);
-
-            let Some(opened) = self.open() else {
-                GlobalFree(block);
-                return None;
-            };
             if EmptyClipboard() == 0 || SetClipboardData(CF_UNICODETEXT, block).is_null() {
                 GlobalFree(block);
                 return None;
             }
-            drop(opened);
+            if private {
+                // A DWORD of 0 in each: the first format excludes the
+                // content by its presence, the others by their value.
+                let markers = [self.excluded_if_present[0]]
+                    .into_iter()
+                    .chain(self.excluded_if_zero)
+                    .filter(|format| *format != 0);
+                for format in markers {
+                    let Some(marker) = global_block(&[0, 0]) else {
+                        continue;
+                    };
+                    if SetClipboardData(format, marker).is_null() {
+                        GlobalFree(marker);
+                        tracing::warn!("could not mark the clipboard content as private");
+                    }
+                }
+            }
         }
+        drop(opened);
         // Read once the clipboard is closed, when the change is complete.
         // Another application writing in between would be taken for this
         // write and its content skipped; the window is a few microseconds.
         Some(self.sequence())
+    }
+}
+
+/// A movable global memory block holding a copy of `data`, as the
+/// clipboard takes it. The caller owns the block.
+fn global_block(data: &[u16]) -> Option<HANDLE> {
+    // SAFETY: the block is as long as `data` and locked while it is
+    // filled. It is freed if it cannot be locked.
+    unsafe {
+        let block = GlobalAlloc(GMEM_MOVEABLE, size_of_val(data));
+        if block.is_null() {
+            return None;
+        }
+        let target = GlobalLock(block);
+        if target.is_null() {
+            GlobalFree(block);
+            return None;
+        }
+        std::ptr::copy_nonoverlapping(data.as_ptr(), target.cast::<u16>(), data.len());
+        GlobalUnlock(block);
+        Some(block)
     }
 }
