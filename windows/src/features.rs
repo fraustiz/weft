@@ -75,7 +75,8 @@ pub struct Features {
     /// phone has its own switch, off by default.
     pub sms: bool,
     /// Let the devices allowed in [`Settings::control`] move the pointer,
-    /// type and present; type on the phone. Off by default.
+    /// type and present. Off by default. Typing on the phone from here is
+    /// the user's own doing and does not depend on it.
     pub input: bool,
     /// Run the commands of [`Settings::commands`] for the other devices.
     pub commands: bool,
@@ -110,16 +111,18 @@ impl Features {
     }
 
     /// What this device announces: a switched-off feature is in neither
-    /// list. Pings and state requests are always handled.
+    /// list. Pings and state requests always go both ways, and typing on
+    /// the phone is always offered: the phone decides whether it types.
     pub fn capabilities(&self) -> Capabilities {
         let mut incoming = vec!["state.request", "ping"];
-        let mut outgoing = vec!["state.request"];
+        let mut outgoing = vec!["state.request", "ping", "input.key"];
         if self.ring {
             incoming.extend(["ring", "ring.stop"]);
             outgoing.extend(["ring", "ring.stop"]);
         }
         if self.links {
             incoming.push("share.url");
+            outgoing.push("share.url");
         }
         if self.files {
             incoming.extend(FILE_PACKETS);
@@ -150,7 +153,6 @@ impl Features {
         }
         if self.input {
             incoming.extend(INPUT_PACKETS);
-            outgoing.push("input.key");
         }
         if self.commands {
             incoming.push("command.run");
@@ -289,6 +291,7 @@ mod tests {
             assert!(all.handles(kind), "{kind}");
         }
         assert!(all.sends("file.offer") && all.sends("ring"));
+        assert!(all.sends("ping") && all.sends("share.url"));
         assert!(!all.sends("battery") && !all.sends("notification"));
         for kind in [
             "notification.reply",
@@ -301,15 +304,17 @@ mod tests {
         ] {
             assert!(all.sends(kind), "{kind}");
         }
-        // Input is off until the user turns it on.
-        assert!(!all.handles("input.pointer") && !all.sends("input.key"));
+        // Input is off until the user turns it on; typing on the phone
+        // does not wait for it.
+        assert!(!all.handles("input.pointer") && !all.handles("input.key"));
+        assert!(all.sends("input.key"));
         let input = Features {
             input: true,
             ..Features::default()
         }
         .capabilities();
         assert!(input.handles("input.pointer") && input.handles("presenter"));
-        assert!(input.sends("input.key"));
+        assert!(input.handles("input.key") && input.sends("input.key"));
 
         let none = Features {
             files: false,
@@ -326,6 +331,6 @@ mod tests {
         }
         .capabilities();
         assert_eq!(none.incoming, ["state.request", "ping"]);
-        assert_eq!(none.outgoing, ["state.request"]);
+        assert_eq!(none.outgoing, ["state.request", "ping", "input.key"]);
     }
 }

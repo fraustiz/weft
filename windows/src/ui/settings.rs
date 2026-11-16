@@ -327,8 +327,8 @@ pub fn view(weft: &Weft, context: &mut ViewContext<Weft>) -> View {
         switch(
             t("Remote input", "Contrôle à distance"),
             t(
-                "Devices you allow on their page can move the pointer, type and run slideshows here, and you can type on them. Windows run as administrator ignore it",
-                "Les appareils autorisés sur leur page peuvent déplacer le pointeur, taper et mener un diaporama ici, et vous pouvez taper sur eux. Les fenêtres lancées en administrateur l'ignorent",
+                "Devices you allow on their page can move the pointer, type and run slideshows here. Windows run as administrator ignore it",
+                "Les appareils autorisés sur leur page peuvent déplacer le pointeur, taper et mener un diaporama ici. Les fenêtres lancées en administrateur l'ignorent",
             ),
             current.input,
             toggle(|features, on| features.input = on),

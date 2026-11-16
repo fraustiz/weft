@@ -124,7 +124,7 @@ pub enum Command {
     /// This computer's output volume changed.
     LocalVolume(Volume),
     /// The messages of a phone are shown: ask for its conversations, and
-    /// for its contacts the first time.
+    /// for its contacts while none came.
     OpenMessages([u8; 16]),
     /// Ask a phone for the newest messages of a thread, or for those
     /// older than `before`.
@@ -568,7 +568,7 @@ pub fn spawn_on(dir: StateDir, relay_url: &str, hooks: Hooks) -> Result<(Handle,
         local_media: None,
         local_volume: None,
         requested: BTreeMap::new(),
-        contacts_asked: BTreeSet::new(),
+        shown: BTreeMap::new(),
         older_asked: BTreeSet::new(),
         traffic_at: now,
         progress_at: now,
@@ -653,16 +653,25 @@ struct Worker {
     local_media: Option<(Vec<Player>, Instant)>,
     /// This computer's volume as last sent.
     local_volume: Option<Volume>,
-    /// When each device was last asked for its notifications.
-    requested: BTreeMap<[u8; 16], Instant>,
-    /// The phones already asked for their contacts.
-    contacts_asked: BTreeSet<[u8; 16]>,
+    /// The last `notification.request` to each device.
+    requested: BTreeMap<[u8; 16], NotificationRequest>,
+    /// The notifications of each device shown here and not removed since,
+    /// by id.
+    shown: BTreeMap<[u8; 16], BTreeSet<String>>,
     /// The threads asked for older messages, by phone.
     older_asked: BTreeSet<([u8; 16], i64)>,
     /// The last frame from the relay, for the keepalive.
     traffic_at: Instant,
     /// The last snapshot that moved a progress bar.
     progress_at: Instant,
+}
+
+/// A `notification.request` sent to a device.
+struct NotificationRequest {
+    at: Instant,
+    /// The notifications shown when it was sent and not sent again since:
+    /// those still here after [`REQUEST_QUIET`] are gone from the phone.
+    stale: BTreeSet<String>,
 }
 
 /// Whether a device shows this computer's commands: it said it takes
@@ -911,6 +920,45 @@ impl Worker {
             || self.incoming.iter().any(|r| r.transfer.stage.is_active())
     }
 
+    /// Whether notifications asked for again may still be swept.
+    fn sweeping(&self) -> bool {
+        self.requested
+            .values()
+            .any(|request| !request.stale.is_empty())
+    }
+
+    fn forget_notification(&mut self, from: &[u8; 16], id: &str) {
+        if let Some(shown) = self.shown.get_mut(from) {
+            shown.remove(id);
+        }
+        if let Some(request) = self.requested.get_mut(from) {
+            request.stale.remove(id);
+        }
+    }
+
+    /// Removes the notifications a device did not send again within
+    /// [`REQUEST_QUIET`] of being asked for them all: the phone no longer
+    /// has them. Only online, where the answer could come.
+    fn sweep_notifications(&mut self, now: Instant) {
+        let mut gone = Vec::new();
+        for (from, request) in &mut self.requested {
+            if now.duration_since(request.at) >= REQUEST_QUIET {
+                gone.extend(
+                    std::mem::take(&mut request.stale)
+                        .into_iter()
+                        .map(|id| (*from, id)),
+                );
+            }
+        }
+        for (from, id) in gone {
+            if let Some(shown) = self.shown.get_mut(&from) {
+                shown.remove(&id);
+            }
+            tracing::debug!(from = %short_id(&from), "stale notification removed");
+            self.notify(Notice::NotificationRemoved { from, id });
+        }
+    }
+
     /// Serves the connection until shutdown (`Ok`) or until it is lost.
     async fn online(&mut self, session: &mut Session) -> Result<()> {
         // Tell every device what this one does, ask for their state, and
@@ -947,7 +995,7 @@ impl Worker {
             }
             let keepalive =
                 (self.traffic_at + KEEPALIVE_INTERVAL).saturating_duration_since(Instant::now());
-            let wait = if self.is_busy() {
+            let wait = if self.is_busy() || self.sweeping() {
                 keepalive.min(TICK)
             } else {
                 keepalive
@@ -975,6 +1023,7 @@ impl Worker {
         for (to, packet) in self.clocks(now) {
             self.send(session, to, &packet).await?;
         }
+        self.sweep_notifications(now);
         self.start_queued(session).await?;
         if now.duration_since(self.traffic_at) >= KEEPALIVE_INTERVAL {
             session.settle().await?;
@@ -1209,7 +1258,12 @@ impl Worker {
         if !self.view.features.notifications {
             return Ok(());
         }
-        self.requested.insert(to, Instant::now());
+        let stale = self.shown.get(&to).cloned().unwrap_or_default();
+        let request = NotificationRequest {
+            at: Instant::now(),
+            stale,
+        };
+        self.requested.insert(to, request);
         self.send(session, to, &Packet::NotificationRequest {})
             .await
     }
@@ -1341,7 +1395,7 @@ impl Worker {
             }
             Packet::FileReject { id, reason } => {
                 if let Some(index) = self.sending(from, &id) {
-                    let reason = RejectReason::parse(&reason);
+                    let reason = reason.as_deref().and_then(RejectReason::parse);
                     let failure = Failure::Rejected(reason);
                     let sending = &mut self.outgoing[index];
                     sending.transfer.end(Stage::Failed(failure));
@@ -1368,10 +1422,16 @@ impl Worker {
                 {
                     notification.text.truncate(cut);
                 }
-                let requested = self.requested.get(&from).copied();
-                if requested.is_some_and(|at| now.duration_since(at) < REQUEST_QUIET) {
+                if let Some(request) = self.requested.get_mut(&from)
+                    && now.duration_since(request.at) < REQUEST_QUIET
+                {
                     notification.silent = true;
+                    request.stale.remove(&notification.id);
                 }
+                self.shown
+                    .entry(from)
+                    .or_default()
+                    .insert(notification.id.clone());
                 self.notify(Notice::Notification {
                     from,
                     device: self.device_name(&from),
@@ -1379,6 +1439,7 @@ impl Worker {
                 });
             }
             Packet::NotificationRemoved { id } if features.notifications => {
+                self.forget_notification(&from, &id);
                 self.notify(Notice::NotificationRemoved { from, id });
             }
             Packet::Call(call) if features.calls => {
@@ -1433,13 +1494,14 @@ impl Worker {
                 self.sms_mut(from).conversations = Some(conversations);
             }
             Packet::SmsMessages { thread, messages } if features.sms => {
-                let count = messages.len();
+                let empty = messages.is_empty();
                 let sms = self.sms_mut(from);
                 let added = sms.add_messages(thread, messages, true);
                 let asked_older = self.older_asked.remove(&(from, thread));
-                // A short page is the start of the thread; so is an older
-                // page with nothing new in it.
-                if count < sms::PAGE as usize || (asked_older && added == 0) {
+                // The phone may shorten a page to stay under 256 KiB, so a
+                // short page says nothing: the start of the thread is an
+                // older page with nothing new in it, or an empty thread.
+                if empty || (asked_older && added == 0) {
                     self.sms_mut(from).complete.insert(thread);
                 }
             }
@@ -1816,7 +1878,7 @@ impl Worker {
                         Ok(file) => receiving.file = Some(file),
                         Err(err) => {
                             tracing::warn!(error = %err, "could not reopen a partial file");
-                            let reason = RejectReason::NoSpace.as_str().into();
+                            let reason = Some(RejectReason::NoSpace.as_str().into());
                             receiving.transfer.stage = Stage::Failed(Failure::Disk);
                             return self
                                 .send(
@@ -1873,7 +1935,7 @@ impl Worker {
             Ok(opened) => opened,
             Err(reason) => {
                 tracing::info!(from = %short_id(&from), ?reason, "file refused");
-                let reason = reason.as_str().into();
+                let reason = Some(reason.as_str().into());
                 return self
                     .send(
                         session,
@@ -2081,7 +2143,6 @@ impl Worker {
             for peer in self.view.peers.values_mut() {
                 peer.sms = Arc::default();
             }
-            self.contacts_asked.clear();
             self.older_asked.clear();
         }
         if input_was && !features.input {
@@ -2217,6 +2278,10 @@ impl Worker {
                 }
                 None => Ok(()),
             },
+            Command::SendPacket(device, Packet::ShareUrl { url }) if !is_shareable_url(&url) => {
+                tracing::debug!(device = %short_id(&device), "link not sent: not a web link");
+                Ok(())
+            }
             Command::SendPacket(device, packet) => {
                 if self.view.features.capabilities().sends(packet.kind()) {
                     self.send(session, device, &packet).await
@@ -2326,7 +2391,8 @@ impl Worker {
         Ok(())
     }
 
-    /// Asks a phone for its conversations, and for its contacts once.
+    /// Asks a phone for its conversations, and for its contacts until it
+    /// has sent some.
     async fn open_messages(&mut self, session: &mut Session, device: [u8; 16]) -> Result<()> {
         let peer = self.view.peer(&device);
         if !self.view.features.sms || !peer.handles("sms.conversations.request") {
@@ -2334,7 +2400,9 @@ impl Worker {
         }
         self.send(session, device, &Packet::SmsConversationsRequest {})
             .await?;
-        if peer.handles("contacts.request") && self.contacts_asked.insert(device) {
+        // Asked again while none came: the phone may have been without
+        // the permission, or switched off, the last time.
+        if peer.handles("contacts.request") && peer.sms.contacts.is_empty() {
             self.send(session, device, &Packet::ContactsRequest {})
                 .await?;
         }

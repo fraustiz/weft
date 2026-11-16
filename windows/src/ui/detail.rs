@@ -13,7 +13,7 @@ use super::widgets::{
 use super::words;
 use crate::i18n::{is_french, t};
 use crate::media;
-use crate::packets::{Battery, Connectivity, MediaAction, Player};
+use crate::packets::{Battery, Connectivity, MAX_URL_LEN, MediaAction, Player, is_shareable_url};
 use crate::worker::{PeerInfo, TransferView};
 
 /// The bars icon for a signal of 0 to 4.
@@ -107,7 +107,52 @@ fn status(weft: &Weft, peer: &PeerInfo) -> Option<View> {
     ))
 }
 
-/// Ring and Send files, each only if both devices handle it.
+/// The box for a link to send: Send only once it is a link the other
+/// device will open.
+fn link_box(link: &str, context: &ViewContext<Weft>) -> View {
+    let url = link.trim();
+    let valid = is_shareable_url(url);
+    let hint = if url.is_empty() || valid {
+        t(
+            "A web link, opened on the other device",
+            "Un lien web, ouvert sur l'autre appareil",
+        )
+        .to_owned()
+    } else if is_french() {
+        format!("Liens http et https uniquement, {MAX_URL_LEN} octets au plus")
+    } else {
+        format!("Only http and https links, up to {MAX_URL_LEN} bytes")
+    };
+    card(column(
+        8.0,
+        vec![
+            Grid::new()
+                .columns([GridLength::STAR, GridLength::Auto, GridLength::Auto])
+                .column_spacing(8.0)
+                .children((
+                    TextBox::new()
+                        .grid_column(0)
+                        .text(link.to_owned())
+                        .placeholder_text("https://…")
+                        .automation_name(t("Link to send", "Lien à envoyer"))
+                        .on_text_changed(context.callback(Message::LinkEdited)),
+                    Button::new()
+                        .grid_column(1)
+                        .is_enabled(valid)
+                        .on_click(context.message(Message::SendLink))
+                        .content(t("Send", "Envoyer")),
+                    Button::new()
+                        .grid_column(2)
+                        .on_click(context.message(Message::CloseLink))
+                        .content(t("Cancel", "Annuler")),
+                )),
+            secondary(hint).font_size(12.0).into(),
+        ],
+    ))
+}
+
+/// Send files, Ring, Ping, Send link and Messages, each only if both
+/// devices handle it.
 fn actions(
     weft: &Weft,
     device: [u8; 16],
@@ -143,6 +188,16 @@ fn actions(
             button(t("Ring", "Faire sonner"), context.message(Message::Ring))
         });
     }
+    if peer.handles("ping") {
+        buttons.push(button(t("Ping", "Ping"), context.message(Message::Ping)));
+    }
+    let links = features.links && peer.handles("share.url");
+    if links {
+        buttons.push(button(
+            t("Send link…", "Envoyer un lien…"),
+            context.message(Message::OpenLink),
+        ));
+    }
     if features.sms && peer.handles("sms.conversations.request") {
         buttons.push(button(
             t("Messages", "Messages"),
@@ -158,6 +213,9 @@ fn actions(
         return secondary(text).into();
     }
     let mut views = vec![row(buttons)];
+    if links && let Some(link) = &weft.link {
+        views.push(link_box(link, context));
+    }
     if files {
         views.push(
             secondary(t(
@@ -371,8 +429,8 @@ fn volume(
 }
 
 /// The device's hold on this computer, and typing on it from here: the
-/// permission when it can send input, the box when it can be typed on.
-/// `None` while Input is off.
+/// permission when it can send input and Input is on, the box when it can
+/// be typed on, whatever Input says.
 fn control(
     weft: &Weft,
     device: [u8; 16],
@@ -380,12 +438,9 @@ fn control(
     peer: &PeerInfo,
     context: &ViewContext<Weft>,
 ) -> Option<View> {
-    if !weft.snapshot.features.input {
-        return None;
-    }
     let mut views = Vec::new();
     let remote = ["input.pointer", "input.click", "input.key", "presenter"];
-    if remote.iter().any(|kind| peer.sends(kind)) {
+    if weft.snapshot.features.input && remote.iter().any(|kind| peer.sends(kind)) {
         let title = if is_french() {
             format!("Laisser {name} contrôler cet ordinateur")
         } else {

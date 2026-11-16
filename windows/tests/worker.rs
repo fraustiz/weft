@@ -801,6 +801,54 @@ async fn paired(url: &str) -> (Tested, Peer) {
 }
 
 #[tokio::test]
+async fn pings_and_links_go_to_the_phone() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut phone) = paired(&url).await;
+        let (pc, phone_id) = (tested.id(), phone.id());
+        phone.send(pc, &phone_capabilities()).await;
+        phone.expect_packet(pc, is_capabilities).await;
+
+        let ping = Packet::Ping { message: None };
+        tested
+            .worker
+            .send(Command::SendPacket(phone_id, ping.clone()));
+        phone.expect_packet(pc, |packet| *packet == ping).await;
+        let link = Packet::ShareUrl {
+            url: "https://example.org/a?b=c".into(),
+        };
+        tested
+            .worker
+            .send(Command::SendPacket(phone_id, link.clone()));
+        phone.expect_packet(pc, |packet| *packet == link).await;
+
+        // Not a web link, or links switched off: nothing goes.
+        let bad = Packet::ShareUrl {
+            url: "file:///C:/secret.txt".into(),
+        };
+        tested.worker.send(Command::SendPacket(phone_id, bad));
+        let off = Features {
+            links: false,
+            ..Features::default()
+        };
+        tested.worker.send(Command::SetFeatures(off));
+        tested
+            .worker
+            .send(Command::SendPacket(phone_id, link.clone()));
+        tested.worker.send(Command::Ring(phone_id));
+        let seen = packets_until(&mut phone, pc, |packet| *packet == Packet::Ring {}).await;
+        assert!(
+            !seen
+                .iter()
+                .any(|packet| matches!(packet, Packet::ShareUrl { .. })),
+            "{seen:?}"
+        );
+        tested.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn exchanges_capabilities_and_status() {
     timed(async {
         let url = start_relay().await;
@@ -1150,7 +1198,7 @@ async fn offers_are_rejected_with_a_reason_and_cancels_clean_up() {
         };
         let rejected = |reason: &str, id: [u8; 16]| Packet::FileReject {
             id: transfer_id(&id),
-            reason: reason.into(),
+            reason: Some(reason.into()),
         };
 
         // Over 4 GiB.
@@ -1435,6 +1483,73 @@ async fn packets_until(
             }
         }
     }
+}
+
+#[tokio::test]
+async fn notifications_not_sent_again_after_a_request_are_removed() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut phone) = paired_with_media(&url).await;
+        let (pc, phone_id) = (tested.id(), phone.id());
+        let notification = |id: &str| Notification {
+            id: id.into(),
+            app: "Chat".into(),
+            ..Notification::default()
+        };
+        for id in ["kept", "gone"] {
+            phone
+                .send(pc, &Packet::Notification(notification(id)))
+                .await;
+            tested
+                .expect_notice(|notice| matches!(notice, Notice::Notification { .. }))
+                .await;
+        }
+
+        // Asked again, as after a reconnection: only one comes back.
+        let off = Features {
+            notifications: false,
+            ..Features::default()
+        };
+        tested.worker.send(Command::SetFeatures(off));
+        phone.expect_packet(pc, is_capabilities).await;
+        tested
+            .worker
+            .send(Command::SetFeatures(Features::default()));
+        phone
+            .expect_packet(pc, |packet| *packet == Packet::NotificationRequest {})
+            .await;
+        phone
+            .send(pc, &Packet::Notification(notification("kept")))
+            .await;
+        tested
+            .expect_notice(|notice| matches!(notice, Notice::Notification { .. }))
+            .await;
+
+        // Past the quiet window, the other one's toast goes.
+        let removed = |notice: &Notice| matches!(notice, Notice::NotificationRemoved { .. });
+        let swept = async {
+            loop {
+                if tested.notices.lock().unwrap().iter().any(removed) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(15), swept)
+            .await
+            .expect("no stale notification removed");
+        let notices = tested.notices.lock().unwrap().clone();
+        let removed: Vec<_> = notices.iter().filter(|notice| removed(notice)).collect();
+        assert_eq!(
+            removed,
+            [&Notice::NotificationRemoved {
+                from: phone_id,
+                id: "gone".into()
+            }]
+        );
+        tested.stop().await;
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -1830,6 +1945,53 @@ async fn settle(phone: &mut Peer, pc: [u8; 16]) {
 }
 
 #[tokio::test]
+async fn contacts_are_asked_again_while_none_came() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut phone) = paired_full(&url).await;
+        let (pc, phone_id) = (tested.id(), phone.id());
+        async fn opened(tested: &Tested, phone: &mut Peer) -> Vec<Packet> {
+            let (pc, phone_id) = (tested.id(), phone.id());
+            tested.worker.send(Command::OpenMessages(phone_id));
+            tested.worker.send(Command::Ring(phone_id));
+            packets_until(phone, pc, |packet| *packet == Packet::Ring {}).await
+        }
+
+        // No answer yet (the phone may have lacked the permission): the
+        // next opening asks again.
+        assert!(
+            opened(&tested, &mut phone)
+                .await
+                .contains(&Packet::ContactsRequest {})
+        );
+        assert!(
+            opened(&tested, &mut phone)
+                .await
+                .contains(&Packet::ContactsRequest {})
+        );
+        let contacts = packets::Contacts {
+            contacts: vec![packets::Contact {
+                name: "Ann".into(),
+                numbers: vec!["01".into()],
+            }],
+            part: None,
+            parts: None,
+        };
+        phone.send(pc, &Packet::Contacts(contacts)).await;
+        tested
+            .wait(|snapshot| !snapshot.peer(&phone_id).sms.contacts.is_empty())
+            .await;
+        assert!(
+            !opened(&tested, &mut phone)
+                .await
+                .contains(&Packet::ContactsRequest {})
+        );
+        tested.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn sms_conversations_messages_and_sends_reach_the_snapshot() {
     timed(async {
         let url = start_relay().await;
@@ -1893,7 +2055,9 @@ async fn sms_conversations_messages_and_sends_reach_the_snapshot() {
         let seen = packets_until(&mut phone, pc, |packet| *packet == Packet::Ring {}).await;
         assert!(!seen.contains(&Packet::ContactsRequest {}), "{seen:?}");
 
-        // A thread loads, oldest first; a short page is all there is.
+        // A thread loads, oldest first. A short page may only be short to
+        // fit the packet: the thread is all there only once an older page
+        // brings nothing new.
         tested.worker.send(Command::LoadMessages {
             device: phone_id,
             thread: 7,
@@ -1929,7 +2093,30 @@ async fn sms_conversations_messages_and_sends_reach_the_snapshot() {
             .await;
         let sms_state = snapshot.peer(&phone_id).sms;
         assert_eq!(sms_state.threads[&7], messages);
-        assert!(sms_state.complete.contains(&7));
+        assert!(!sms_state.complete.contains(&7));
+        tested.worker.send(Command::LoadMessages {
+            device: phone_id,
+            thread: 7,
+            before: Some(1000),
+        });
+        phone
+            .expect_packet(pc, |packet| {
+                matches!(packet, Packet::SmsMessagesRequest(request) if request.before == Some(1000))
+            })
+            .await;
+        phone
+            .send(
+                pc,
+                &Packet::SmsMessages {
+                    thread: 7,
+                    messages: vec![messages[0].clone()],
+                },
+            )
+            .await;
+        let snapshot = tested
+            .wait(|snapshot| snapshot.peer(&phone_id).sms.complete.contains(&7))
+            .await;
+        assert_eq!(snapshot.peer(&phone_id).sms.threads[&7], messages);
 
         // A send is pending, then sent; the thread is asked for again,
         // and once it has the message the outbox lets it go.
@@ -2110,15 +2297,16 @@ async fn input_reaches_the_sink_only_from_an_allowed_device() {
             ..packets::InputPointer::default()
         });
 
-        // Off by default, and the phone cannot be typed on.
+        // Off by default; typing on the phone is the user's own doing
+        // and works anyway.
         phone.send(pc, &pointer).await;
         let typed = Packet::InputKey(packets::InputKey::text("hi"));
         tested
             .worker
             .send(Command::SendPacket(phone_id, typed.clone()));
-        tested.worker.send(Command::Ring(phone_id));
-        let seen = packets_until(&mut phone, pc, |packet| *packet == Packet::Ring {}).await;
-        assert!(!seen.contains(&typed), "{seen:?}");
+        phone.expect_packet(pc, |packet| *packet == typed).await;
+        settle(&mut phone, pc).await;
+        assert!(tested.inputs.lock().unwrap().is_empty());
 
         // On, but this phone is not allowed yet; typing on it works.
         let on = Features {

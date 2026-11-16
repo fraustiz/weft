@@ -70,6 +70,42 @@ pub struct Outgoing {
     offered_at: Instant,
 }
 
+/// The MIME type of a file name with a common extension; `None` for the
+/// others, which `file.offer` then leaves out.
+pub fn mime_of(name: &str) -> Option<&'static str> {
+    let (_, extension) = name.rsplit_once('.')?;
+    let mime = match extension.to_ascii_lowercase().as_str() {
+        "txt" => "text/plain",
+        "html" | "htm" => "text/html",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "apk" => "application/vnd.android.package-archive",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" => "image/heic",
+        "svg" => "image/svg+xml",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "ogg" => "audio/ogg",
+        "flac" => "audio/flac",
+        "wav" => "audio/wav",
+        "mp4" => "video/mp4",
+        "mkv" => "video/x-matroska",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        _ => return None,
+    };
+    Some(mime)
+}
+
 /// What a sender's clock says to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tick {
@@ -106,7 +142,7 @@ impl Outgoing {
             id: transfer_id(&self.id),
             name: self.name.clone(),
             size: self.size,
-            mime: None,
+            mime: mime_of(&self.name).map(str::to_owned),
         })
     }
 
@@ -382,6 +418,22 @@ mod tests {
         outgoing.start(now);
         assert!(outgoing.accept(0, now));
         outgoing
+    }
+
+    #[test]
+    fn offers_name_the_mime_type_of_common_files() {
+        assert_eq!(mime_of("Photo.JPG"), Some("image/jpeg"));
+        assert_eq!(mime_of("notes.tar.txt"), Some("text/plain"));
+        assert_eq!(mime_of("a.bin"), None);
+        assert_eq!(mime_of("README"), None);
+        let now = Instant::now();
+        let offer = |name: &str| match Outgoing::new([1; 16], [2; 16], name.into(), 3, now).offer()
+        {
+            Packet::FileOffer(offer) => offer.mime,
+            _ => unreachable!(),
+        };
+        assert_eq!(offer("clip.mp4").as_deref(), Some("video/mp4"));
+        assert_eq!(offer("a.bin"), None);
     }
 
     #[test]

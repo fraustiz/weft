@@ -45,7 +45,12 @@ pub enum Packet {
     #[serde(rename = "file.accept")]
     FileAccept { id: String, offset: u64 },
     #[serde(rename = "file.reject")]
-    FileReject { id: String, reason: String },
+    FileReject {
+        id: String,
+        /// Optional on the wire: a reject without one still rejects.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
     #[serde(rename = "file.ack")]
     FileAck { id: String, offset: u64 },
     #[serde(rename = "file.done")]
@@ -239,9 +244,14 @@ impl Call {
 #[serde(default, rename_all = "camelCase")]
 pub struct Player {
     pub id: String,
+    /// The texts are sent only when not empty; a missing one is empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub app: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub title: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub artist: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub album: String,
     pub playing: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -749,6 +759,25 @@ mod tests {
     }
 
     #[test]
+    fn a_reject_without_a_reason_still_rejects() {
+        assert_eq!(
+            parse(r#"{"type":"file.reject","id":"00"}"#),
+            Parsed::Known(Packet::FileReject {
+                id: "00".into(),
+                reason: None,
+            })
+        );
+        assert_eq!(
+            Packet::FileReject {
+                id: "00".into(),
+                reason: Some("busy".into()),
+            }
+            .to_json(),
+            r#"{"type":"file.reject","id":"00","reason":"busy"}"#
+        );
+    }
+
+    #[test]
     fn unknown_and_invalid_packets() {
         assert_eq!(
             parse(r#"{"type":"sftp.list","path":"/"}"#),
@@ -880,6 +909,8 @@ mod tests {
         };
         let json = media.to_json();
         assert!(json.contains(r#""canSeek":true"#) && json.contains(r#""canNext":false"#));
+        // Empty texts are left out.
+        assert!(!json.contains("artist") && !json.contains("album"));
         assert_eq!(parse(&json), Parsed::Known(media));
         // Missing members: unknown or off.
         assert_eq!(

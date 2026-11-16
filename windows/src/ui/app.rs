@@ -11,7 +11,7 @@ use super::words::{self, NameProblem};
 use super::{Shell, detail, devices, messages, pairing, picker, qr, settings};
 use crate::features::{Features, UserCommand};
 use crate::i18n::t;
-use crate::packets::{MediaAction, MediaCommand, Packet, VolumeSet};
+use crate::packets::{MediaAction, MediaCommand, Packet, VolumeSet, is_shareable_url};
 use crate::sms;
 use crate::worker::{Command, Handle, PairingState, Published, RING_DURATION, Snapshot};
 use crate::{autostart, window};
@@ -73,6 +73,13 @@ pub enum Message {
     StopRinging,
     /// The user found this computer.
     FoundIt,
+    /// Pings the device shown.
+    Ping,
+    /// Opens the box for a link to send to the device shown.
+    OpenLink,
+    LinkEdited(String),
+    SendLink,
+    CloseLink,
     /// Opens the file picker for the device shown.
     PickFiles,
     /// The picker closed with these files, maybe none.
@@ -203,6 +210,8 @@ pub struct Weft {
     pub compose: ElementRef<TextBox>,
     /// What the "Type on phone" box holds, as already sent.
     pub typed: String,
+    /// The link being written for the device shown, while its box is open.
+    pub link: Option<String>,
     pub command_draft: Option<CommandDraft>,
     /// A tick is on its way.
     ticking: bool,
@@ -428,6 +437,7 @@ impl Component for Weft {
             messages: None,
             compose: ElementRef::new(),
             typed: String::new(),
+            link: None,
             command_draft: None,
             ticking: false,
         };
@@ -532,10 +542,14 @@ impl Component for Weft {
             Message::OpenDevice(device) => {
                 if self.selected != Some(device) {
                     self.typed.clear();
+                    self.link = None;
                 }
                 self.selected = Some(device);
             }
-            Message::CloseDevice => self.selected = None,
+            Message::CloseDevice => {
+                self.selected = None;
+                self.link = None;
+            }
             Message::Ring => {
                 if let Some(device) = self.selected {
                     worker.send(Command::Ring(device));
@@ -548,6 +562,30 @@ impl Component for Weft {
                 }
             }
             Message::FoundIt => worker.send(Command::FoundIt),
+            Message::Ping => {
+                if let Some(device) = self.selected {
+                    worker.send(Command::SendPacket(device, Packet::Ping { message: None }));
+                }
+            }
+            Message::OpenLink => {
+                self.link.get_or_insert_with(String::new);
+            }
+            // Setting the box's text reports it too: the same text.
+            Message::LinkEdited(text) => {
+                if let Some(link) = &mut self.link {
+                    *link = text;
+                }
+            }
+            Message::SendLink => {
+                if let (Some(device), Some(link)) = (self.selected, &self.link) {
+                    let url = link.trim().to_owned();
+                    if is_shareable_url(&url) {
+                        worker.send(Command::SendPacket(device, Packet::ShareUrl { url }));
+                        self.link = None;
+                    }
+                }
+            }
+            Message::CloseLink => self.link = None,
             Message::PickFiles => {
                 if !self.picking {
                     self.picking = true;
