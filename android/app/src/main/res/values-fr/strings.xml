@@ -251,4 +251,63 @@
     <string name="action_unmute">Rétablir le son</string>
     <string name="volume_level">%1$d %%</string>
     <string name="volume_muted">Son coupé</string>
+
+    <!-- SMS, contacts, saisie à distance et commandes (réglages). -->
+    <string name="feature_sms">SMS</string>
+    <string name="feature_sms_body">Vos ordinateurs peuvent lire les SMS de ce téléphone et en envoyer depuis lui</string>
+    <string name="feature_sms_permission">Weft a besoin de l’accès aux SMS pour lire, envoyer et recevoir les messages pour vos ordinateurs. L’accès aux contacts ajoute les noms.</string>
+    <string name="feature_contacts">Contacts</string>
+    <string name="feature_contacts_body">Envoyer les noms et numéros de vos contacts à vos ordinateurs quand ils les demandent</string>
+    <string name="feature_contacts_permission">Weft a besoin de l’accès aux contacts pour les envoyer.</string>
+    <string name="feature_input">Clavier Weft</string>
+    <string name="feature_input_body">Laisser vos ordinateurs écrire sur ce téléphone avec le clavier Weft</string>
+    <string name="feature_input_keyboard">Activez le clavier Weft dans les réglages d’Android, puis choisissez-le au moment d’écrire.</string>
+    <string name="feature_remote">Télécommande</string>
+    <string name="feature_remote_body">Utiliser ce téléphone comme pavé tactile, clavier ou télécommande de présentation pour les ordinateurs qui l’autorisent</string>
+    <string name="action_keyboard_settings">Ouvrir les réglages du clavier</string>
+    <string name="feature_commands">Commandes</string>
+    <string name="feature_commands_body">Lancer les commandes définies sur vos ordinateurs</string>
+
+    <!-- Détails de l’appareil : contrôle et commandes. -->
+    <string name="device_remote">Télécommande</string>
+    <string name="device_remote_body">Pavé tactile et clavier</string>
+    <string name="device_presenter">Présentation</string>
+    <string name="device_presenter_body">Passer les diapositives et pointer l’écran</string>
+    <string name="device_commands">Commandes</string>
+    <string name="command_sent">« %1$s » envoyée</string>
+
+    <!-- Télécommande. -->
+    <string name="remote_title">Contrôler %1$s</string>
+    <string name="remote_touchpad">Pavé tactile</string>
+    <string name="remote_touchpad_hint">Glissez pour déplacer · touchez pour cliquer · deux doigts pour défiler ou clic droit · maintenez puis glissez pour sélectionner</string>
+    <string name="button_left">Gauche</string>
+    <string name="button_middle">Milieu</string>
+    <string name="button_right">Droit</string>
+    <string name="remote_type">Écrire sur l’ordinateur</string>
+    <string name="remote_speed">Vitesse du pointeur</string>
+    <string name="key_escape">Échap</string>
+    <string name="key_tab">Tab</string>
+    <string name="key_enter">Entrée</string>
+    <string name="key_backspace">Retour arrière</string>
+    <string name="key_left">Flèche gauche</string>
+    <string name="key_up">Flèche haut</string>
+    <string name="key_down">Flèche bas</string>
+    <string name="key_right">Flèche droite</string>
+
+    <!-- Présentation. -->
+    <string name="presenter_title">Présenter sur %1$s</string>
+    <string name="presenter_next">Suivante</string>
+    <string name="presenter_previous">Précédente</string>
+    <string name="presenter_start">Lancer le diaporama</string>
+    <string name="presenter_stop">Arrêter le diaporama</string>
+    <string name="presenter_pointer">Maintenir pour pointer</string>
+    <string name="presenter_pointing">Pointage · bougez le téléphone</string>
+    <string name="presenter_volume_hint">Volume + : diapositive suivante · volume − : précédente</string>
+
+    <!-- Le clavier Weft. -->
+    <string name="keyboard_label">Clavier Weft</string>
+    <string name="keyboard_switch">Changer de clavier</string>
+    <string name="keyboard_waiting">Prêt à écrire depuis vos ordinateurs</string>
+    <string name="keyboard_typing_from">Saisie depuis %1$s</string>
+    <string name="keyboard_off">Activez la saisie à distance dans Weft pour écrire depuis vos ordinateurs</string>
 </resources>

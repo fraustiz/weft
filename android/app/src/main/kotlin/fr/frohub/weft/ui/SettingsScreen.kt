@@ -35,7 +35,9 @@ import fr.frohub.weft.features.Feature
  * One switch per feature. Each `onAllow…` is non-null while a switched-on feature misses what
  * Android requires for it: [onAllowPhoneAccess] the phone permission (5G or LTE in Network),
  * [onAllowNotificationAccess] notification access (Notifications, Media), [onAllowCallAccess]
- * the call permissions. [onExcludedApps] opens the list of apps whose notifications stay here.
+ * the call permissions, [onAllowSmsAccess] the SMS permissions, [onAllowContactsAccess] the
+ * contacts permission, [onEnableKeyboard] the Weft keyboard (Remote input). [onExcludedApps]
+ * opens the list of apps whose notifications stay here.
  */
 @Composable
 fun SettingsScreen(
@@ -47,6 +49,9 @@ fun SettingsScreen(
     onAllowCallAccess: (() -> Unit)? = null,
     excludedApps: Int = 0,
     onExcludedApps: (() -> Unit)? = null,
+    onAllowSmsAccess: (() -> Unit)? = null,
+    onAllowContactsAccess: (() -> Unit)? = null,
+    onEnableKeyboard: (() -> Unit)? = null,
 ) {
     Scaffold(topBar = { BackTopBar(stringResource(R.string.settings_title), onBack = onBack) }) { innerPadding ->
         Column(
@@ -81,6 +86,15 @@ fun SettingsScreen(
                     }
                     Feature.CALLS -> onAllowCallAccess?.let {
                         PermissionNote(R.string.feature_calls_permission, R.string.action_allow, it)
+                    }
+                    Feature.SMS -> onAllowSmsAccess?.let {
+                        PermissionNote(R.string.feature_sms_permission, R.string.action_allow, it)
+                    }
+                    Feature.CONTACTS -> onAllowContactsAccess?.let {
+                        PermissionNote(R.string.feature_contacts_permission, R.string.action_allow, it)
+                    }
+                    Feature.INPUT -> onEnableKeyboard?.let {
+                        PermissionNote(R.string.feature_input_keyboard, R.string.action_keyboard_settings, it)
                     }
                     else -> Unit
                 }
@@ -152,6 +166,11 @@ private val Feature.title: Int
         Feature.CALLS -> R.string.feature_calls
         Feature.MEDIA -> R.string.feature_media
         Feature.VOLUME -> R.string.feature_volume
+        Feature.SMS -> R.string.feature_sms
+        Feature.CONTACTS -> R.string.feature_contacts
+        Feature.INPUT -> R.string.feature_input
+        Feature.REMOTE -> R.string.feature_remote
+        Feature.COMMANDS -> R.string.feature_commands
     }
 
 @get:StringRes
@@ -167,6 +186,11 @@ private val Feature.description: Int
         Feature.CALLS -> R.string.feature_calls_body
         Feature.MEDIA -> R.string.feature_media_body
         Feature.VOLUME -> R.string.feature_volume_body
+        Feature.SMS -> R.string.feature_sms_body
+        Feature.CONTACTS -> R.string.feature_contacts_body
+        Feature.INPUT -> R.string.feature_input_body
+        Feature.REMOTE -> R.string.feature_remote_body
+        Feature.COMMANDS -> R.string.feature_commands_body
     }
 
 /** Test tags. */

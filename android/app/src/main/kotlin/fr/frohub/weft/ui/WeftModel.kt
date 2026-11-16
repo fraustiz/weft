@@ -8,6 +8,7 @@ import fr.frohub.weft.core.JoinState
 import fr.frohub.weft.core.RenameResult
 import fr.frohub.weft.core.WeftCore
 import fr.frohub.weft.features.Feature
+import fr.frohub.weft.features.FeatureSettings
 import fr.frohub.weft.features.Features
 import fr.frohub.weft.features.Packet
 import fr.frohub.weft.features.PeerInfo
@@ -68,12 +69,21 @@ interface WeftModel {
     val excludedApps: StateFlow<Set<String>> get() = NO_EXCLUDED
 
     fun setAppExcluded(packageName: String, excluded: Boolean) = Unit
+
+    /** Sends the remote control's, the presenter's and the commands' packets to [deviceId]. */
+    suspend fun send(deviceId: String, packet: Packet): Boolean = false
+
+    /** The remote control's pointer speed. */
+    val pointerSpeed: StateFlow<Float> get() = DEFAULT_SPEED
+
+    fun setPointerSpeed(speed: Float) = Unit
 }
 
 private val NO_PEERS = MutableStateFlow<Map<String, PeerInfo>>(emptyMap())
 private val NO_APPS = MutableStateFlow<List<SeenApp>>(emptyList())
 private val NO_EXCLUDED = MutableStateFlow<Set<String>>(emptySet())
 private val ALL_FEATURES = MutableStateFlow(Feature.entries.toSet())
+private val DEFAULT_SPEED = MutableStateFlow(FeatureSettings.DEFAULT_POINTER_SPEED)
 
 class CoreModel(private val core: WeftCore, private val featureHub: Features) : WeftModel {
     override val status: StateFlow<ConnectionStatus> get() = core.status
@@ -114,4 +124,10 @@ class CoreModel(private val core: WeftCore, private val featureHub: Features) : 
     override val excludedApps: StateFlow<Set<String>> get() = featureHub.notificationApps.excluded
 
     override fun setAppExcluded(packageName: String, excluded: Boolean) = featureHub.notificationApps.setExcluded(packageName, excluded)
+
+    override suspend fun send(deviceId: String, packet: Packet) = featureHub.sendTo(deviceId, packet)
+
+    override val pointerSpeed: StateFlow<Float> get() = featureHub.settings.pointerSpeed
+
+    override fun setPointerSpeed(speed: Float) = featureHub.settings.setPointerSpeed(speed)
 }

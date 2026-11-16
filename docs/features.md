@@ -123,6 +123,18 @@ Safety rules:
 - The phone types received `input.key` only through the Weft keyboard (an input method the user must pick in Android's settings, as KDE Connect does); otherwise it ignores it.
 - Commands are defined **only on the computer** (name + command line, in its settings). `command.run` runs a listed command by `id`; nothing a peer sends is ever part of a command line.
 
-## 9. Local settings
+## 9. Wire details
+
+- SMS `thread` and message `id` are JSON integers; `requestId` and command `id` are strings.
+- Every `time` is in milliseconds since the Unix epoch.
+- Contacts `part` counts from 1 to `parts`.
+- `scrollY > 0` means the wheel turned up (away from the user), `scrollX > 0` means scroll right.
+- Presenter `pointer`: `x` from −1 (left) to 1 (right), `y` from −1 (top) to 1 (bottom).
+- Boolean flags (`double`, `down`, `up`, `ctrl`, `alt`, `shift`, `meta`, `unread`, `outgoing`) are sent only when true; a missing flag is false.
+- `sms.sent` `error`: `"permission"`, `"noSms"`, `"failed"`, `"noService"`, `"radioOff"`.
+
+## 10. Local settings
 
 Each app has one switch per feature (files, links, notifications, battery, ring, calls, media, volume, SMS, contacts, input, commands), on by default except SMS, contacts and input. A switched-off feature is removed from `capabilities`; packets for it are ignored.
+
+On the phone, "input" means only being typed into (the Weft keyboard, off by default); sending remote control and presenter packets is a separate "remote control" switch, on by default, since the computer accepts them only after its user allowed that phone.

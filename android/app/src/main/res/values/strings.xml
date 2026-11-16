@@ -274,4 +274,67 @@
     <!-- %1$d: volume, 0 to 100. -->
     <string name="volume_level">%1$d %%</string>
     <string name="volume_muted">Muted</string>
+
+    <!-- SMS, contacts, remote input and commands (settings). -->
+    <string name="feature_sms">SMS</string>
+    <string name="feature_sms_body">Let your computers read this phone’s text messages and send SMS from it</string>
+    <string name="feature_sms_permission">Weft needs SMS access to read, send and receive messages for your computers. Contacts access adds the names.</string>
+    <string name="feature_contacts">Contacts</string>
+    <string name="feature_contacts_body">Send the names and numbers of your contacts to your computers when they ask</string>
+    <string name="feature_contacts_permission">Weft needs contacts access to send them.</string>
+    <string name="feature_input">Weft keyboard</string>
+    <string name="feature_input_body">Let your computers type on this phone through the Weft keyboard</string>
+    <string name="feature_input_keyboard">Turn on the Weft keyboard in Android’s settings, then pick it when you type.</string>
+    <string name="feature_remote">Remote control</string>
+    <string name="feature_remote_body">Use this phone as a touchpad, keyboard or presentation remote for computers that allow it</string>
+    <string name="action_keyboard_settings">Open keyboard settings</string>
+    <string name="feature_commands">Commands</string>
+    <string name="feature_commands_body">Run the commands set up on your computers</string>
+
+    <!-- Device details: control and commands. -->
+    <string name="device_remote">Remote control</string>
+    <string name="device_remote_body">Touchpad and keyboard</string>
+    <string name="device_presenter">Presentation</string>
+    <string name="device_presenter_body">Turn the slides and point at the screen</string>
+    <string name="device_commands">Commands</string>
+    <!-- %1$s: the command name. -->
+    <string name="command_sent">Sent “%1$s”</string>
+
+    <!-- Remote control. -->
+    <!-- %1$s: the computer. -->
+    <string name="remote_title">Control %1$s</string>
+    <string name="remote_touchpad">Touchpad</string>
+    <string name="remote_touchpad_hint">Drag to move · tap to click · two fingers to scroll or right-click · hold, then drag to select</string>
+    <string name="button_left">Left</string>
+    <string name="button_middle">Middle</string>
+    <string name="button_right">Right</string>
+    <string name="remote_type">Type on the computer</string>
+    <string name="remote_speed">Pointer speed</string>
+    <string name="key_escape">Esc</string>
+    <string name="key_tab">Tab</string>
+    <string name="key_enter">Enter</string>
+    <string name="key_backspace">Backspace</string>
+    <string name="key_left">Left arrow</string>
+    <string name="key_up">Up arrow</string>
+    <string name="key_down">Down arrow</string>
+    <string name="key_right">Right arrow</string>
+
+    <!-- Presentation. -->
+    <!-- %1$s: the computer. -->
+    <string name="presenter_title">Present on %1$s</string>
+    <string name="presenter_next">Next</string>
+    <string name="presenter_previous">Previous</string>
+    <string name="presenter_start">Start the slideshow</string>
+    <string name="presenter_stop">End the slideshow</string>
+    <string name="presenter_pointer">Hold to point</string>
+    <string name="presenter_pointing">Pointing · move the phone</string>
+    <string name="presenter_volume_hint">Volume up: next slide · volume down: previous</string>
+
+    <!-- The Weft keyboard. -->
+    <string name="keyboard_label">Weft keyboard</string>
+    <string name="keyboard_switch">Switch keyboard</string>
+    <string name="keyboard_waiting">Ready to type from your computers</string>
+    <!-- %1$s: the computer that types. -->
+    <string name="keyboard_typing_from">Typing from %1$s</string>
+    <string name="keyboard_off">Turn on Remote input in Weft to type from your computers</string>
 </resources>

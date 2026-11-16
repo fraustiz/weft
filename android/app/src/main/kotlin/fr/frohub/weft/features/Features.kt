@@ -39,9 +39,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * The packets of docs/features.md, sections 2 to 6 and 9: capabilities, state requests, battery,
- * connectivity, ring, ping, links, files, notifications, calls, media and volume. One instance
- * per process, owned by the application; it registers itself as the core's [PacketListener].
+ * The packets of docs/features.md, sections 2 to 9: capabilities, state requests, battery,
+ * connectivity, ring, ping, links, files, notifications, calls, media, volume, SMS, contacts,
+ * remote input, presenter and commands. One instance per process, owned by the application; it
+ * registers itself as the core's [PacketListener].
  */
 class Features(private val context: Context, private val core: WeftCore) : PacketListener {
     val settings = FeatureSettings(context)
@@ -71,6 +72,13 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
     private val volume = StatusChannel(Feature.VOLUME, volumeThrottle())
     private val volumeMonitor = VolumeMonitor(context, volume::update)
     private val callMonitor = CallMonitor(context, ::onCallEvent)
+    private val sms = Sms(context)
+
+    /** SMS sent for a computer whose `sms.sent` has not left yet, by device and request id. */
+    private val smsSending = ConcurrentHashMap<String, SmsSending>()
+
+    /** Set while Android has the Weft keyboard bound (the user picked it). Main thread. */
+    private var keyboard: WeftKeyboard? = null
 
     /** Main thread: whether the service runs, so the monitors above should. */
     private var monitorsRunning = false
@@ -105,7 +113,10 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
         scope.launch {
             // A feature switched on sends its current value at once.
             settings.enabled.drop(1).collect { enabled ->
-                withContext(Dispatchers.Main) { refreshMonitors() }
+                withContext(Dispatchers.Main) {
+                    refreshMonitors()
+                    keyboard?.refresh()
+                }
                 if (Feature.NOTIFICATIONS !in enabled) serial.trySend { mirror.clear() }
                 sendCapabilitiesAndState(trustedIds())
             }
@@ -132,13 +143,15 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
     }
 
     /**
-     * Main thread: starts or stops the volume, call and media monitors after a switch or a
+     * Main thread: starts or stops the volume, call, SMS and media monitors after a switch or a
      * permission changed. [restartCalls] picks up a call permission granted meanwhile.
      */
     fun refreshMonitors(restartCalls: Boolean = false) {
         if (monitorsRunning && settings.isEnabled(Feature.VOLUME)) volumeMonitor.start() else volumeMonitor.stop()
         if (restartCalls || !monitorsRunning || !settings.isEnabled(Feature.CALLS)) callMonitor.stop()
         if (monitorsRunning && settings.isEnabled(Feature.CALLS)) callMonitor.start()
+        // Started again after a permission is granted: it does nothing without RECEIVE_SMS.
+        if (monitorsRunning && settings.isEnabled(Feature.SMS)) sms.startReceiving(::onSmsReceived) else sms.stopReceiving()
         refreshMedia()
     }
 
@@ -281,8 +294,21 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
             }
             is Packet.Volume -> updatePeer(senderHex) { it.copy(volume = packet) }
             is Packet.VolumeSet -> withContext(Dispatchers.Main) { volumeMonitor.set(packet) }
-            // The phone sends these; it does not show the computers' own.
-            is Packet.Notification, is Packet.NotificationRemoved, is Packet.Call -> Unit
+            // Reads are blocking and may take a moment on a full phone: off the packet path.
+            Packet.SmsConversationsRequest -> scope.launch(Dispatchers.IO) { send(listOf(senderHex), sms.conversations()) }
+            is Packet.SmsMessagesRequest -> scope.launch(Dispatchers.IO) { send(listOf(senderHex), sms.messages(packet)) }
+            is Packet.SmsSend -> scope.launch(Dispatchers.IO) { sendSms(senderHex, packet) }
+            Packet.ContactsRequest -> scope.launch(Dispatchers.IO) {
+                for (part in contactParts(Sms.contacts(context))) send(listOf(senderHex), part)
+            }
+            // Typed only through the Weft keyboard, and only while it is the keyboard in use.
+            is Packet.InputKey -> withContext(Dispatchers.Main) { keyboard?.type(packet, label(senderHex)) }
+            is Packet.CommandList -> updatePeer(senderHex) { it.copy(commands = packet.commands) }
+            // The phone sends these; it does not show the computers' own, nor take their input.
+            is Packet.Notification, is Packet.NotificationRemoved, is Packet.Call,
+            is Packet.SmsConversations, is Packet.SmsMessages, is Packet.SmsSent, is Packet.SmsReceived, is Packet.Contacts,
+            is Packet.InputPointer, is Packet.InputClick, is Packet.Presenter, is Packet.CommandRun,
+            -> Unit
         }
     }
 
@@ -357,7 +383,90 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
 
     // endregion
 
+    // region SMS and the Weft keyboard (sections 7 and 8)
+
+    /** The results of one `sms.send`, one per part; complete once [expect] and every part are in. */
+    private class SmsSending {
+        private var expected = -1
+        private var received = 0
+        var error: String? = null
+            private set
+
+        @Synchronized
+        fun expect(parts: Int): Boolean {
+            expected = parts
+            return received >= expected
+        }
+
+        @Synchronized
+        fun part(error: String?): Boolean {
+            received++
+            if (this.error == null) this.error = error
+            return expected >= 0 && received >= expected
+        }
+    }
+
+    private suspend fun sendSms(deviceIdHex: String, request: Packet.SmsSend) {
+        val key = key(deviceIdHex, request.requestId)
+        val job = SmsSending()
+        smsSending[key] = job
+        sms.send(deviceIdHex, request).fold(
+            onSuccess = { parts -> if (job.expect(parts)) finishSms(deviceIdHex, request.requestId, job) },
+            onFailure = { error ->
+                smsSending.remove(key)
+                send(listOf(deviceIdHex), Packet.SmsSent(request.requestId, false, (error as? Sms.SmsError)?.code ?: Sms.ERROR_FAILED))
+            },
+        )
+    }
+
+    /** From [FeatureReceiver]: one part of an SMS left ([error] null) or failed. */
+    fun onSmsPartSent(deviceIdHex: String, requestId: String, error: String?) {
+        val job = smsSending[key(deviceIdHex, requestId)] ?: return
+        if (job.part(error)) scope.launch { finishSms(deviceIdHex, requestId, job) }
+    }
+
+    private suspend fun finishSms(deviceIdHex: String, requestId: String, job: SmsSending) {
+        if (smsSending.remove(key(deviceIdHex, requestId)) == null) return
+        send(listOf(deviceIdHex), Packet.SmsSent(requestId, job.error == null, job.error))
+    }
+
+    /**
+     * From [Sms], main thread. The SMS app stores the message a moment later; its thread and id
+     * are read from there, with Android's thread for [address] (and id 0) if it never shows up.
+     */
+    private fun onSmsReceived(address: String, body: String, time: Long) {
+        val receivedAt = System.currentTimeMillis()
+        scope.launch(Dispatchers.IO) {
+            var row: SmsRow? = null
+            for (attempt in 1..SMS_STORE_ATTEMPTS) {
+                delay(SMS_STORE_WAIT_MILLIS)
+                row = sms.findReceived(body, receivedAt - SMS_STORE_WINDOW_MILLIS)
+                if (row != null) break
+            }
+            if (!settings.isEnabled(Feature.SMS)) return@launch
+            val message = row?.toMessage() ?: SmsMessage(0, address, body, time, outgoing = false)
+            val thread = row?.thread ?: sms.threadOf(address) ?: return@launch
+            send(trustedIds(), Packet.SmsReceived(thread, message))
+        }
+    }
+
+    fun onKeyboardCreated(service: WeftKeyboard) {
+        keyboard = service
+    }
+
+    fun onKeyboardDestroyed(service: WeftKeyboard) {
+        if (keyboard === service) keyboard = null
+    }
+
+    // endregion
+
     // region Actions from the screens
+
+    /**
+     * Sends [packet] to [deviceIdHex] as it is: the remote control, the presenter and the
+     * computer's commands. False if the relay connection did not take it.
+     */
+    suspend fun sendTo(deviceIdHex: String, packet: Packet): Boolean = send(listOf(deviceIdHex), packet) > 0
 
     /** Asks [deviceIdHex] to ring. False if the relay connection did not take it. */
     suspend fun ring(deviceIdHex: String): Boolean = send(listOf(deviceIdHex), Packet.Ring) > 0
@@ -686,5 +795,10 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
         const val PARTIAL_DIR = "incoming"
         /** How often a sender checks its timeouts when nothing comes in. */
         const val TICK_MILLIS = 5_000L
+        /** How long a received SMS is looked for in the SMS table, once a second. */
+        const val SMS_STORE_ATTEMPTS = 5
+        const val SMS_STORE_WAIT_MILLIS = 1_000L
+        /** A received SMS is stored with the time the SMS app saw it: a little before or after ours. */
+        const val SMS_STORE_WINDOW_MILLIS = 60_000L
     }
 }

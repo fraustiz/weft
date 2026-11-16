@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.view.KeyEvent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -22,8 +23,11 @@ import androidx.lifecycle.lifecycleScope
 import fr.frohub.weft.features.CallMonitor
 import fr.frohub.weft.features.ConnectivityMonitor
 import fr.frohub.weft.features.Feature
+import fr.frohub.weft.features.Sms
+import fr.frohub.weft.features.WeftKeyboard
 import fr.frohub.weft.features.WeftNotificationListener
 import fr.frohub.weft.ui.CoreModel
+import fr.frohub.weft.ui.VolumeKeys
 import fr.frohub.weft.ui.WeftApp
 import fr.frohub.weft.ui.WeftTheme
 import kotlinx.coroutines.launch
@@ -48,6 +52,22 @@ class MainActivity : ComponentActivity() {
     }
 
     private val callAccess = mutableStateOf(true)
+
+    // SMS: read, send and receive, asked together when SMS is switched on.
+    private val smsPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        updateSmsAccess()
+    }
+
+    private val smsAccess = mutableStateOf(true)
+
+    private val contactsPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        contactsAccess.value = it
+    }
+
+    private val contactsAccess = mutableStateOf(true)
+
+    /** Whether the Weft keyboard is turned on in Android's keyboard settings. */
+    private val keyboardEnabled = mutableStateOf(true)
 
     /** Whether Weft may read notifications (Notifications and the phone's players in Media). */
     private val notificationAccess = mutableStateOf(true)
@@ -86,6 +106,9 @@ class MainActivity : ComponentActivity() {
                     onAllowPhoneAccess = if (phoneAccess.value) null else ({ phonePermission.launch(Manifest.permission.READ_PHONE_STATE) }),
                     onAllowNotificationAccess = if (notificationAccess.value) null else ::openNotificationAccess,
                     onAllowCallAccess = if (callAccess.value) null else ({ callPermissions.launch(CallMonitor.permissions().toTypedArray()) }),
+                    onAllowSmsAccess = if (smsAccess.value) null else ({ smsPermissions.launch(Sms.permissions().toTypedArray()) }),
+                    onAllowContactsAccess = if (contactsAccess.value) null else ({ contactsPermission.launch(Manifest.permission.READ_CONTACTS) }),
+                    onEnableKeyboard = if (keyboardEnabled.value) null else ::openKeyboardSettings,
                 )
             }
         }
@@ -102,7 +125,40 @@ class MainActivity : ComponentActivity() {
         phoneAccess.value = ConnectivityMonitor.hasPhonePermission(this)
         notificationAccess.value = WeftNotificationListener.isAllowed(this)
         updateCallAccess()
+        updateSmsAccess()
+        contactsAccess.value = checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+        keyboardEnabled.value = WeftKeyboard.isEnabled(this)
     }
+
+    /** Re-reads the SMS permissions; the receiver for new messages starts once they are granted. */
+    private fun updateSmsAccess() {
+        smsAccess.value = Sms.missingPermissions(this).isEmpty()
+        weft.features.refreshMonitors()
+    }
+
+    private fun openKeyboardSettings() {
+        try {
+            startActivity(Intent(WeftKeyboard.settingsAction()))
+        } catch (_: ActivityNotFoundException) {
+            startActivity(Intent(Settings.ACTION_SETTINGS))
+        }
+    }
+
+    /** While the presentation is shown, the volume keys turn the slides instead of the volume. */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        val handler = VolumeKeys.handler
+        if (handler == null || !isVolumeKey(keyCode)) return super.onKeyDown(keyCode, event)
+        // Holding the key turns one slide, not a run of them.
+        if (event.repeatCount == 0) handler(keyCode == KeyEvent.KEYCODE_VOLUME_UP)
+        return true
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (VolumeKeys.handler != null && isVolumeKey(keyCode)) return true
+        return super.onKeyUp(keyCode, event)
+    }
+
+    private fun isVolumeKey(keyCode: Int) = keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
 
     /** Re-reads the call permissions; a change restarts the call monitor so it uses them. */
     private fun updateCallAccess() {
@@ -147,7 +203,14 @@ class MainActivity : ComponentActivity() {
             Feature.CALLS -> if (CallMonitor.missingPermissions(this).isNotEmpty()) {
                 callPermissions.launch(CallMonitor.permissions().toTypedArray())
             }
-            Feature.BATTERY, Feature.VOLUME -> Unit
+            Feature.SMS -> if (Sms.missingPermissions(this).isNotEmpty()) {
+                smsPermissions.launch(Sms.permissions().toTypedArray())
+            }
+            Feature.CONTACTS -> if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+                contactsPermission.launch(Manifest.permission.READ_CONTACTS)
+            }
+            // The note under the Input switch offers the Weft keyboard; the remote control needs nothing.
+            Feature.BATTERY, Feature.VOLUME, Feature.INPUT, Feature.REMOTE, Feature.COMMANDS -> Unit
         }
     }
 

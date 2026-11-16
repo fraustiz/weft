@@ -22,14 +22,16 @@ import fr.frohub.weft.features.Packet
 /**
  * The app's screens: main, pairing, device details, settings and the notification apps. A
  * handful of screens with no deep links, so the current one is a saved string rather than a
- * navigation library: `main`, `pair`, `settings`, `apps` or `device:<id>`.
+ * navigation library: `main`, `pair`, `settings`, `apps`, `device:<id>`, and below a device
+ * `remote:<id>` and `presenter:<id>`.
  *
  * [onPaired] runs once a join succeeds, back on the main screen (the moment to ask for the
  * notification permission). [onSendFile] opens the file picker for a device; [onFeatureToggled]
  * runs after a switch changes (the moment to ask for the permission a feature needs);
  * [onAllowPhoneAccess] is non-null while the phone permission is missing,
  * [onAllowNotificationAccess] while Weft may not read notifications, [onAllowCallAccess] while
- * a call permission is missing.
+ * a call permission is missing, [onAllowSmsAccess] and [onAllowContactsAccess] while those
+ * permissions are, [onEnableKeyboard] while the Weft keyboard is off in Android's settings.
  */
 @Composable
 fun WeftApp(
@@ -43,6 +45,9 @@ fun WeftApp(
     onAllowPhoneAccess: (() -> Unit)? = null,
     onAllowNotificationAccess: (() -> Unit)? = null,
     onAllowCallAccess: (() -> Unit)? = null,
+    onAllowSmsAccess: (() -> Unit)? = null,
+    onAllowContactsAccess: (() -> Unit)? = null,
+    onEnableKeyboard: (() -> Unit)? = null,
 ) {
     var route by rememberSaveable { mutableStateOf(Route.MAIN) }
     var leaving by rememberSaveable { mutableStateOf(false) }
@@ -67,7 +72,14 @@ fun WeftApp(
 
     val goMain = { route = Route.MAIN }
     val goSettings = { route = Route.SETTINGS }
-    BackHandler(enabled = route != Route.MAIN, onBack = { if (route == Route.APPS) goSettings() else goMain() })
+    BackHandler(enabled = route != Route.MAIN, onBack = {
+        when {
+            route == Route.APPS -> goSettings()
+            route.startsWith(Route.REMOTE) -> route = Route.DEVICE + route.removePrefix(Route.REMOTE)
+            route.startsWith(Route.PRESENTER) -> route = Route.DEVICE + route.removePrefix(Route.PRESENTER)
+            else -> goMain()
+        }
+    })
     Crossfade(targetState = route, animationSpec = tween(MotionMedium), label = "route") { current ->
         when {
             current == Route.PAIR -> PairScreen(
@@ -92,6 +104,9 @@ fun WeftApp(
                 onAllowCallAccess = onAllowCallAccess,
                 excludedApps = excludedApps.size,
                 onExcludedApps = { route = Route.APPS },
+                onAllowSmsAccess = onAllowSmsAccess,
+                onAllowContactsAccess = onAllowContactsAccess,
+                onEnableKeyboard = onEnableKeyboard,
             )
             current == Route.APPS -> {
                 val apps by model.notificationApps.collectAsStateWithLifecycle()
@@ -101,6 +116,26 @@ fun WeftApp(
                     onToggle = { app, sent -> model.setAppExcluded(app, !sent) },
                     onBack = goSettings,
                 )
+            }
+            current.startsWith(Route.REMOTE) || current.startsWith(Route.PRESENTER) -> {
+                val remote = current.startsWith(Route.REMOTE)
+                val id = current.removePrefix(if (remote) Route.REMOTE else Route.PRESENTER)
+                val device = devices?.firstOrNull { it.id == id }
+                val back = { route = Route.DEVICE + id }
+                when {
+                    device == null -> LaunchedEffect(Unit) { goMain() }
+                    remote -> {
+                        val speed by model.pointerSpeed.collectAsStateWithLifecycle()
+                        RemoteScreen(
+                            title = stringResource(R.string.remote_title, device.label),
+                            speed = speed,
+                            onSpeed = model::setPointerSpeed,
+                            send = { model.send(id, it) },
+                            onBack = back,
+                        )
+                    }
+                    else -> PresenterScreen(stringResource(R.string.presenter_title, device.label), send = { model.send(id, it) }, onBack = back)
+                }
             }
             current.startsWith(Route.DEVICE) -> {
                 val id = current.removePrefix(Route.DEVICE)
@@ -117,6 +152,10 @@ fun WeftApp(
                         stopRing = if (offers(Feature.RING, Packet.RING_STOP)) ({ model.stopRing(id) }) else null,
                         ping = if (offers(Feature.PING, Packet.PING)) ({ model.ping(id) }) else null,
                         sendFile = if (onSendFile != null && offers(Feature.FILES, Packet.FILE_OFFER)) ({ onSendFile(id) }) else null,
+                        remote = if (offers(Feature.REMOTE, Packet.INPUT_POINTER)) ({ route = Route.REMOTE + id }) else null,
+                        presenter = if (offers(Feature.REMOTE, Packet.PRESENTER)) ({ route = Route.PRESENTER + id }) else null,
+                        commands = peer?.commands.orEmpty(),
+                        runCommand = if (offers(Feature.COMMANDS, Packet.COMMAND_RUN)) ({ model.send(id, Packet.CommandRun(it)) }) else null,
                     )
                     val media = DeviceMedia(
                         media = peer?.media,
@@ -175,4 +214,6 @@ private object Route {
     const val SETTINGS = "settings"
     const val APPS = "apps"
     const val DEVICE = "device:"
+    const val REMOTE = "remote:"
+    const val PRESENTER = "presenter:"
 }

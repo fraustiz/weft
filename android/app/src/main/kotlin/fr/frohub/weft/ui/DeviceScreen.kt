@@ -1,6 +1,8 @@
 package fr.frohub.weft.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.annotation.StringRes
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -18,6 +20,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
@@ -37,16 +40,21 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import fr.frohub.weft.R
 import fr.frohub.weft.core.Device
 import fr.frohub.weft.core.GroupChangeResult
+import fr.frohub.weft.features.Command
 import fr.frohub.weft.features.Packet
 import fr.frohub.weft.features.PeerInfo
 import java.text.DateFormat
@@ -63,8 +71,14 @@ class DeviceActions(
     val stopRing: (suspend () -> Boolean)? = null,
     val ping: (suspend () -> Boolean)? = null,
     val sendFile: (() -> Unit)? = null,
+    val remote: (() -> Unit)? = null,
+    val presenter: (() -> Unit)? = null,
+    val commands: List<Command> = emptyList(),
+    val runCommand: (suspend (String) -> Boolean)? = null,
 ) {
     val isEmpty: Boolean get() = ring == null && ping == null && sendFile == null
+    val showsControl: Boolean get() = remote != null || presenter != null
+    val showsCommands: Boolean get() = runCommand != null && commands.isNotEmpty()
 }
 
 /**
@@ -130,6 +144,16 @@ fun DeviceScreen(
             if (!actions.isEmpty) {
                 Spacer(Modifier.height(24.dp))
                 Actions(actions, snackbar)
+            }
+            if (actions.showsControl) {
+                Spacer(Modifier.height(16.dp))
+                actions.remote?.let { NavigationRow(R.string.device_remote, R.string.device_remote_body, REMOTE_ROW, it) }
+                actions.presenter?.let { NavigationRow(R.string.device_presenter, R.string.device_presenter_body, PRESENTER_ROW, it) }
+            }
+            val runCommand = actions.runCommand
+            if (actions.showsCommands && runCommand != null) {
+                Spacer(Modifier.height(24.dp))
+                Commands(actions.commands, runCommand, snackbar)
             }
             Column(Modifier.padding(horizontal = 16.dp)) {
                 Spacer(Modifier.height(32.dp))
@@ -244,6 +268,57 @@ private fun Actions(actions: DeviceActions, snackbar: SnackbarHostState) {
         actions.sendFile?.let { sendFile ->
             FilledTonalButton(onClick = sendFile, modifier = Modifier.testTag(SEND_FILE_BUTTON)) {
                 Text(stringResource(R.string.action_send_file))
+            }
+        }
+    }
+}
+
+/** A screen of its own for this device: the remote control or the presentation. */
+@Composable
+private fun NavigationRow(@StringRes title: Int, @StringRes body: Int, tag: String, onClick: () -> Unit) {
+    ListItem(
+        headlineContent = { Text(stringResource(title)) },
+        supportingContent = { Text(stringResource(body)) },
+        trailingContent = {
+            Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        },
+        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
+        modifier = Modifier
+            .heightIn(min = 72.dp)
+            .clickable(onClick = onClick)
+            .testTag(tag),
+    )
+}
+
+/** The commands set up on the computer, one button each; the snackbar says it left. */
+@Composable
+private fun Commands(commands: List<Command>, run: suspend (String) -> Boolean, snackbar: SnackbarHostState) {
+    val scope = rememberCoroutineScope()
+    val notSent = stringResource(R.string.action_not_sent)
+    val resources = LocalResources.current
+    Column(Modifier.padding(horizontal = 16.dp)) {
+        Text(
+            stringResource(R.string.device_commands),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.semantics { heading() },
+        )
+        Spacer(Modifier.height(8.dp))
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            for (command in commands) {
+                FilledTonalButton(
+                    onClick = {
+                        scope.launch {
+                            snackbar.showSnackbar(if (run(command.id)) resources.getString(R.string.command_sent, command.name) else notSent)
+                        }
+                    },
+                    modifier = Modifier.testTag(COMMAND_BUTTON_PREFIX + command.id),
+                ) {
+                    Text(command.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
         }
     }
@@ -377,6 +452,9 @@ const val CONFIRM_BUTTON = "confirm_button"
 const val RING_BUTTON = "ring_button"
 const val PING_BUTTON = "ping_button"
 const val SEND_FILE_BUTTON = "send_file_button"
+const val REMOTE_ROW = "remote_row"
+const val PRESENTER_ROW = "presenter_row"
+const val COMMAND_BUTTON_PREFIX = "command_"
 
 /** How long the Ring button reads "Stop ringing": as long as a ring lasts. */
 private const val RING_SHOWN_MILLIS = 60_000L
@@ -390,7 +468,10 @@ private fun DevicePreview() {
             { GroupChangeResult.Done },
             {},
             PeerInfo(battery = Packet.Battery(72, charging = true, low = false), connectivity = Packet.Connectivity("wifi", 3)),
-            DeviceActions(ring = { true }, stopRing = { true }, ping = { true }, sendFile = {}),
+            DeviceActions(
+                ring = { true }, stopRing = { true }, ping = { true }, sendFile = {}, remote = {}, presenter = {},
+                commands = listOf(Command("lock", "Lock screen"), Command("backup", "Back up photos")), runCommand = { true },
+            ),
             DeviceMedia(
                 media = Packet.Media(
                     listOf(

@@ -19,6 +19,13 @@
     <!-- Calls: the caller's number (Android 10+) and name. Asked only when Calls is switched on. -->
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!--
+        SMS for the computers: threads and messages, sending, and new messages while Weft runs.
+        Asked only when SMS is switched on. Contacts (above) also gives the threads their names.
+    -->
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <!-- Ring: the "Found it" notice over the lock screen (Android 14+ lets the user refuse it). -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <!-- Received files go to the public Downloads folder; from Android 10 MediaStore needs none. -->
@@ -158,6 +165,23 @@
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
+        </service>
+
+        <!--
+            The Weft keyboard: types what a computer sends. Bound by Android only once the user
+            turns it on and picks it as the keyboard.
+        -->
+        <service
+            android:name=".features.WeftKeyboard"
+            android:exported="true"
+            android:label="@string/keyboard_label"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/method" />
         </service>
 
         <!--

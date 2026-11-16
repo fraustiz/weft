@@ -8,7 +8,8 @@ import fr.frohub.weft.weft
 
 /**
  * Notification actions that need no screen: "Found it" (and dismissing the ring notice) and
- * cancelling a transfer. Not exported: only this app's pending intents reach it.
+ * cancelling a transfer; and the result of each SMS part sent for a computer. Not exported:
+ * only this app's pending intents reach it.
  */
 class FeatureReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -20,6 +21,11 @@ class FeatureReceiver : BroadcastReceiver() {
                 val id = intent.getStringExtra(EXTRA_TRANSFER) ?: return
                 features.cancelTransfer(device, id)
             }
+            ACTION_SMS_SENT -> {
+                val device = intent.getStringExtra(EXTRA_DEVICE) ?: return
+                val request = intent.getStringExtra(EXTRA_REQUEST) ?: return
+                features.onSmsPartSent(device, request, Sms.errorOf(resultCode))
+            }
         }
     }
 
@@ -28,6 +34,8 @@ class FeatureReceiver : BroadcastReceiver() {
         private const val ACTION_CANCEL_TRANSFER = "fr.frohub.weft.action.CANCEL_TRANSFER"
         private const val EXTRA_DEVICE = "device"
         private const val EXTRA_TRANSFER = "transfer"
+        private const val ACTION_SMS_SENT = "fr.frohub.weft.action.SMS_SENT"
+        private const val EXTRA_REQUEST = "request"
 
         fun stopRing(context: Context): PendingIntent = PendingIntent.getBroadcast(
             context,
@@ -45,6 +53,19 @@ class FeatureReceiver : BroadcastReceiver() {
                 .setData(android.net.Uri.fromParts("weft", transferId, null))
                 .putExtra(EXTRA_DEVICE, deviceIdHex)
                 .putExtra(EXTRA_TRANSFER, transferId),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
+        /** One part of an SMS sent for [deviceIdHex]; [requestCode] tells the parts apart. */
+        fun smsSent(context: Context, requestCode: Int, deviceIdHex: String, requestId: String): PendingIntent = PendingIntent.getBroadcast(
+            context,
+            requestCode,
+            Intent(context, FeatureReceiver::class.java)
+                .setAction(ACTION_SMS_SENT)
+                .setData(android.net.Uri.fromParts("weft-sms", requestCode.toString(), null))
+                .putExtra(EXTRA_DEVICE, deviceIdHex)
+                .putExtra(EXTRA_REQUEST, requestId),
+            // The result code reaches the receiver even though nothing may be filled in.
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
     }

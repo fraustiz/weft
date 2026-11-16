@@ -1,10 +1,11 @@
 package fr.frohub.weft.features
 
 /**
- * The features of docs/features.md (sections 3 to 6 and 9), each with the packet types it
- * receives and sends. [key] is how its switch is saved. The settings list them in this order.
+ * The features of docs/features.md (sections 3 to 9), each with the packet types it receives and
+ * sends. [key] is how its switch is saved, [defaultOn] its state until the user changes it. The
+ * settings list them in this order.
  */
-enum class Feature(val key: String, val incoming: Set<String>, val outgoing: Set<String>) {
+enum class Feature(val key: String, val incoming: Set<String>, val outgoing: Set<String>, val defaultOn: Boolean = true) {
     // The phone shows the other side's battery too, if it sends one.
     BATTERY("battery", setOf(Packet.BATTERY), setOf(Packet.BATTERY)),
     CONNECTIVITY("connectivity", setOf(Packet.CONNECTIVITY), setOf(Packet.CONNECTIVITY)),
@@ -21,6 +22,21 @@ enum class Feature(val key: String, val incoming: Set<String>, val outgoing: Set
     // Both ways: the phone's players for the computers, and the computers' players on the device screen.
     MEDIA("media", setOf(Packet.MEDIA, Packet.MEDIA_COMMAND), setOf(Packet.MEDIA, Packet.MEDIA_COMMAND)),
     VOLUME("volume", setOf(Packet.VOLUME, Packet.VOLUME_SET), setOf(Packet.VOLUME, Packet.VOLUME_SET)),
+    SMS(
+        "sms",
+        setOf(Packet.SMS_CONVERSATIONS_REQUEST, Packet.SMS_MESSAGES_REQUEST, Packet.SMS_SEND),
+        setOf(Packet.SMS_CONVERSATIONS, Packet.SMS_MESSAGES, Packet.SMS_SENT, Packet.SMS_RECEIVED),
+        defaultOn = false,
+    ),
+    CONTACTS("contacts", setOf(Packet.CONTACTS_REQUEST), setOf(Packet.CONTACTS), defaultOn = false),
+    // Computers typing on this phone, only through the Weft keyboard. Before REMOTE: [of] gives
+    // `input.key` to this switch, so the keyboard stays off until the user turns it on.
+    INPUT("input", setOf(Packet.INPUT_KEY), emptySet(), defaultOn = false),
+    // Remote control and presenter towards the computers. On by default: a computer accepts them
+    // only once its user allowed this phone to control it.
+    REMOTE("remote", emptySet(), setOf(Packet.INPUT_POINTER, Packet.INPUT_CLICK, Packet.INPUT_KEY, Packet.PRESENTER)),
+    // Commands live on the computer: the phone only shows its list and asks it to run one.
+    COMMANDS("commands", setOf(Packet.COMMAND_LIST), setOf(Packet.COMMAND_RUN)),
     ;
 
     companion object {
@@ -59,6 +75,7 @@ data class PeerInfo(
     val media: Packet.Media? = null,
     val mediaAt: Long = 0,
     val volume: Packet.Volume? = null,
+    val commands: List<Command>? = null,
 ) {
     /** True if the other side says it acts on [type]. */
     fun handles(type: String): Boolean = capabilities?.incoming?.contains(type) == true

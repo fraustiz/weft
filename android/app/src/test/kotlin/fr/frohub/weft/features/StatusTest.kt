@@ -30,7 +30,7 @@ class StatusTest {
         assertEquals(Feature.NOTIFICATIONS, Feature.of(Packet.NOTIFICATION_REPLY))
         assertEquals(Feature.CALLS, Feature.of(Packet.CALL_MUTE))
         assertEquals(Feature.VOLUME, Feature.of(Packet.VOLUME_SET))
-        assertNull(Feature.of("sms.send"))
+        assertNull(Feature.of("sftp.list"))
     }
 
     @Test

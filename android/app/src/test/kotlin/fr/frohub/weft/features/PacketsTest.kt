@@ -37,7 +37,7 @@ class PacketsTest {
 
     @Test
     fun ignoresUnknownTypesAndMembers() {
-        assertNull(decode("""{"type":"sms.send","addresses":[]}"""))
+        assertNull(decode("""{"type":"sftp.list","path":"/"}"""))
         assertEquals(Packet.Ring, decode("""{"type":"ring","volume":11,"extra":{"a":[1,2]}}"""))
         // Non-string items of a list are skipped, not fatal.
         assertEquals(
