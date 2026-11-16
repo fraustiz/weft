@@ -55,6 +55,8 @@ Header layout:
 | `0x04` | Device added (section 5) | `sign_pk (32) || kx_pk (32)` |
 | `0x05` | Device removed (section 5) | `device_id (16)` |
 | `0x06` | Device name (section 5) | the sender's own name, UTF-8, 1 to 64 bytes, without control characters (U+0000–U+001F, U+007F–U+009F) |
+| `0x07` | Packet ([`features.md`](features.md), section 1) | a UTF-8 JSON object, 1 byte to 256 KiB |
+| `0x08` | File chunk ([`features.md`](features.md), section 1) | `transfer_id (16) \|\| offset (u64) \|\| data (1 to 131072 bytes)` |
 
 Other values are reserved. A recipient drops a message with an unknown `version` or `kind`.
 
@@ -76,6 +78,7 @@ Transport: WebSocket over TLS. Each binary WebSocket frame carries one message.
 After `0xA2`, the first byte of every frame tells what it is: `0x01` is an envelope (section 3), `0xB0`–`0xBF` are control frames (section 5). The relay drops anything else.
 
 For envelopes, the relay:
+- reads only the `version` (must be `0x01`), the length (at least header, nonce and tag; at most `58 + 24 + 256 KiB + 16` bytes), and the `sender` and `recipient` fields. It does **not** check `kind`, so kinds added later need no relay update;
 - checks that the `sender` field equals the authenticated device id, and drops the frame otherwise;
 - forwards the frame unchanged only if `sender` and `recipient` are in the **same group** (section 5) and the recipient is connected;
 - never decrypts anything.
@@ -134,6 +137,7 @@ Offline delivery comes in a later revision of this document.
 - a pairing code, a pairing request MAC and the control frames;
 - a third device C and the three group envelopes (welcome, device added, device removed), in the `pairing` section.
 - a Device name envelope from B to A, in the `device_name` section.
+- a Packet envelope from A to B and a File chunk envelope from B to A, in the `features` section.
 
 Keys are derived from fixed seeds:
 - signing pair: `crypto_sign_seed_keypair` (32-byte seed) ;

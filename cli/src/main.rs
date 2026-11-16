@@ -52,7 +52,7 @@ enum Command {
         /// The WEFT1: code.
         code: String,
     },
-    /// Print received clipboard text as JSON lines.
+    /// Print received clipboard text and packets as JSON lines.
     Listen {
         /// Also put received text on the system clipboard (macOS only).
         #[arg(long)]
@@ -227,6 +227,15 @@ async fn listen(dir: StateDir, copy: bool) -> Result<()> {
                 copy_to_clipboard(text);
             }
         }
+        Event::Packet { from, json } => match serde_json::from_str::<serde_json::Value>(json) {
+            Ok(packet) if packet.is_object() => {
+                let line = serde_json::json!({ "from": hex(from), "packet": packet });
+                let mut out = std::io::stdout().lock();
+                let _ = writeln!(out, "{line}");
+                let _ = out.flush();
+            }
+            _ => tracing::warn!(from = %short_id(from), "dropped a packet: not a JSON object"),
+        },
         event => log_event(event),
     };
     let shutdown = async {
@@ -246,6 +255,14 @@ fn log_event(event: &Event) {
             tracing::info!(device = %short_id(from), %name, "device name received")
         }
         Event::Ping { from } => tracing::debug!(from = %short_id(from), "ping"),
+        Event::Packet { from, .. } => {
+            tracing::debug!(from = %short_id(from), "packet received (not shown)")
+        }
+        Event::FileChunk {
+            from, offset, data, ..
+        } => {
+            tracing::debug!(from = %short_id(from), offset, len = data.len(), "file chunk ignored")
+        }
         Event::Welcome { from, added } => {
             tracing::info!(from = %short_id(from), added = added.len(), "welcome received")
         }

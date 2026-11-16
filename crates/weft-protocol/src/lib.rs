@@ -3,7 +3,8 @@
 //! Implements `docs/protocol.md`: device identities, session keys between two
 //! devices, the encrypted message envelope, the relay authentication
 //! frames, groups and pairing (pairing code, control frames, group change
-//! plaintexts) and device names. All cryptography goes through libsodium so the output
+//! plaintexts), device names, and the packet and file chunk envelopes of
+//! `docs/features.md`. All cryptography goes through libsodium so the output
 //! is byte-identical with the Kotlin (lazysodium) and Swift (swift-sodium)
 //! clients.
 
@@ -39,6 +40,14 @@ pub const PEER_KEYS_LEN: usize = sodium::SIGN_PK_BYTES + sodium::KX_PK_BYTES;
 pub const DEVICE_ID_LEN: usize = 16;
 /// Largest device name, in bytes of UTF-8.
 pub const MAX_DEVICE_NAME_LEN: usize = 64;
+/// Largest packet plaintext (a JSON object), in bytes (256 KiB).
+pub const MAX_PACKET_LEN: usize = 256 * 1024;
+/// Size of a file transfer id.
+pub const TRANSFER_ID_LEN: usize = 16;
+/// Largest data in one file chunk, in bytes (128 KiB).
+pub const MAX_FILE_CHUNK_DATA_LEN: usize = 128 * 1024;
+/// `transfer_id (16) || offset (8)`, before the data of a file chunk.
+const FILE_CHUNK_PREFIX_LEN: usize = TRANSFER_ID_LEN + 8;
 
 /// First byte of the relay challenge frame.
 pub const AUTH_CHALLENGE: u8 = 0xA0;
@@ -209,6 +218,11 @@ pub enum Kind {
     DeviceRemoved = 0x05,
     /// The sender's own name; see [`encode_device_name`].
     DeviceName = 0x06,
+    /// A UTF-8 JSON object, 1 to [`MAX_PACKET_LEN`] bytes. Only the length
+    /// and the UTF-8 are checked here; the JSON is the client's business.
+    Packet = 0x07,
+    /// A piece of a file transfer; see [`encode_file_chunk`].
+    FileChunk = 0x08,
 }
 
 impl Kind {
@@ -220,6 +234,8 @@ impl Kind {
             0x04 => Ok(Kind::DeviceAdded),
             0x05 => Ok(Kind::DeviceRemoved),
             0x06 => Ok(Kind::DeviceName),
+            0x07 => Ok(Kind::Packet),
+            0x08 => Ok(Kind::FileChunk),
             other => Err(Error::UnknownKind(other)),
         }
     }
@@ -233,6 +249,8 @@ impl Kind {
             Kind::DeviceAdded => PEER_KEYS_LEN,
             Kind::DeviceRemoved => DEVICE_ID_LEN,
             Kind::DeviceName => MAX_DEVICE_NAME_LEN,
+            Kind::Packet => MAX_PACKET_LEN,
+            Kind::FileChunk => FILE_CHUNK_PREFIX_LEN + MAX_FILE_CHUNK_DATA_LEN,
         }
     }
 
@@ -253,6 +271,8 @@ impl Kind {
             Kind::Welcome => len % PEER_KEYS_LEN == 1,
             Kind::DeviceAdded => len == PEER_KEYS_LEN,
             Kind::DeviceRemoved => len == DEVICE_ID_LEN,
+            Kind::Packet => len >= 1,
+            Kind::FileChunk => len > FILE_CHUNK_PREFIX_LEN,
             Kind::DeviceName => unreachable!("checked above"),
         };
         if !valid {
@@ -264,7 +284,7 @@ impl Kind {
     fn check_plaintext(self, plaintext: &[u8]) -> Result<(), Error> {
         self.check_plaintext_len(plaintext.len())?;
         match self {
-            Kind::ClipboardText => {
+            Kind::ClipboardText | Kind::Packet => {
                 std::str::from_utf8(plaintext).map_err(|_| Error::InvalidUtf8)?;
             }
             Kind::Welcome => {
@@ -274,7 +294,7 @@ impl Kind {
                 decode_device_name(plaintext)?;
             }
             // Fully checked by their length.
-            Kind::Ping | Kind::DeviceAdded | Kind::DeviceRemoved => {}
+            Kind::Ping | Kind::DeviceAdded | Kind::DeviceRemoved | Kind::FileChunk => {}
         }
         Ok(())
     }
@@ -399,6 +419,45 @@ fn check_device_name(name: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// A decoded file chunk plaintext (kind `0x08`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileChunk {
+    pub transfer_id: [u8; TRANSFER_ID_LEN],
+    /// Position of `data` in the file, in bytes.
+    pub offset: u64,
+    /// 1 to [`MAX_FILE_CHUNK_DATA_LEN`] bytes.
+    pub data: Vec<u8>,
+}
+
+/// File chunk plaintext (kind `0x08`):
+/// `transfer_id (16) || offset (u64, big-endian) || data`, with 1 to
+/// [`MAX_FILE_CHUNK_DATA_LEN`] bytes of data.
+pub fn encode_file_chunk(
+    transfer_id: &[u8; TRANSFER_ID_LEN],
+    offset: u64,
+    data: &[u8],
+) -> Result<Vec<u8>, Error> {
+    let len = FILE_CHUNK_PREFIX_LEN + data.len();
+    Kind::FileChunk.check_plaintext_len(len)?;
+    let mut out = Vec::with_capacity(len);
+    out.extend_from_slice(transfer_id);
+    out.extend_from_slice(&offset.to_be_bytes());
+    out.extend_from_slice(data);
+    Ok(out)
+}
+
+/// Parses a file chunk plaintext, with the same rules as
+/// [`encode_file_chunk`].
+pub fn decode_file_chunk(plaintext: &[u8]) -> Result<FileChunk, Error> {
+    Kind::FileChunk.check_plaintext_len(plaintext.len())?;
+    let (prefix, data) = plaintext.split_at(FILE_CHUNK_PREFIX_LEN);
+    Ok(FileChunk {
+        transfer_id: prefix[..TRANSFER_ID_LEN].try_into().unwrap(),
+        offset: u64::from_be_bytes(prefix[TRANSFER_ID_LEN..].try_into().unwrap()),
+        data: data.to_vec(),
+    })
+}
+
 /// A random `message_id` for an envelope header.
 pub fn random_message_id() -> [u8; 16] {
     let mut id = [0u8; 16];
@@ -444,6 +503,34 @@ impl Header {
             recipient: bytes[18..34].try_into().unwrap(),
             message_id: bytes[34..50].try_into().unwrap(),
             counter: u64::from_be_bytes(bytes[50..58].try_into().unwrap()),
+        })
+    }
+}
+
+/// The header fields the relay routes an envelope on. Unlike
+/// [`Header::decode`], [`RouteHeader::decode`] does not check `kind`, so
+/// kinds added later need no relay update (`docs/features.md`, section 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RouteHeader {
+    pub kind: u8,
+    pub sender: [u8; 16],
+    pub recipient: [u8; 16],
+}
+
+impl RouteHeader {
+    /// Reads the header of a whole envelope frame. Checks the version and
+    /// that the frame holds at least a header, a nonce and a tag.
+    pub fn decode(frame: &[u8]) -> Result<RouteHeader, Error> {
+        if frame.len() < HEADER_LEN + NONCE_LEN + TAG_LEN {
+            return Err(Error::FrameTooShort(frame.len()));
+        }
+        if frame[0] != VERSION {
+            return Err(Error::UnsupportedVersion(frame[0]));
+        }
+        Ok(RouteHeader {
+            kind: frame[1],
+            sender: frame[2..18].try_into().unwrap(),
+            recipient: frame[18..34].try_into().unwrap(),
         })
     }
 }

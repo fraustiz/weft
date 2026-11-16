@@ -6,12 +6,15 @@ use std::time::Duration;
 
 use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
-use weft_protocol::{AuthResponse, Challenge, ControlError, ControlFrame, Identity, sign_auth};
+use weft_protocol::{
+    AuthResponse, Challenge, ControlError, ControlFrame, Identity, Kind, MAX_FILE_CHUNK_DATA_LEN,
+    MAX_PACKET_LEN, encode_file_chunk, sign_auth,
+};
 use weft_relay::{MAX_ENVELOPE_LEN, MIN_ENVELOPE_LEN};
 
 use common::{
-    Device, Event, assert_closed, clipboard, connect, connect_authenticated, next_event, open_from,
-    pair, seeded_identity, send, start_relay,
+    Device, Event, assert_closed, clipboard, connect, connect_authenticated, envelope, next_event,
+    open_from, pair, seeded_identity, send, start_relay,
 };
 
 #[tokio::test]
@@ -29,6 +32,49 @@ async fn forwards_envelope_unchanged() {
     let (header, plaintext) = open_from(&b.identity, &a.identity, &received);
     assert_eq!(header.sender, a.id());
     assert_eq!(plaintext, b"hello from A");
+}
+
+#[tokio::test]
+async fn forwards_envelope_of_unknown_kind() {
+    let url = start_relay().await;
+    let mut a = Device::connect(&url).await;
+    let mut b = Device::connect(&url).await;
+    pair(&mut a, &mut b).await;
+
+    // The relay routes on the header without checking the kind, so kinds
+    // added later need no relay update.
+    let mut frame = clipboard(&a.identity, &b.identity, "from the future", 1);
+    frame[1] = 0x7F;
+    a.send(frame.clone()).await;
+    assert_eq!(b.recv().await, frame);
+}
+
+#[tokio::test]
+async fn forwards_largest_packet_and_file_chunk() {
+    let url = start_relay().await;
+    let mut a = Device::connect(&url).await;
+    let mut b = Device::connect(&url).await;
+    pair(&mut a, &mut b).await;
+
+    let packet = vec![b'a'; MAX_PACKET_LEN];
+    let chunk = encode_file_chunk(&[9; 16], 0, &vec![0xab; MAX_FILE_CHUNK_DATA_LEN]).unwrap();
+    for (counter, (kind, plaintext)) in [(Kind::Packet, packet), (Kind::FileChunk, chunk)]
+        .into_iter()
+        .enumerate()
+    {
+        let frame = envelope(
+            &a.identity,
+            &b.identity,
+            kind,
+            &plaintext,
+            counter as u64 + 1,
+        );
+        assert!(frame.len() <= MAX_ENVELOPE_LEN);
+        a.send(frame.clone()).await;
+        let received = b.recv().await;
+        assert_eq!(received, frame);
+        assert_eq!(open_from(&b.identity, &a.identity, &received).1, plaintext);
+    }
 }
 
 #[tokio::test]

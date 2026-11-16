@@ -563,6 +563,8 @@ class WeftCore internal constructor(
             }
             // Only for a trusted sender (checked above); it never changes trust.
             Kind.DEVICE_NAME -> next.withDeviceName(senderHex, decodeDeviceName(plaintext)) to Received.Changed("device name")
+            // Packets and file chunks (docs/features.md) are not handled by this app yet.
+            Kind.PACKET, Kind.FILE_CHUNK -> next to Received.Dropped("${header.kind} not handled yet")
         }
     }
 

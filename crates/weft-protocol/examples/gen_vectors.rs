@@ -89,13 +89,34 @@
 //!                         message_id = 91 92 … a0, counter = 2 (after the
 //!                         ping, which took counter 1 from B to A),
 //!                         nonce = 61 62 … 78, key = `session.b.tx`
+//!
+//! `features` (the two envelope kinds of `docs/features.md`, section 1):
+//!   packet        a Packet from A to B:
+//!     json          the JSON object, as a string (the plaintext in UTF-8)
+//!     max_len       largest packet in bytes (262144)
+//!     envelope      same fields as the top-level `envelopes[]`:
+//!       packet_a_to_b  kind 7, message_id = 11 12 … 20, counter = 4 (after
+//!                      the clipboard text, the welcome and the device
+//!                      removed, counters 1 to 3 from A to B),
+//!                      nonce = c1 c2 … d8, key = `session.a.tx`
+//!   file_chunk    a File chunk from B to A:
+//!     transfer_id   16-byte transfer id
+//!     offset        u64 offset of the data in the file
+//!     data          the chunk data
+//!     max_data_len  largest chunk data in bytes (131072)
+//!     envelope      same fields as the top-level `envelopes[]`, without
+//!                   plaintext_utf8:
+//!       file_chunk_b_to_a  kind 8, plaintext = transfer_id || offset (u64,
+//!                          big-endian) || data, message_id = 31 32 … 40,
+//!                          counter = 3 (after the ping and the device name),
+//!                          nonce = e1 e2 … f8, key = `session.b.tx`
 
 use serde_json::{Value, json};
 use weft_protocol::{
     AUTH_ACCEPTED, Challenge, ControlError, ControlFrame, Header, Identity, Kind,
-    MAX_DEVICE_NAME_LEN, PairRequest, PairingCode, PeerKeys, SessionKeys, VERSION,
-    encode_device_added, encode_device_name, encode_device_removed, encode_welcome,
-    seal_with_nonce, session_keys, sign_auth,
+    MAX_DEVICE_NAME_LEN, MAX_FILE_CHUNK_DATA_LEN, MAX_PACKET_LEN, PairRequest, PairingCode,
+    PeerKeys, SessionKeys, VERSION, encode_device_added, encode_device_name, encode_device_removed,
+    encode_file_chunk, encode_welcome, seal_with_nonce, session_keys, sign_auth,
 };
 
 /// `N` consecutive bytes starting at `start`, e.g. `seq::<4>(0x10)` = 10 11 12 13.
@@ -300,6 +321,56 @@ fn device_name_json(a: &Identity, b: &Identity, b_a_keys: &SessionKeys) -> Value
     })
 }
 
+/// The `features` section: a Packet from A to B and a File chunk from B to A.
+fn features_json(
+    a: &Identity,
+    b: &Identity,
+    a_b_keys: &SessionKeys,
+    b_a_keys: &SessionKeys,
+) -> Value {
+    let json = r#"{"type":"battery","level":42,"charging":true,"low":false}"#;
+    let packet = envelope_json(Envelope {
+        name: "packet_a_to_b",
+        sender: ("a", a, a_b_keys),
+        recipient: ("b", b),
+        kind: Kind::Packet,
+        message_id: seq::<16>(0x11),
+        counter: 4,
+        nonce: seq::<24>(0xc1),
+        plaintext: Plaintext::Text(json),
+    });
+
+    let transfer_id = seq::<16>(0xf0);
+    let offset = 3 * MAX_FILE_CHUNK_DATA_LEN as u64;
+    let data = b"weft file chunk \x00\x01\xfe\xff";
+    let plaintext = encode_file_chunk(&transfer_id, offset, data).expect("valid file chunk");
+    let file_chunk = envelope_json(Envelope {
+        name: "file_chunk_b_to_a",
+        sender: ("b", b, b_a_keys),
+        recipient: ("a", a),
+        kind: Kind::FileChunk,
+        message_id: seq::<16>(0x31),
+        counter: 3,
+        nonce: seq::<24>(0xe1),
+        plaintext: Plaintext::Bytes(&plaintext),
+    });
+
+    json!({
+        "packet": {
+            "json": json,
+            "max_len": MAX_PACKET_LEN,
+            "envelope": packet,
+        },
+        "file_chunk": {
+            "transfer_id": hex(&transfer_id),
+            "offset": offset,
+            "data": hex(data),
+            "max_data_len": MAX_FILE_CHUNK_DATA_LEN,
+            "envelope": file_chunk,
+        },
+    })
+}
+
 /// Builds the full vectors document, ending with a newline.
 pub fn vectors_json() -> String {
     let (a_sign_seed, a_kx_seed) = (seq::<32>(0x00), seq::<32>(0x20));
@@ -366,6 +437,7 @@ pub fn vectors_json() -> String {
         },
         "pairing": pairing_json(&a, &b, &a_keys),
         "device_name": device_name_json(&a, &b, &b_keys),
+        "features": features_json(&a, &b, &a_keys, &b_keys),
     });
     let mut out = serde_json::to_string_pretty(&doc).expect("serialize vectors");
     out.push('\n');

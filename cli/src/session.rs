@@ -20,11 +20,12 @@ use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 use weft_protocol::{
     AUTH_ACCEPTED, Challenge, ControlError, ControlFrame, FrameType, HEADER_LEN, Header, Identity,
-    Kind, MAX_CLIPBOARD_TEXT_LEN, MAX_GROUP_SIZE, MAX_RELAY_URL_LEN, PairRequest, PairingCode,
-    PeerKeys, VERSION, check_relay_name, classify, decode_device_added, decode_device_name,
-    decode_device_removed, decode_welcome, device_id_from_sign_pk, encode_device_added,
-    encode_device_name, encode_device_removed, encode_welcome, open, random_message_id,
-    random_pairing_id, random_pairing_secret, seal, session_keys, sign_auth, verify_pair_request,
+    Kind, MAX_CLIPBOARD_TEXT_LEN, MAX_GROUP_SIZE, MAX_PACKET_LEN, MAX_RELAY_URL_LEN, PairRequest,
+    PairingCode, PeerKeys, VERSION, check_relay_name, classify, decode_device_added,
+    decode_device_name, decode_device_removed, decode_file_chunk, decode_welcome,
+    device_id_from_sign_pk, encode_device_added, encode_device_name, encode_device_removed,
+    encode_file_chunk, encode_welcome, open, random_message_id, random_pairing_id,
+    random_pairing_secret, seal, session_keys, sign_auth, verify_pair_request,
 };
 
 use crate::state::{ReplayError, State, StateDir, TrustedDevice};
@@ -132,6 +133,16 @@ pub enum Event {
     DeviceRemoved { by: [u8; 16], device: [u8; 16] },
     /// A trusted device announced its name, now saved as its name.
     DeviceName { from: [u8; 16], name: String },
+    /// A packet from a trusted device (`docs/features.md`): UTF-8 text the
+    /// sender meant as a JSON object, not parsed here.
+    Packet { from: [u8; 16], json: String },
+    /// A file chunk from a trusted device (`docs/features.md`, section 4).
+    FileChunk {
+        from: [u8; 16],
+        transfer_id: [u8; 16],
+        offset: u64,
+        data: Vec<u8>,
+    },
     /// An error frame from the relay.
     RelayError(ControlError),
     /// A frame that was dropped, and why.
@@ -370,6 +381,53 @@ impl Session {
         }
         self.settle().await?;
         Ok(devices.len())
+    }
+
+    /// The trusted device `device_id`, or [`Error::UnknownDevice`].
+    fn trusted_device(&self, device_id: &[u8; 16]) -> Result<TrustedDevice> {
+        self.state
+            .device(device_id)
+            .cloned()
+            .ok_or_else(|| Error::UnknownDevice(crate::hex(device_id)))
+    }
+
+    /// Sends a packet (`json`, meant to be a JSON object, 1 to 256 KiB) to
+    /// the trusted device `to`. Does not wait for the relay: call
+    /// [`Session::settle`] for that. Fails if `to` is not trusted.
+    pub async fn send_packet(&mut self, to: [u8; 16], json: &str) -> Result<()> {
+        check_packet_len(json)?;
+        let device = self.trusted_device(&to)?;
+        self.send_envelope(&device, Kind::Packet, json.as_bytes())
+            .await
+    }
+
+    /// Sends a packet to every trusted device. Returns how many devices it
+    /// was sent to. Does not wait for the relay.
+    pub async fn send_packet_all(&mut self, json: &str) -> Result<usize> {
+        check_packet_len(json)?;
+        self.state = self.dir.load()?;
+        let devices = self.state.devices.clone();
+        for device in &devices {
+            self.send_envelope(device, Kind::Packet, json.as_bytes())
+                .await?;
+        }
+        Ok(devices.len())
+    }
+
+    /// Sends one file chunk (1 to 128 KiB of `data` at `offset` of the
+    /// transfer `transfer_id`) to the trusted device `to`. Does not wait
+    /// for the relay. Fails if `to` is not trusted.
+    pub async fn send_file_chunk(
+        &mut self,
+        to: [u8; 16],
+        transfer_id: [u8; 16],
+        offset: u64,
+        data: &[u8],
+    ) -> Result<()> {
+        let plaintext = encode_file_chunk(&transfer_id, offset, data)?;
+        let device = self.trusted_device(&to)?;
+        self.send_envelope(&device, Kind::FileChunk, &plaintext)
+            .await
     }
 
     /// Sends this device's name (Device name envelope) to each of `devices`
@@ -820,6 +878,16 @@ impl Session {
     }
 }
 
+/// Checks a packet's length before a counter is spent on it, with the
+/// errors `seal` would give.
+fn check_packet_len(json: &str) -> Result<()> {
+    match json.len() {
+        0 => Err(weft_protocol::Error::InvalidPlaintextLength(0).into()),
+        len if len > MAX_PACKET_LEN => Err(weft_protocol::Error::PlaintextTooLarge(len).into()),
+        _ => Ok(()),
+    }
+}
+
 /// Applies an authenticated envelope to the state and describes it.
 fn apply(
     state: &mut State,
@@ -880,6 +948,21 @@ fn apply(
             // `handle_envelope` only gets here for a trusted sender.
             state.set_device_name(&sender, name.clone());
             Event::DeviceName { from: sender, name }
+        }
+        Kind::Packet => match String::from_utf8(plaintext) {
+            Ok(json) => Event::Packet { from: sender, json },
+            Err(_) => malformed,
+        },
+        Kind::FileChunk => {
+            let Ok(chunk) = decode_file_chunk(&plaintext) else {
+                return malformed;
+            };
+            Event::FileChunk {
+                from: sender,
+                transfer_id: chunk.transfer_id,
+                offset: chunk.offset,
+                data: chunk.data,
+            }
         }
     }
 }

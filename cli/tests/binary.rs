@@ -172,6 +172,26 @@ async fn pair_listen_and_send_with_the_binary() {
             serde_json::from_str(&next_line(&mut listen_out).await).unwrap();
         assert_eq!(json["text"], "two\nlines");
 
+        // Packets (sent here through the library, as A) are printed as one
+        // line each; one that is not a JSON object is not printed.
+        let mut session = weft_cli::Session::connect(weft_cli::StateDir::new(&a))
+            .await
+            .unwrap();
+        let to = session.state().devices[0].device_id();
+        session.send_packet(to, "[1]").await.unwrap();
+        session
+            .send_packet(to, r#"{"type":"ping","message":"hi"}"#)
+            .await
+            .unwrap();
+        session.settle().await.unwrap();
+        session.close().await;
+        let json: serde_json::Value =
+            serde_json::from_str(&next_line(&mut listen_out).await).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "from": a_id, "packet": { "type": "ping", "message": "hi" } })
+        );
+
         // Ctrl-C stops `listen` cleanly.
         #[cfg(unix)]
         {

@@ -566,6 +566,10 @@ impl<F: FnMut(String)> Worker<F> {
                 tracing::info!(device = %short_id(&from), %name, "device name received");
             }
             Event::Ping { from } => tracing::debug!(from = %short_id(&from), "ping"),
+            // Packets and file chunks are not handled by this app yet.
+            Event::Packet { from, .. } | Event::FileChunk { from, .. } => {
+                tracing::debug!(from = %short_id(&from), "packet or file chunk ignored");
+            }
             Event::Welcome { from, added } => {
                 tracing::info!(from = %short_id(&from), added = added.len(), "welcome received");
             }

@@ -6,13 +6,12 @@ use std::time::Instant;
 
 use axum::body::Bytes;
 use weft_protocol::{
-    ControlError, ControlFrame, FrameType, HEADER_LEN, Header, PairRequest, classify,
+    ControlError, ControlFrame, FrameType, PairRequest, RouteHeader, classify,
     device_id_from_sign_pk,
 };
 
 use crate::{
-    DeviceId, MIN_ENVELOPE_LEN, PAIR_OPEN_PER_MINUTE, PAIR_REQUEST_PER_MINUTE, RATE_WINDOW, Relay,
-    short_id,
+    DeviceId, PAIR_OPEN_PER_MINUTE, PAIR_REQUEST_PER_MINUTE, RATE_WINDOW, Relay, short_id,
 };
 
 /// Pairing quotas of one connection.
@@ -90,15 +89,13 @@ impl Relay {
         }
     }
 
-    /// Routes one envelope. Invalid frames, frames for a device outside the
-    /// sender's group and frames for offline recipients are dropped.
+    /// Routes one envelope on its version, length, sender and recipient;
+    /// the kind is not checked, so new kinds need no relay update. Invalid
+    /// frames, frames for a device outside the sender's group and frames
+    /// for offline recipients are dropped.
     fn forward(&self, sender: &DeviceId, frame: Bytes) {
         let from = short_id(sender);
-        if frame.len() < MIN_ENVELOPE_LEN {
-            tracing::debug!(%from, len = frame.len(), "dropped frame: too short");
-            return;
-        }
-        let header = match Header::decode(&frame[..HEADER_LEN]) {
+        let header = match RouteHeader::decode(&frame) {
             Ok(header) => header,
             Err(err) => {
                 tracing::debug!(%from, %err, "dropped frame: invalid header");

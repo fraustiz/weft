@@ -2,7 +2,8 @@
 //
 // Implements docs/protocol.md: device identities, session keys between two
 // devices, the encrypted message envelope, the relay authentication frames,
-// the group change plaintexts, device names and frame dispatch. Pairing (pairing code, pair
+// the group change plaintexts, device names, the packet and file chunk
+// plaintexts of docs/features.md and frame dispatch. Pairing (pairing code, pair
 // request MAC, control frames) lives in Pairing.kt. Mirrors the Rust
 // reference (crates/weft-protocol) and must produce byte-identical output
 // (see crates/weft-protocol/vectors/v1.json).
@@ -41,6 +42,14 @@ object Weft {
     const val PEER_KEYS_LENGTH = Sodium.SIGN_PK_BYTES + Sodium.KX_PK_BYTES
     /** Largest device name, in bytes of UTF-8. */
     const val MAX_DEVICE_NAME_LENGTH = 64
+    /** Largest packet plaintext (a JSON object), in bytes (256 KiB). */
+    const val MAX_PACKET_LENGTH = 256 * 1024
+    /** Size of a file transfer id. */
+    const val TRANSFER_ID_LENGTH = 16
+    /** Largest data in one file chunk, in bytes (128 KiB). */
+    const val MAX_FILE_CHUNK_DATA_LENGTH = 128 * 1024
+    /** `transfer_id (16) || offset (8)`, before the data of a file chunk. */
+    internal const val FILE_CHUNK_PREFIX_LENGTH = TRANSFER_ID_LENGTH + 8
 
     /** Prefix of the pairing code string. */
     const val PAIRING_CODE_PREFIX = "WEFT1:"
@@ -280,7 +289,14 @@ enum class Kind(val value: UByte) {
     /** Id of a device that left the group; see [encodeDeviceRemoved]. */
     DEVICE_REMOVED(0x05u),
     /** The sender's own name; see [encodeDeviceName]. */
-    DEVICE_NAME(0x06u);
+    DEVICE_NAME(0x06u),
+    /**
+     * A UTF-8 JSON object, 1 to [Weft.MAX_PACKET_LENGTH] bytes. Only the
+     * length and the UTF-8 are checked here; the JSON is the client's business.
+     */
+    PACKET(0x07u),
+    /** A piece of a file transfer; see [encodeFileChunk]. */
+    FILE_CHUNK(0x08u);
 
     /** Largest plaintext allowed for this kind. */
     internal val maxPlaintextLength: Int
@@ -291,6 +307,8 @@ enum class Kind(val value: UByte) {
             DEVICE_ADDED -> Weft.PEER_KEYS_LENGTH
             DEVICE_REMOVED -> Weft.DEVICE_ID_LENGTH
             DEVICE_NAME -> Weft.MAX_DEVICE_NAME_LENGTH
+            PACKET -> Weft.MAX_PACKET_LENGTH
+            FILE_CHUNK -> Weft.FILE_CHUNK_PREFIX_LENGTH + Weft.MAX_FILE_CHUNK_DATA_LENGTH
         }
 
     /**
@@ -307,6 +325,8 @@ enum class Kind(val value: UByte) {
             WELCOME -> length % Weft.PEER_KEYS_LENGTH == 1
             DEVICE_ADDED -> length == Weft.PEER_KEYS_LENGTH
             DEVICE_REMOVED -> length == Weft.DEVICE_ID_LENGTH
+            PACKET -> length >= 1
+            FILE_CHUNK -> length > Weft.FILE_CHUNK_PREFIX_LENGTH
             DEVICE_NAME -> error("checked above")
         }
         if (!valid) fail(WeftError.InvalidPlaintextLength(length))
@@ -315,11 +335,11 @@ enum class Kind(val value: UByte) {
     internal fun checkPlaintext(plaintext: ByteArray) {
         checkPlaintextLength(plaintext.size)
         when (this) {
-            CLIPBOARD_TEXT -> if (decodeUtf8(plaintext) == null) fail(WeftError.InvalidUtf8)
+            CLIPBOARD_TEXT, PACKET -> if (decodeUtf8(plaintext) == null) fail(WeftError.InvalidUtf8)
             WELCOME -> decodeWelcome(plaintext)
             DEVICE_NAME -> decodeDeviceName(plaintext)
             // Fully checked by their length.
-            PING, DEVICE_ADDED, DEVICE_REMOVED -> Unit
+            PING, DEVICE_ADDED, DEVICE_REMOVED, FILE_CHUNK -> Unit
         }
     }
 
@@ -571,6 +591,58 @@ internal fun checkDeviceNameLength(length: Int) {
 /** The control characters are all in the BMP, so checking UTF-16 units is enough. */
 private fun checkNoControlCharacter(name: String) {
     if (name.any { it in '\u0000'..'\u001f' || it in '\u007f'..'\u009f' }) fail(WeftError.DeviceNameControlCharacter)
+}
+
+// endregion
+
+// region File chunk
+
+/** A decoded file chunk plaintext (kind `0x08`). */
+class FileChunk(transferId: ByteArray, val offset: ULong, data: ByteArray) {
+    private val transferIdBytes = fixed(transferId, Weft.TRANSFER_ID_LENGTH, "transferId")
+    private val dataBytes = data.copyOf()
+
+    /** 16-byte transfer id. */
+    val transferId: ByteArray get() = transferIdBytes.copyOf()
+    /** 1 to [Weft.MAX_FILE_CHUNK_DATA_LENGTH] bytes, at [offset] in the file. */
+    val data: ByteArray get() = dataBytes.copyOf()
+
+    override fun equals(other: Any?): Boolean =
+        other is FileChunk &&
+            transferIdBytes.contentEquals(other.transferIdBytes) &&
+            offset == other.offset &&
+            dataBytes.contentEquals(other.dataBytes)
+
+    override fun hashCode(): Int =
+        31 * (31 * transferIdBytes.contentHashCode() + offset.hashCode()) + dataBytes.contentHashCode()
+
+    override fun toString(): String =
+        "FileChunk(transferId=${transferIdBytes.toHex()}, offset=$offset, data=${dataBytes.size} bytes)"
+}
+
+/**
+ * File chunk plaintext (kind `0x08`): `transfer_id (16) || offset (u64,
+ * big-endian) || data`, with 1 to [Weft.MAX_FILE_CHUNK_DATA_LENGTH] bytes of data.
+ */
+fun encodeFileChunk(transferId: ByteArray, offset: ULong, data: ByteArray): ByteArray {
+    val id = fixed(transferId, Weft.TRANSFER_ID_LENGTH, "transferId")
+    val length = Weft.FILE_CHUNK_PREFIX_LENGTH + data.size
+    Kind.FILE_CHUNK.checkPlaintextLength(length)
+    return ByteBuffer.allocate(length)
+        .put(id)
+        .putLong(offset.toLong()) // ByteBuffer is big-endian by default.
+        .put(data)
+        .array()
+}
+
+/** Parses a file chunk plaintext, with the same rules as [encodeFileChunk]. */
+fun decodeFileChunk(plaintext: ByteArray): FileChunk {
+    Kind.FILE_CHUNK.checkPlaintextLength(plaintext.size)
+    return FileChunk(
+        transferId = plaintext.copyOfRange(0, Weft.TRANSFER_ID_LENGTH),
+        offset = ByteBuffer.wrap(plaintext, Weft.TRANSFER_ID_LENGTH, 8).getLong().toULong(),
+        data = plaintext.copyOfRange(Weft.FILE_CHUNK_PREFIX_LENGTH, plaintext.size),
+    )
 }
 
 // endregion

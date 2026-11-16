@@ -32,7 +32,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 use weft_protocol::{
     AUTH_ACCEPTED, AuthResponse, Challenge, ControlFrame, HEADER_LEN, MAX_CLIPBOARD_TEXT_LEN,
-    NONCE_LEN, TAG_LEN, verify_auth,
+    MAX_FILE_CHUNK_DATA_LEN, MAX_PACKET_LEN, NONCE_LEN, TAG_LEN, TRANSFER_ID_LEN, verify_auth,
 };
 
 use crate::dispatch::RateLimits;
@@ -44,8 +44,11 @@ use crate::store::Store;
 
 /// Smallest valid envelope: header, nonce and tag (empty plaintext).
 pub const MIN_ENVELOPE_LEN: usize = HEADER_LEN + NONCE_LEN + TAG_LEN;
-/// Largest valid envelope: a clipboard text of the maximum size.
+/// Largest valid envelope: a clipboard text or a packet of the maximum size
+/// (a full file chunk is smaller).
 pub const MAX_ENVELOPE_LEN: usize = HEADER_LEN + NONCE_LEN + MAX_CLIPBOARD_TEXT_LEN + TAG_LEN;
+const _: () = assert!(MAX_PACKET_LEN <= MAX_CLIPBOARD_TEXT_LEN);
+const _: () = assert!(TRANSFER_ID_LEN + 8 + MAX_FILE_CHUNK_DATA_LEN <= MAX_CLIPBOARD_TEXT_LEN);
 /// How long a device has to answer the challenge.
 pub const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 /// Default for [`Config::idle_timeout`]. Clients ping at least every 30 s.

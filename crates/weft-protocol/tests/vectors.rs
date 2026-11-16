@@ -162,3 +162,64 @@ fn committed_device_name_vector_decodes() {
     assert_eq!(header.message_id, unhex::<16>(&envelope["message_id"]));
     assert_eq!(decode_device_name(&plaintext).unwrap(), name);
 }
+
+/// B receives A's Packet and A receives B's File chunk from the committed
+/// file.
+#[test]
+fn committed_feature_vectors_decode() {
+    use weft_protocol::{
+        FileChunk, Kind, MAX_FILE_CHUNK_DATA_LEN, MAX_PACKET_LEN, RouteHeader, decode_file_chunk,
+        device_id_from_sign_pk, encode_file_chunk, open,
+    };
+
+    let doc: serde_json::Value = serde_json::from_str(include_str!("../vectors/v1.json")).unwrap();
+    let section = &doc["features"];
+    let device_id =
+        |device: &str| device_id_from_sign_pk(&unhex(&doc["devices"][device]["sign_pk"]));
+    let rx = |device: &str| -> [u8; 32] { unhex(&doc["session"][device]["rx"]) };
+    let open_vector = |envelope: &serde_json::Value, kind: Kind, from: &str, to: &str| {
+        let frame = unhex_vec(&envelope["frame"]);
+        assert_eq!(frame[..58], unhex_vec(&envelope["header"])[..]);
+        let route = RouteHeader::decode(&frame).unwrap();
+        assert_eq!(
+            route,
+            RouteHeader {
+                kind: kind as u8,
+                sender: device_id(from),
+                recipient: device_id(to),
+            }
+        );
+        let (header, plaintext) = open(&frame, &rx(to)).unwrap();
+        assert_eq!(header.kind, kind);
+        assert_eq!(envelope["kind"], kind as u8);
+        assert_eq!(header.counter, envelope["counter"].as_u64().unwrap());
+        assert_eq!(header.message_id, unhex::<16>(&envelope["message_id"]));
+        assert_eq!(plaintext, unhex_vec(&envelope["plaintext"]));
+        plaintext
+    };
+
+    let packet = &section["packet"];
+    assert_eq!(packet["max_len"], MAX_PACKET_LEN);
+    let envelope = &packet["envelope"];
+    assert_eq!(envelope["name"], "packet_a_to_b");
+    let json = packet["json"].as_str().unwrap();
+    assert_eq!(envelope["plaintext_utf8"], json);
+    let plaintext = open_vector(envelope, Kind::Packet, "a", "b");
+    assert_eq!(plaintext, json.as_bytes());
+
+    let chunk = &section["file_chunk"];
+    assert_eq!(chunk["max_data_len"], MAX_FILE_CHUNK_DATA_LEN);
+    let envelope = &chunk["envelope"];
+    assert_eq!(envelope["name"], "file_chunk_b_to_a");
+    let plaintext = open_vector(envelope, Kind::FileChunk, "b", "a");
+    let expected = FileChunk {
+        transfer_id: unhex(&chunk["transfer_id"]),
+        offset: chunk["offset"].as_u64().unwrap(),
+        data: unhex_vec(&chunk["data"]),
+    };
+    assert_eq!(decode_file_chunk(&plaintext).unwrap(), expected);
+    assert_eq!(
+        encode_file_chunk(&expected.transfer_id, expected.offset, &expected.data).unwrap(),
+        plaintext
+    );
+}

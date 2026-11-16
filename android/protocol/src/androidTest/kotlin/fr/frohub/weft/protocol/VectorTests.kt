@@ -146,9 +146,40 @@ class VectorTests {
     @Test
     fun envelopePing() = checkEnvelope(1)
 
+    @Test
+    fun packetVector() {
+        val d = Devices()
+        val section = d.vectors.getJSONObject("features").getJSONObject("packet")
+        assertEquals(Weft.MAX_PACKET_LENGTH, section.getInt("max_len"))
+        val v = section.getJSONObject("envelope")
+        assertEquals("packet_a_to_b", v.getString("name"))
+        assertEquals(Kind.PACKET.value.toInt(), v.getInt("kind"))
+        val json = section.getString("json")
+        assertEquals(json, v.getString("plaintext_utf8"))
+        assertArrayEquals(json.toByteArray(Charsets.UTF_8), checkEnvelope(d, v))
+    }
+
+    @Test
+    fun fileChunkVector() {
+        val d = Devices()
+        val section = d.vectors.getJSONObject("features").getJSONObject("file_chunk")
+        assertEquals(Weft.MAX_FILE_CHUNK_DATA_LENGTH, section.getInt("max_data_len"))
+        val v = section.getJSONObject("envelope")
+        assertEquals("file_chunk_b_to_a", v.getString("name"))
+        assertEquals(Kind.FILE_CHUNK.value.toInt(), v.getInt("kind"))
+        val plaintext = checkEnvelope(d, v)
+        val expected = FileChunk(section.bytes("transfer_id"), section.getLong("offset").toULong(), section.bytes("data"))
+        assertEquals(expected, decodeFileChunk(plaintext))
+        assertArrayEquals(plaintext, encodeFileChunk(expected.transferId, expected.offset, expected.data))
+    }
+
     private fun checkEnvelope(index: Int) {
         val d = Devices()
-        val v = d.envelope(index)
+        checkEnvelope(d, d.envelope(index))
+    }
+
+    /** Checks every field of one envelope vector [v]; returns its plaintext. */
+    private fun checkEnvelope(d: Devices, v: JSONObject): ByteArray {
         val senderName = v.getString("sender")
         val recipientName = v.getString("recipient")
         val sender = d.identity(senderName)
@@ -168,7 +199,9 @@ class VectorTests {
         val plaintext = v.bytes("plaintext")
 
         // Inputs are consistent with the rest of the document.
-        assertArrayEquals(plaintext, v.getString("plaintext_utf8").toByteArray(Charsets.UTF_8))
+        if (v.has("plaintext_utf8")) {
+            assertArrayEquals(plaintext, v.getString("plaintext_utf8").toByteArray(Charsets.UTF_8))
+        }
         assertArrayEquals(v.bytes("key"), senderKeys.tx)
 
         // Header bytes and round trip.
@@ -185,6 +218,7 @@ class VectorTests {
         val (opened, openedPlaintext) = open(v.bytes("frame"), recipientKeys.rx)
         assertEquals(header, opened)
         assertArrayEquals(plaintext, openedPlaintext)
+        return openedPlaintext
     }
 
     @Test

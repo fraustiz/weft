@@ -170,5 +170,46 @@
       "header": "01060e934e02183f97e0cd83ad10d6c4be5a40bca4eaf9d2b097ff8dbaa4d61767ed9192939495969798999a9b9c9d9e9fa00000000000000002",
       "frame": "01060e934e02183f97e0cd83ad10d6c4be5a40bca4eaf9d2b097ff8dbaa4d61767ed9192939495969798999a9b9c9d9e9fa000000000000000026162636465666768696a6b6c6d6e6f707172737475767778b85f4d4592eeeca8e9af0b96e2fcaee43ddffedba320dc49e326268146571cd2ea5ab2"
     }
+  },
+  "features": {
+    "packet": {
+      "json": "{\"type\":\"battery\",\"level\":42,\"charging\":true,\"low\":false}",
+      "max_len": 262144,
+      "envelope": {
+        "name": "packet_a_to_b",
+        "sender": "a",
+        "recipient": "b",
+        "version": 1,
+        "kind": 7,
+        "message_id": "1112131415161718191a1b1c1d1e1f20",
+        "counter": 4,
+        "nonce": "c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8",
+        "key": "16543c0e133a5d0de69033e22655631a1230c8ca5fd234bcb361bceb4d066234",
+        "plaintext_utf8": "{\"type\":\"battery\",\"level\":42,\"charging\":true,\"low\":false}",
+        "plaintext": "7b2274797065223a2262617474657279222c226c6576656c223a34322c226368617267696e67223a747275652c226c6f77223a66616c73657d",
+        "header": "010740bca4eaf9d2b097ff8dbaa4d61767ed0e934e02183f97e0cd83ad10d6c4be5a1112131415161718191a1b1c1d1e1f200000000000000004",
+        "frame": "010740bca4eaf9d2b097ff8dbaa4d61767ed0e934e02183f97e0cd83ad10d6c4be5a1112131415161718191a1b1c1d1e1f200000000000000004c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8503da27b35477e95adf29194cab72cdb83653b6a89ae89c6955e99d46bb1633d27615673b62bc8f8fff24bf0d53097c495da3527dd72a0f0172dafc0bb890eb4766c12cbddf503b50d"
+      }
+    },
+    "file_chunk": {
+      "transfer_id": "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "offset": 393216,
+      "data": "776566742066696c65206368756e6b200001feff",
+      "max_data_len": 131072,
+      "envelope": {
+        "name": "file_chunk_b_to_a",
+        "sender": "b",
+        "recipient": "a",
+        "version": 1,
+        "kind": 8,
+        "message_id": "3132333435363738393a3b3c3d3e3f40",
+        "counter": 3,
+        "nonce": "e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8",
+        "key": "24114c87b65082754b076b30cc7bf379b03854cc428b621750d11ba838884524",
+        "plaintext": "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff0000000000060000776566742066696c65206368756e6b200001feff",
+        "header": "01080e934e02183f97e0cd83ad10d6c4be5a40bca4eaf9d2b097ff8dbaa4d61767ed3132333435363738393a3b3c3d3e3f400000000000000003",
+        "frame": "01080e934e02183f97e0cd83ad10d6c4be5a40bca4eaf9d2b097ff8dbaa4d61767ed3132333435363738393a3b3c3d3e3f400000000000000003e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8b3cb9c7df1579f98ca7be6835379fc9a461c52b87425aa37b53703abe800e15b5db46bb6447579fe81108ab0b36491f6a3263ca8c08498f003e3f658"
+      }
+    }
   }
 }

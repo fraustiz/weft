@@ -156,12 +156,12 @@ pub async fn settle(ws: &mut Ws) {
         .expect("no pong from the relay");
 }
 
-fn header(sender: &Identity, recipient: &Identity, counter: u64) -> Header {
+fn header(sender: &Identity, recipient: &Identity, kind: Kind, counter: u64) -> Header {
     let mut message_id = [0u8; 16];
     message_id[8..].copy_from_slice(&counter.to_be_bytes());
     Header {
         version: weft_protocol::VERSION,
-        kind: Kind::ClipboardText,
+        kind,
         sender: sender.device_id(),
         recipient: recipient.device_id(),
         message_id,
@@ -169,14 +169,31 @@ fn header(sender: &Identity, recipient: &Identity, counter: u64) -> Header {
     }
 }
 
-pub fn clipboard(sender: &Identity, recipient: &Identity, text: &str, counter: u64) -> Vec<u8> {
+/// An envelope of `kind` from `sender` to `recipient`.
+pub fn envelope(
+    sender: &Identity,
+    recipient: &Identity,
+    kind: Kind,
+    plaintext: &[u8],
+    counter: u64,
+) -> Vec<u8> {
     let keys = session_keys(sender, &recipient.device_id(), &recipient.kx_pk()).unwrap();
     seal(
-        &header(sender, recipient, counter),
-        text.as_bytes(),
+        &header(sender, recipient, kind, counter),
+        plaintext,
         &keys.tx,
     )
     .unwrap()
+}
+
+pub fn clipboard(sender: &Identity, recipient: &Identity, text: &str, counter: u64) -> Vec<u8> {
+    envelope(
+        sender,
+        recipient,
+        Kind::ClipboardText,
+        text.as_bytes(),
+        counter,
+    )
 }
 
 pub fn open_from(recipient: &Identity, sender: &Identity, frame: &[u8]) -> (Header, Vec<u8>) {
