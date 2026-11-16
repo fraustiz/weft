@@ -119,15 +119,27 @@ class MediaWatcher(
                 ?: metadata?.text(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE),
             album = metadata?.text(MediaMetadata.METADATA_KEY_ALBUM),
             playing = playing,
-            position = state?.let { position(it, length) },
+            // A seek in progress often reports no position: keep the last one meanwhile.
+            position = state?.let { position(it, length) } ?: lastPosition[id],
             length = length,
             canPlay = if (declared) can(PlaybackState.ACTION_PLAY, PlaybackState.ACTION_PLAY_PAUSE) else !playing,
             canPause = if (declared) can(PlaybackState.ACTION_PAUSE, PlaybackState.ACTION_PLAY_PAUSE) else playing,
             canNext = can(PlaybackState.ACTION_SKIP_TO_NEXT),
             canPrevious = can(PlaybackState.ACTION_SKIP_TO_PREVIOUS),
-            canSeek = length != null && can(PlaybackState.ACTION_SEEK_TO),
-        )
+            // Many apps drop their actions while they buffer after a seek: keep the last answer then.
+            canSeek = length != null && (can(PlaybackState.ACTION_SEEK_TO) || (buffering(state) && lastCanSeek[id] == true)),
+        ).also {
+            it.position?.let { position -> lastPosition[id] = position }
+            if (!buffering(state)) lastCanSeek[id] = it.canSeek
+        }
     }
+
+    /** Where each player was and whether it could seek, for the moments it buffers and says neither. */
+    private val lastPosition = mutableMapOf<String, Long>()
+    private val lastCanSeek = mutableMapOf<String, Boolean>()
+
+    private fun buffering(state: PlaybackState?) =
+        state?.state == PlaybackState.STATE_BUFFERING || state?.state == PlaybackState.STATE_CONNECTING
 
     /** The position now: the session reports it as of its last update, moving at its speed since. */
     private fun position(state: PlaybackState, length: Long?): Long? {

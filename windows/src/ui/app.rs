@@ -23,6 +23,9 @@ const SIZE: (f64, f64) = (520.0, 640.0);
 const MIN_SIZE: (f64, f64) = (400.0, 480.0);
 /// The longest wait between two redraws for texts that change with time.
 const MAX_TICK: Duration = Duration::from_secs(60);
+/// The shortest wait between two ticks, so no deadline can make them
+/// follow each other without pause.
+const MIN_TICK: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -352,6 +355,9 @@ impl Weft {
         ]
         .into_iter()
         .flatten()
+        // An expired draft needs no tick: one with no wait left would come
+        // back at once, forever, and keep the window from answering.
+        .filter(|at| at.elapsed() < DRAFT_HOLD)
         .map(|at| (at + DRAFT_HOLD).saturating_duration_since(Instant::now()))
         .min();
         activity
@@ -372,7 +378,7 @@ impl Weft {
         }
         if let Some(next) = self.next_change() {
             self.ticking = true;
-            let wait = next.min(MAX_TICK);
+            let wait = next.clamp(MIN_TICK, MAX_TICK);
             context.spawn_background(move |_| {
                 std::thread::sleep(wait);
                 Message::Tick
@@ -457,6 +463,18 @@ impl Component for Weft {
             Message::Published(None) => {}
             Message::Tick => {
                 self.ticking = false;
+                if self
+                    .seek_draft
+                    .is_some_and(|draft| draft.at.elapsed() >= DRAFT_HOLD)
+                {
+                    self.seek_draft = None;
+                }
+                if self
+                    .volume_draft
+                    .is_some_and(|draft| draft.at.elapsed() >= DRAFT_HOLD)
+                {
+                    self.volume_draft = None;
+                }
                 if self.rang.is_some_and(|(_, until)| Instant::now() >= until) {
                     self.rang = None;
                 }
