@@ -1,13 +1,21 @@
 //! Weft wire protocol, version 1.
 //!
 //! Implements `docs/protocol.md`: device identities, session keys between two
-//! devices, the encrypted message envelope and the relay authentication
-//! frames. All cryptography goes through libsodium so the output is
-//! byte-identical with the Kotlin (lazysodium) and Swift (swift-sodium)
+//! devices, the encrypted message envelope, the relay authentication
+//! frames, and groups and pairing (pairing code, control frames, group
+//! change plaintexts). All cryptography goes through libsodium so the output
+//! is byte-identical with the Kotlin (lazysodium) and Swift (swift-sodium)
 //! clients.
 
+mod pairing;
 mod sodium;
 
+pub use pairing::{
+    CONTROL_ERROR, CONTROL_GROUP_ADD, CONTROL_GROUP_REMOVE, CONTROL_PAIR_OPEN,
+    CONTROL_PAIR_REQUEST, ControlError, ControlFrame, MAX_RELAY_URL_LEN, PAIRING_CODE_PREFIX,
+    PairRequest, PairingCode, pair_request_mac, random_pairing_id, random_pairing_secret,
+    verify_pair_request,
+};
 use sodium::KxRole;
 
 /// Protocol version carried in every envelope header.
@@ -20,6 +28,15 @@ pub const NONCE_LEN: usize = sodium::AEAD_NONCE_BYTES;
 pub const TAG_LEN: usize = sodium::AEAD_TAG_BYTES;
 /// Largest clipboard text plaintext, in bytes (256 KiB).
 pub const MAX_CLIPBOARD_TEXT_LEN: usize = 256 * 1024;
+/// Largest number of devices in one group.
+pub const MAX_GROUP_SIZE: usize = 10;
+/// Largest number of devices a Welcome plaintext can list: the group without
+/// its sender and its recipient.
+pub const MAX_WELCOME_DEVICES: usize = MAX_GROUP_SIZE - 2;
+/// Size of one `sign_pk || kx_pk` entry in a group change plaintext.
+pub const PEER_KEYS_LEN: usize = sodium::SIGN_PK_BYTES + sodium::KX_PK_BYTES;
+/// Size of a device id.
+pub const DEVICE_ID_LEN: usize = 16;
 
 /// First byte of the relay challenge frame.
 pub const AUTH_CHALLENGE: u8 = 0xA0;
@@ -63,6 +80,22 @@ pub enum Error {
     RelayNameTooLong,
     #[error("invalid signature")]
     InvalidSignature,
+    #[error("plaintext length {0} is not valid for its kind")]
+    InvalidPlaintextLength(usize),
+    #[error("welcome lists {0} devices, at most {MAX_WELCOME_DEVICES} allowed")]
+    TooManyDevices(usize),
+    #[error("malformed pairing code")]
+    MalformedPairingCode,
+    #[error("relay url must be 1 to 255 bytes, got {0}")]
+    RelayUrlLength(usize),
+    #[error("malformed control frame")]
+    MalformedControlFrame,
+    #[error("unknown control frame {0:#04x}")]
+    UnknownControlFrame(u8),
+    #[error("unknown control error code {0:#04x}")]
+    UnknownControlError(u8),
+    #[error("relay name in the challenge is not the host we connected to")]
+    RelayNameMismatch,
 }
 
 /// Derives a device id from a signing public key:
@@ -161,6 +194,13 @@ pub enum Kind {
     ClipboardText = 0x01,
     /// Empty plaintext.
     Ping = 0x02,
+    /// The other members of the group a device just joined; see
+    /// [`encode_welcome`].
+    Welcome = 0x03,
+    /// Keys of a device that joined the group; see [`encode_device_added`].
+    DeviceAdded = 0x04,
+    /// Id of a device that left the group; see [`encode_device_removed`].
+    DeviceRemoved = 0x05,
 }
 
 impl Kind {
@@ -168,6 +208,9 @@ impl Kind {
         match byte {
             0x01 => Ok(Kind::ClipboardText),
             0x02 => Ok(Kind::Ping),
+            0x03 => Ok(Kind::Welcome),
+            0x04 => Ok(Kind::DeviceAdded),
+            0x05 => Ok(Kind::DeviceRemoved),
             other => Err(Error::UnknownKind(other)),
         }
     }
@@ -177,25 +220,140 @@ impl Kind {
         match self {
             Kind::ClipboardText => MAX_CLIPBOARD_TEXT_LEN,
             Kind::Ping => 0,
+            Kind::Welcome => 1 + MAX_WELCOME_DEVICES * PEER_KEYS_LEN,
+            Kind::DeviceAdded => PEER_KEYS_LEN,
+            Kind::DeviceRemoved => DEVICE_ID_LEN,
         }
     }
 
-    fn check_plaintext(self, plaintext: &[u8]) -> Result<(), Error> {
-        match self {
-            Kind::ClipboardText => {
-                if plaintext.len() > MAX_CLIPBOARD_TEXT_LEN {
-                    return Err(Error::PlaintextTooLarge(plaintext.len()));
-                }
-                std::str::from_utf8(plaintext).map_err(|_| Error::InvalidUtf8)?;
-            }
-            Kind::Ping => {
-                if !plaintext.is_empty() {
-                    return Err(Error::PingNotEmpty);
-                }
-            }
+    /// Checks everything that can be known from the plaintext length alone,
+    /// so `open` can reject a frame before decrypting it.
+    fn check_plaintext_len(self, len: usize) -> Result<(), Error> {
+        if len > self.max_plaintext_len() {
+            return Err(match self {
+                Kind::Ping => Error::PingNotEmpty,
+                _ => Error::PlaintextTooLarge(len),
+            });
+        }
+        let valid = match self {
+            Kind::ClipboardText | Kind::Ping => true,
+            Kind::Welcome => len % PEER_KEYS_LEN == 1,
+            Kind::DeviceAdded => len == PEER_KEYS_LEN,
+            Kind::DeviceRemoved => len == DEVICE_ID_LEN,
+        };
+        if !valid {
+            return Err(Error::InvalidPlaintextLength(len));
         }
         Ok(())
     }
+
+    fn check_plaintext(self, plaintext: &[u8]) -> Result<(), Error> {
+        self.check_plaintext_len(plaintext.len())?;
+        match self {
+            Kind::ClipboardText => {
+                std::str::from_utf8(plaintext).map_err(|_| Error::InvalidUtf8)?;
+            }
+            Kind::Welcome => {
+                decode_welcome(plaintext)?;
+            }
+            // Fully checked by their length.
+            Kind::Ping | Kind::DeviceAdded | Kind::DeviceRemoved => {}
+        }
+        Ok(())
+    }
+}
+
+/// Public keys of one trusted device, as carried by the group change
+/// envelopes: `sign_pk (32) || kx_pk (32)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerKeys {
+    pub sign_pk: [u8; 32],
+    pub kx_pk: [u8; 32],
+}
+
+impl PeerKeys {
+    /// The device id derived from `sign_pk`.
+    pub fn device_id(&self) -> [u8; 16] {
+        device_id_from_sign_pk(&self.sign_pk)
+    }
+
+    fn encode(&self) -> [u8; PEER_KEYS_LEN] {
+        let mut out = [0u8; PEER_KEYS_LEN];
+        out[..32].copy_from_slice(&self.sign_pk);
+        out[32..].copy_from_slice(&self.kx_pk);
+        out
+    }
+
+    fn decode(bytes: &[u8; PEER_KEYS_LEN]) -> PeerKeys {
+        PeerKeys {
+            sign_pk: bytes[..32].try_into().unwrap(),
+            kx_pk: bytes[32..].try_into().unwrap(),
+        }
+    }
+}
+
+/// Welcome plaintext (kind `0x03`): `count (1) || count × (sign_pk || kx_pk)`.
+/// Lists the other members of the group: neither the sender nor the
+/// recipient, so at most [`MAX_WELCOME_DEVICES`] entries.
+pub fn encode_welcome(members: &[PeerKeys]) -> Result<Vec<u8>, Error> {
+    if members.len() > MAX_WELCOME_DEVICES {
+        return Err(Error::TooManyDevices(members.len()));
+    }
+    let mut out = Vec::with_capacity(1 + members.len() * PEER_KEYS_LEN);
+    out.push(members.len() as u8);
+    for member in members {
+        out.extend_from_slice(&member.encode());
+    }
+    Ok(out)
+}
+
+/// Parses a Welcome plaintext. The length must be exactly
+/// `1 + count × 64` and `count` at most [`MAX_WELCOME_DEVICES`].
+pub fn decode_welcome(plaintext: &[u8]) -> Result<Vec<PeerKeys>, Error> {
+    let (&count, entries) = plaintext
+        .split_first()
+        .ok_or(Error::InvalidPlaintextLength(0))?;
+    let count = count as usize;
+    if count > MAX_WELCOME_DEVICES {
+        return Err(Error::TooManyDevices(count));
+    }
+    if entries.len() != count * PEER_KEYS_LEN {
+        return Err(Error::InvalidPlaintextLength(plaintext.len()));
+    }
+    let (entries, _) = entries.as_chunks::<PEER_KEYS_LEN>();
+    Ok(entries.iter().map(PeerKeys::decode).collect())
+}
+
+/// Device added plaintext (kind `0x04`): `sign_pk || kx_pk` of the new device.
+pub fn encode_device_added(device: &PeerKeys) -> [u8; PEER_KEYS_LEN] {
+    device.encode()
+}
+
+/// Parses a Device added plaintext: exactly 64 bytes.
+pub fn decode_device_added(plaintext: &[u8]) -> Result<PeerKeys, Error> {
+    let bytes: &[u8; PEER_KEYS_LEN] = plaintext
+        .try_into()
+        .map_err(|_| Error::InvalidPlaintextLength(plaintext.len()))?;
+    Ok(PeerKeys::decode(bytes))
+}
+
+/// Device removed plaintext (kind `0x05`): the id of the removed device.
+pub fn encode_device_removed(device_id: &[u8; 16]) -> [u8; DEVICE_ID_LEN] {
+    *device_id
+}
+
+/// Parses a Device removed plaintext: exactly 16 bytes.
+pub fn decode_device_removed(plaintext: &[u8]) -> Result<[u8; 16], Error> {
+    plaintext
+        .try_into()
+        .map_err(|_| Error::InvalidPlaintextLength(plaintext.len()))
+}
+
+/// A random `message_id` for an envelope header.
+pub fn random_message_id() -> [u8; 16] {
+    let mut id = [0u8; 16];
+    sodium::random_bytes(&mut id);
+    id
 }
 
 /// Envelope header. Sent in clear and authenticated as associated data.
@@ -276,13 +434,9 @@ pub fn open(frame: &[u8], rx: &[u8; 32]) -> Result<(Header, Vec<u8>), Error> {
     let (header_bytes, rest) = frame.split_at(HEADER_LEN);
     let (nonce, ciphertext) = rest.split_at(NONCE_LEN);
     let header = Header::decode(header_bytes)?;
-    let plaintext_len = ciphertext.len() - TAG_LEN;
-    if plaintext_len > header.kind.max_plaintext_len() {
-        return Err(match header.kind {
-            Kind::Ping => Error::PingNotEmpty,
-            Kind::ClipboardText => Error::PlaintextTooLarge(plaintext_len),
-        });
-    }
+    header
+        .kind
+        .check_plaintext_len(ciphertext.len() - TAG_LEN)?;
     let nonce: &[u8; NONCE_LEN] = nonce.try_into().unwrap();
     let plaintext =
         sodium::aead_decrypt(ciphertext, header_bytes, nonce, rx).ok_or(Error::DecryptionFailed)?;
@@ -390,6 +544,16 @@ impl AuthResponse {
     }
 }
 
+/// Client side: checks that the relay name in the challenge is exactly the
+/// host the client connected to, before signing anything. `expected_host` is
+/// the host without its port; stripping the port is the caller's job.
+pub fn check_relay_name(challenge: &Challenge, expected_host: &str) -> Result<(), Error> {
+    if challenge.relay_name != expected_host {
+        return Err(Error::RelayNameMismatch);
+    }
+    Ok(())
+}
+
 /// Signs a relay challenge with the device's signing key.
 pub fn sign_auth(identity: &Identity, challenge: &Challenge) -> AuthResponse {
     AuthResponse {
@@ -409,4 +573,25 @@ pub fn verify_auth(challenge: &Challenge, response: &AuthResponse) -> Result<[u8
         return Err(Error::InvalidSignature);
     }
     Ok(device_id_from_sign_pk(&response.sign_pk))
+}
+
+/// What a frame received after authentication is, from its first byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameType {
+    /// `0x01`: a message envelope, see [`open`] and [`Header::decode`].
+    Envelope,
+    /// `0xB0`–`0xBF`: a control frame, see [`ControlFrame::decode`].
+    Control,
+    /// Anything else, including an empty frame. To be dropped.
+    Unknown,
+}
+
+/// Tells an envelope from a control frame by the first byte. This only
+/// dispatches: the frame still has to be decoded and checked.
+pub fn classify(frame: &[u8]) -> FrameType {
+    match frame.first() {
+        Some(&VERSION) => FrameType::Envelope,
+        Some(0xB0..=0xBF) => FrameType::Control,
+        _ => FrameType::Unknown,
+    }
 }

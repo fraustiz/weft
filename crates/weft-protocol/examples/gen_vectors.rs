@@ -1,5 +1,5 @@
 //! Generates `vectors/v1.json`, the test vectors every Weft client must
-//! reproduce byte for byte (see `docs/protocol.md`, section 5).
+//! reproduce byte for byte (see `docs/protocol.md`, section 6).
 //!
 //! Run: `cargo run -p weft-protocol --example gen_vectors`
 //! The file is written in place and also printed on stdout.
@@ -43,11 +43,47 @@
 //!   signature        Ed25519 detached signature of signed_message
 //!   response_frame   encoded 0xA1 frame
 //!   accepted_frame   the 0xA2 frame
+//!
+//! `pairing` (device A shows a pairing code, device B scans it and joins a
+//! group that already holds a third device C; later A removes C):
+//!   relay_url     relay url carried by the pairing code
+//!   pairing_id    16-byte pairing id (random in production)
+//!   secret        32-byte pairing secret (random in production)
+//!   shown_by      "a": the code carries A's sign_pk and kx_pk
+//!   joiner        "b": the device that scans the code and sends 0xB1
+//!   code_payload  url_len || relay_url || pairing_id || sign_pk_A ||
+//!                 kx_pk_A || secret, before base64
+//!   code          the QR code string: "WEFT1:" followed by code_payload in
+//!                 base64url without padding
+//!   mac_input     "weft-pair-v1" || pairing_id || sign_pk_B || kx_pk_B
+//!   mac           `crypto_generichash(outlen = 32, mac_input, key = secret)`
+//!   control_frames  every control frame, encoded:
+//!     pair_open               0xB0 || pairing_id                 (A → relay)
+//!     pair_request            0xB1 || pairing_id || sign_pk_B || kx_pk_B || mac
+//!     group_add               0xB2 || device id of B             (A → relay)
+//!     group_remove            0xB3 || device id of C             (A → relay)
+//!     error_unknown_pairing   0xBE 0x01
+//!     error_not_allowed       0xBE 0x02
+//!     error_rate_limited      0xBE 0x03
+//!     error_group_full        0xBE 0x04
+//!   device_c      a third device, same fields as `devices.a`; its seeds are
+//!                 sign_seed = 80 81 … 9f and kx_seed = a0 a1 … bf
+//!   session_a_c   session keys between A and C, same fields as `session`
+//!                 (with "c" in place of "b")
+//!   envelopes[]   same fields as the top-level `envelopes[]`, except that
+//!                 there is no plaintext_utf8 (the plaintexts are binary):
+//!     welcome_a_to_b         kind 3, plaintext = 01 || sign_pk_C || kx_pk_C
+//!                            (one other member: C), key = `session.a.tx`
+//!     device_added_a_to_c    kind 4, plaintext = sign_pk_B || kx_pk_B,
+//!                            key = `session_a_c.a.tx`
+//!     device_removed_a_to_b  kind 5, plaintext = device id of C,
+//!                            key = `session.a.tx`
 
 use serde_json::{Value, json};
 use weft_protocol::{
-    AUTH_ACCEPTED, Challenge, Header, Identity, Kind, SessionKeys, VERSION, seal_with_nonce,
-    session_keys, sign_auth,
+    AUTH_ACCEPTED, Challenge, ControlError, ControlFrame, Header, Identity, Kind, PairRequest,
+    PairingCode, PeerKeys, SessionKeys, VERSION, encode_device_added, encode_device_removed,
+    encode_welcome, seal_with_nonce, session_keys, sign_auth,
 };
 
 /// `N` consecutive bytes starting at `start`, e.g. `seq::<4>(0x10)` = 10 11 12 13.
@@ -81,7 +117,13 @@ struct Envelope<'a> {
     message_id: [u8; 16],
     counter: u64,
     nonce: [u8; 24],
-    plaintext: &'a str,
+    plaintext: Plaintext<'a>,
+}
+
+enum Plaintext<'a> {
+    /// Also written as a string, in `plaintext_utf8`.
+    Text(&'a str),
+    Bytes(&'a [u8]),
 }
 
 fn envelope_json(e: Envelope) -> Value {
@@ -94,9 +136,13 @@ fn envelope_json(e: Envelope) -> Value {
         counter: e.counter,
     };
     let key = e.sender.2.tx;
-    let frame = seal_with_nonce(&header, e.plaintext.as_bytes(), &e.nonce, &key)
-        .expect("vector envelope must be valid");
-    json!({
+    let plaintext = match e.plaintext {
+        Plaintext::Text(text) => text.as_bytes(),
+        Plaintext::Bytes(bytes) => bytes,
+    };
+    let frame =
+        seal_with_nonce(&header, plaintext, &e.nonce, &key).expect("vector envelope must be valid");
+    let mut out = json!({
         "name": e.name,
         "sender": e.sender.0,
         "recipient": e.recipient.0,
@@ -106,10 +152,118 @@ fn envelope_json(e: Envelope) -> Value {
         "counter": header.counter,
         "nonce": hex(&e.nonce),
         "key": hex(&key),
-        "plaintext_utf8": e.plaintext,
-        "plaintext": hex(e.plaintext.as_bytes()),
-        "header": hex(&header.encode()),
-        "frame": hex(&frame),
+    });
+    if let Plaintext::Text(text) = e.plaintext {
+        out["plaintext_utf8"] = json!(text);
+    }
+    out["plaintext"] = json!(hex(plaintext));
+    out["header"] = json!(hex(&header.encode()));
+    out["frame"] = json!(hex(&frame));
+    out
+}
+
+fn peer_keys(id: &Identity) -> PeerKeys {
+    PeerKeys {
+        sign_pk: id.sign_pk(),
+        kx_pk: id.kx_pk(),
+    }
+}
+
+/// The `pairing` section: A shows a code, B joins a group that already holds
+/// C, then A removes C.
+fn pairing_json(a: &Identity, b: &Identity, a_b_keys: &SessionKeys) -> Value {
+    let (c_sign_seed, c_kx_seed) = (seq::<32>(0x80), seq::<32>(0xa0));
+    let c = Identity::from_seeds(c_sign_seed, c_kx_seed);
+    let a_c_keys = session_keys(a, &c.device_id(), &c.kx_pk()).expect("session keys A-C for A");
+    let c_a_keys = session_keys(&c, &a.device_id(), &a.kx_pk()).expect("session keys A-C for C");
+    let a_c_client = if a.device_id() < c.device_id() {
+        "a"
+    } else {
+        "c"
+    };
+
+    let code = PairingCode {
+        relay_url: "wss://weft.frohub.eu/v1".to_owned(),
+        pairing_id: seq::<16>(0x50),
+        sign_pk: a.sign_pk(),
+        kx_pk: a.kx_pk(),
+        secret: seq::<32>(0xc0),
+    };
+    let mut code_payload = vec![code.relay_url.len() as u8];
+    code_payload.extend_from_slice(code.relay_url.as_bytes());
+    code_payload.extend_from_slice(&code.pairing_id);
+    code_payload.extend_from_slice(&code.sign_pk);
+    code_payload.extend_from_slice(&code.kx_pk);
+    code_payload.extend_from_slice(&code.secret);
+
+    let request = PairRequest::new(&code.secret, code.pairing_id, b.sign_pk(), b.kx_pk());
+    let mut mac_input = b"weft-pair-v1".to_vec();
+    mac_input.extend_from_slice(&request.pairing_id);
+    mac_input.extend_from_slice(&request.sign_pk);
+    mac_input.extend_from_slice(&request.kx_pk);
+    let mac = request.mac;
+
+    let frame = |frame: ControlFrame| hex(&frame.encode());
+
+    let welcome_plaintext = encode_welcome(&[peer_keys(&c)]).expect("valid welcome");
+    let welcome = envelope_json(Envelope {
+        name: "welcome_a_to_b",
+        sender: ("a", a, a_b_keys),
+        recipient: ("b", b),
+        kind: Kind::Welcome,
+        message_id: seq::<16>(0x61),
+        counter: 2,
+        nonce: seq::<24>(0x01),
+        plaintext: Plaintext::Bytes(&welcome_plaintext),
+    });
+    let device_added = envelope_json(Envelope {
+        name: "device_added_a_to_c",
+        sender: ("a", a, &a_c_keys),
+        recipient: ("c", &c),
+        kind: Kind::DeviceAdded,
+        message_id: seq::<16>(0x71),
+        counter: 1,
+        nonce: seq::<24>(0x21),
+        plaintext: Plaintext::Bytes(&encode_device_added(&peer_keys(b))),
+    });
+    let device_removed = envelope_json(Envelope {
+        name: "device_removed_a_to_b",
+        sender: ("a", a, a_b_keys),
+        recipient: ("b", b),
+        kind: Kind::DeviceRemoved,
+        message_id: seq::<16>(0x81),
+        counter: 3,
+        nonce: seq::<24>(0x41),
+        plaintext: Plaintext::Bytes(&encode_device_removed(&c.device_id())),
+    });
+
+    json!({
+        "relay_url": code.relay_url,
+        "pairing_id": hex(&code.pairing_id),
+        "secret": hex(&code.secret),
+        "shown_by": "a",
+        "joiner": "b",
+        "code_payload": hex(&code_payload),
+        "code": code.encode().expect("valid pairing code"),
+        "mac_input": hex(&mac_input),
+        "mac": hex(&mac),
+        "control_frames": {
+            "pair_open": frame(ControlFrame::PairOpen { pairing_id: code.pairing_id }),
+            "pair_request": frame(ControlFrame::PairRequest(request)),
+            "group_add": frame(ControlFrame::GroupAdd { device_id: b.device_id() }),
+            "group_remove": frame(ControlFrame::GroupRemove { device_id: c.device_id() }),
+            "error_unknown_pairing": frame(ControlFrame::Error(ControlError::UnknownPairing)),
+            "error_not_allowed": frame(ControlFrame::Error(ControlError::NotAllowed)),
+            "error_rate_limited": frame(ControlFrame::Error(ControlError::RateLimited)),
+            "error_group_full": frame(ControlFrame::Error(ControlError::GroupFull)),
+        },
+        "device_c": device_json(c_sign_seed, c_kx_seed, &c),
+        "session_a_c": {
+            "client": a_c_client,
+            "a": keys_json(&a_c_keys),
+            "c": keys_json(&c_a_keys),
+        },
+        "envelopes": [welcome, device_added, device_removed],
     })
 }
 
@@ -136,7 +290,7 @@ pub fn vectors_json() -> String {
         message_id: seq::<16>(0xa0),
         counter: 1,
         nonce: seq::<24>(0x80),
-        plaintext: "héllo, weft ✂",
+        plaintext: Plaintext::Text("héllo, weft ✂"),
     });
     let ping = envelope_json(Envelope {
         name: "ping_b_to_a",
@@ -146,7 +300,7 @@ pub fn vectors_json() -> String {
         message_id: seq::<16>(0xd0),
         counter: 1,
         nonce: seq::<24>(0xb0),
-        plaintext: "",
+        plaintext: Plaintext::Text(""),
     });
 
     let challenge = Challenge::new("weft.frohub.eu", seq::<32>(0xe0)).expect("valid challenge");
@@ -177,6 +331,7 @@ pub fn vectors_json() -> String {
             "response_frame": hex(&response.encode()),
             "accepted_frame": hex(&[AUTH_ACCEPTED]),
         },
+        "pairing": pairing_json(&a, &b, &a_keys),
     });
     let mut out = serde_json::to_string_pretty(&doc).expect("serialize vectors");
     out.push('\n');

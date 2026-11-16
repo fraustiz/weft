@@ -68,5 +68,88 @@
     "signature": "9c1882f740b83ee0c395fa5222ce2d21589deed27b9fc3701ced9a0f13dd4b708dae801fcc655cb402d738faec0884ac8f03a5e31a17291a575cfb8ab12d6602",
     "response_frame": "a103a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b89c1882f740b83ee0c395fa5222ce2d21589deed27b9fc3701ced9a0f13dd4b708dae801fcc655cb402d738faec0884ac8f03a5e31a17291a575cfb8ab12d6602",
     "accepted_frame": "a2"
+  },
+  "pairing": {
+    "relay_url": "wss://weft.frohub.eu/v1",
+    "pairing_id": "505152535455565758595a5b5c5d5e5f",
+    "secret": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+    "shown_by": "a",
+    "joiner": "b",
+    "code_payload": "177773733a2f2f776566742e66726f6875622e65752f7631505152535455565758595a5b5c5d5e5f03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b899f4674ecc87c0b8e712f192b8f49e7442a9376b4875967ababa28471019a93ec0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+    "code": "WEFT1:F3dzczovL3dlZnQuZnJvaHViLmV1L3YxUFFSU1RVVldYWVpbXF1eXwOhB7_zzhC-HXDdGOdLwJln5NYwm6UNXx3chmQSVTG4mfRnTsyHwLjnEvGSuPSedEKpN2tIdZZ6urooRxAZqT7AwcLDxMXGx8jJysvMzc7P0NHS09TV1tfY2drb3N3e3w",
+    "mac_input": "776566742d706169722d7631505152535455565758595a5b5c5d5e5f2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559da7e09d2129568e8aa5cf96ea7fd9e0f881a5d78bf592269562963f7b6f689050",
+    "mac": "2346a82ae6d75ddb1b9ad5957159ee86f84849c812444f9cd9a5bf7727c0b100",
+    "control_frames": {
+      "pair_open": "b0505152535455565758595a5b5c5d5e5f",
+      "pair_request": "b1505152535455565758595a5b5c5d5e5f2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559da7e09d2129568e8aa5cf96ea7fd9e0f881a5d78bf592269562963f7b6f6890502346a82ae6d75ddb1b9ad5957159ee86f84849c812444f9cd9a5bf7727c0b100",
+      "group_add": "b20e934e02183f97e0cd83ad10d6c4be5a",
+      "group_remove": "b3d99ec655ed00554c7be80f7152d69e08",
+      "error_unknown_pairing": "be01",
+      "error_not_allowed": "be02",
+      "error_rate_limited": "be03",
+      "error_group_full": "be04"
+    },
+    "device_c": {
+      "sign_seed": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "kx_seed": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "sign_pk": "cd14b37f956e953194ff7fb73b3d81dcc561d61a7538094b7c3e1a643ee5f3aa",
+      "kx_pk": "f8328726fcd5706241688baac26481b52f0aece6fc6bd52619c46a6390d2ba72",
+      "device_id": "d99ec655ed00554c7be80f7152d69e08"
+    },
+    "session_a_c": {
+      "client": "a",
+      "a": {
+        "rx": "9133810a4863d8798241b8166d5747ce2a56034394858e30466d6d31565fb134",
+        "tx": "fa95b54b41bbc5fe40f9ced7c1fe1f6f0c948bb67ebfd1db6c2918b3b956edfe"
+      },
+      "c": {
+        "rx": "fa95b54b41bbc5fe40f9ced7c1fe1f6f0c948bb67ebfd1db6c2918b3b956edfe",
+        "tx": "9133810a4863d8798241b8166d5747ce2a56034394858e30466d6d31565fb134"
+      }
+    },
+    "envelopes": [
+      {
+        "name": "welcome_a_to_b",
+        "sender": "a",
+        "recipient": "b",
+        "version": 1,
+        "kind": 3,
+        "message_id": "6162636465666768696a6b6c6d6e6f70",
+        "counter": 2,
+        "nonce": "0102030405060708090a0b0c0d0e0f101112131415161718",
+        "key": "16543c0e133a5d0de69033e22655631a1230c8ca5fd234bcb361bceb4d066234",
+        "plaintext": "01cd14b37f956e953194ff7fb73b3d81dcc561d61a7538094b7c3e1a643ee5f3aaf8328726fcd5706241688baac26481b52f0aece6fc6bd52619c46a6390d2ba72",
+        "header": "010340bca4eaf9d2b097ff8dbaa4d61767ed0e934e02183f97e0cd83ad10d6c4be5a6162636465666768696a6b6c6d6e6f700000000000000002",
+        "frame": "010340bca4eaf9d2b097ff8dbaa4d61767ed0e934e02183f97e0cd83ad10d6c4be5a6162636465666768696a6b6c6d6e6f7000000000000000020102030405060708090a0b0c0d0e0f10111213141516171897d680f6ca7e8a1ac228faae2c7acb2a167a2c4897bc860dfb751b1d7ed1d6a4d2d5f24934d43182638e9e36708d5f83c0491fcbeb620d0d6fa7e47947e8252aabaa6a2381b8d3f5d3eae676dea330dc10"
+      },
+      {
+        "name": "device_added_a_to_c",
+        "sender": "a",
+        "recipient": "c",
+        "version": 1,
+        "kind": 4,
+        "message_id": "7172737475767778797a7b7c7d7e7f80",
+        "counter": 1,
+        "nonce": "2122232425262728292a2b2c2d2e2f303132333435363738",
+        "key": "fa95b54b41bbc5fe40f9ced7c1fe1f6f0c948bb67ebfd1db6c2918b3b956edfe",
+        "plaintext": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559da7e09d2129568e8aa5cf96ea7fd9e0f881a5d78bf592269562963f7b6f689050",
+        "header": "010440bca4eaf9d2b097ff8dbaa4d61767edd99ec655ed00554c7be80f7152d69e087172737475767778797a7b7c7d7e7f800000000000000001",
+        "frame": "010440bca4eaf9d2b097ff8dbaa4d61767edd99ec655ed00554c7be80f7152d69e087172737475767778797a7b7c7d7e7f8000000000000000012122232425262728292a2b2c2d2e2f30313233343536373832d1446a3abcaabe4fc4beb8426f0dcfb03eb9b6fec5f3dd71b9e8c9d85f041c6d52fc2aff378903fd237d22e6401c3dae8976a6aaf4a6fe9c5ea32aa493fda883906dfeb64443c4cd36872bb573925a"
+      },
+      {
+        "name": "device_removed_a_to_b",
+        "sender": "a",
+        "recipient": "b",
+        "version": 1,
+        "kind": 5,
+        "message_id": "8182838485868788898a8b8c8d8e8f90",
+        "counter": 3,
+        "nonce": "4142434445464748494a4b4c4d4e4f505152535455565758",
+        "key": "16543c0e133a5d0de69033e22655631a1230c8ca5fd234bcb361bceb4d066234",
+        "plaintext": "d99ec655ed00554c7be80f7152d69e08",
+        "header": "010540bca4eaf9d2b097ff8dbaa4d61767ed0e934e02183f97e0cd83ad10d6c4be5a8182838485868788898a8b8c8d8e8f900000000000000003",
+        "frame": "010540bca4eaf9d2b097ff8dbaa4d61767ed0e934e02183f97e0cd83ad10d6c4be5a8182838485868788898a8b8c8d8e8f9000000000000000034142434445464748494a4b4c4d4e4f505152535455565758c36bc8e7ba0fe2bfda8b8e050da49b47606161a0313c307791ca6f34442c126e"
+      }
+    ]
   }
 }

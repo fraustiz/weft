@@ -228,3 +228,85 @@ pub fn aead_decrypt(
     out.truncate(out_len as usize);
     Some(out)
 }
+
+/// `crypto_generichash` (BLAKE2b) with a 32-byte key, 32-byte output.
+pub fn generichash_32_keyed(input: &[u8], key: &[u8; 32]) -> [u8; 32] {
+    init();
+    let mut out = [0u8; 32];
+    // SAFETY: out and key are 32 bytes (both within BLAKE2b's ranges); the
+    // input length is passed explicitly.
+    let rc = unsafe {
+        ffi::crypto_generichash(
+            out.as_mut_ptr(),
+            out.len(),
+            input.as_ptr(),
+            input.len() as u64,
+            key.as_ptr(),
+            key.len(),
+        )
+    };
+    assert_eq!(rc, 0, "crypto_generichash failed");
+    out
+}
+
+/// `sodium_memcmp`: constant-time equality of two 32-byte values.
+pub fn memcmp_32(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    init();
+    // SAFETY: both buffers are exactly 32 bytes.
+    let rc = unsafe { ffi::sodium_memcmp(a.as_ptr().cast(), b.as_ptr().cast(), a.len()) };
+    rc == 0
+}
+
+const BASE64_VARIANT: std::ffi::c_int =
+    ffi::sodium_base64_VARIANT_URLSAFE_NO_PADDING as std::ffi::c_int;
+
+/// `sodium_bin2base64`, URL-safe alphabet, no padding.
+pub fn base64url_encode(bin: &[u8]) -> String {
+    init();
+    // SAFETY: pure function of its arguments. The returned length includes
+    // the trailing NUL byte.
+    let max_len = unsafe { ffi::sodium_base64_encoded_len(bin.len(), BASE64_VARIANT) };
+    let mut out = vec![0u8; max_len];
+    // SAFETY: out has the size libsodium asked for; bin length is passed.
+    unsafe {
+        ffi::sodium_bin2base64(
+            out.as_mut_ptr().cast(),
+            out.len(),
+            bin.as_ptr(),
+            bin.len(),
+            BASE64_VARIANT,
+        )
+    };
+    out.pop(); // trailing NUL
+    String::from_utf8(out).expect("base64 output is ASCII")
+}
+
+/// `sodium_base642bin`, URL-safe alphabet, no padding. `None` if the input
+/// has any other character (padding and whitespace included), a length that
+/// cannot be produced by the encoder, or non-zero trailing bits.
+pub fn base64url_decode(b64: &str) -> Option<Vec<u8>> {
+    init();
+    let mut out = vec![0u8; b64.len() / 4 * 3 + 3];
+    let mut out_len: usize = 0;
+    // SAFETY: out is larger than any decoding of b64.len() characters and
+    // its size is passed; b64 is read for exactly b64.len() bytes. With no
+    // `ignore` set and no `b64_end` pointer, libsodium fails unless the
+    // whole input is valid.
+    let rc = unsafe {
+        ffi::sodium_base642bin(
+            out.as_mut_ptr(),
+            out.len(),
+            b64.as_ptr().cast(),
+            b64.len(),
+            std::ptr::null(),
+            &mut out_len,
+            std::ptr::null_mut(),
+            BASE64_VARIANT,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    out.truncate(out_len);
+    Some(out)
+}

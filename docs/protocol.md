@@ -51,7 +51,7 @@ Header layout:
 | --- | --- | --- |
 | `0x01` | Clipboard text | UTF-8 text, at most 256 KiB |
 | `0x02` | Ping | empty (exactly 0 bytes) |
-| `0x03` | Welcome (section 5) | `count (1 byte, 0..8) || count × (sign_pk 32 || kx_pk 32)` |
+| `0x03` | Welcome (section 5) | `count (1 byte, 0 to 8 inclusive) || count × (sign_pk 32 || kx_pk 32)`, exact length |
 | `0x04` | Device added (section 5) | `sign_pk (32) || kx_pk (32)` |
 | `0x05` | Device removed (section 5) | `device_id (16)` |
 
@@ -79,7 +79,7 @@ For envelopes, the relay:
 - forwards the frame unchanged only if `sender` and `recipient` are in the **same group** (section 5) and the recipient is connected;
 - never decrypts anything.
 
-The client checks that the `relay_name` in the challenge equals the host it connected to (without port) before signing.
+The client checks that the `relay_name` in the challenge equals the host it connected to (without port) before signing. The comparison is byte-exact on the lowercased host.
 
 ## 5. Groups and pairing
 
@@ -94,6 +94,8 @@ Device A (already in a group, or alone) shows a QR code with the string `WEFT1:`
 ```
 url_len (1) || relay_url (UTF-8, e.g. "wss://weft.frohub.eu/v1") || pairing_id (16) || sign_pk_A (32) || kx_pk_A (32) || secret (32)
 ```
+
+The base64url decoding is strict, as libsodium's `sodium_base642bin` does it: no padding, no whitespace, no other alphabet, no non-zero trailing bits. The url is 1 to 255 bytes.
 
 `pairing_id` and `secret` are random. The **secret never goes through the relay**: it only travels through the QR code, from screen to camera. The code is single-use and expires after 5 minutes.
 
@@ -114,7 +116,7 @@ The relay accepts `0xB2` only for a device that sent a matching `0xB1` to this s
 ### Flow
 1. A opens a slot (`0xB0`) and shows the QR code.
 2. B scans it, now trusts A's keys from the code, connects, authenticates and sends `0xB1`.
-3. A checks the MAC (constant-time). If it is wrong, A ignores the request. Otherwise A adds B to its trusted list and sends `0xB2`.
+3. A checks that the request's `pairing_id` is the one of the code it is showing, then checks the MAC (constant-time). If either is wrong, A ignores the request. Otherwise A adds B to its trusted list and sends `0xB2`.
 4. A sends B a **Welcome** envelope (`0x03`) listing the other members (not A, not B), and sends each other member a **Device added** envelope (`0x04`) with B's keys. Each recipient adds the keys to its trusted list.
 5. Removing a device: any member sends `0xB3` to the relay and a **Device removed** envelope (`0x05`) to the remaining members, which drop that device from their list.
 
@@ -127,7 +129,8 @@ Offline delivery comes in a later revision of this document.
 - session keys for both roles;
 - the encoded envelope;
 - the authentication signature;
-- a pairing code, a pairing request MAC and the control frames.
+- a pairing code, a pairing request MAC and the control frames;
+- a third device C and the three group envelopes (welcome, device added, device removed), in the `pairing` section.
 
 Keys are derived from fixed seeds:
 - signing pair: `crypto_sign_seed_keypair` (32-byte seed) ;
