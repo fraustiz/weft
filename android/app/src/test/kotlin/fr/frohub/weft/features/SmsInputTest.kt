@@ -64,6 +64,30 @@ class SmsInputTest {
     }
 
     @Test
+    fun fallbackSmsIdsAreNegativeAndDistinct() {
+        assertEquals(-1_763_000_000_000, fallbackSmsId(1_763_000_000_000))
+        assertTrue(fallbackSmsId(1) < 0)
+        assertTrue(fallbackSmsId(1_763_000_000_000) != fallbackSmsId(1_763_000_000_001))
+    }
+
+    @Test
+    fun falseSmsFlagsAreLeftOut() {
+        val incoming = json(Packet.SmsReceived(3, SmsMessage(8, "+33600000000", "Hi", 9, outgoing = false)))
+        assertFalse(incoming.has("outgoing"))
+        assertTrue(json(Packet.SmsReceived(3, message)).getBoolean("outgoing"))
+        val conversations = json(
+            Packet.SmsConversations(
+                listOf(
+                    SmsConversation(3, listOf("+33600000000"), listOf(null), "See you", 5, unread = true),
+                    SmsConversation(4, emptyList(), emptyList(), null, 6, unread = false),
+                ),
+            ),
+        ).getJSONArray("conversations")
+        assertTrue(conversations.getJSONObject(0).getBoolean("unread"))
+        assertFalse(conversations.getJSONObject(1).has("unread"))
+    }
+
+    @Test
     fun presenterPointerNullIsExplicit() {
         val hide = json(Packet.Presenter(null, null))
         assertTrue(hide.has("pointer") && hide.isNull("pointer"))

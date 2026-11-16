@@ -189,3 +189,42 @@ fun decideOffer(offer: Packet.FileOffer, enabled: Boolean, active: Int, partialL
     if (freeBytes < offer.size - have + offer.size) return OfferDecision.Reject(Packet.REJECT_NO_SPACE)
     return OfferDecision.Accept(have)
 }
+
+/** How long a receiver remembers a finished transfer, to answer a late re-offer with `file.done`. */
+const val COMPLETED_MEMORY_MILLIS = 24 * 60 * 60_000L
+
+/** At most this many finished transfers are remembered; the oldest go first. */
+const val MAX_COMPLETED_REMEMBERED = 256
+
+/**
+ * Transfers a receiver finished, by key (sender and id): the sender may offer one again (its
+ * `file.done` was lost, or it gave up waiting while the file was copied into Downloads), and gets
+ * `file.done` instead of a new transfer from byte 0. Pure. Not thread-safe.
+ */
+class CompletedTransfers(
+    private val lifetimeMillis: Long = COMPLETED_MEMORY_MILLIS,
+    private val capacity: Int = MAX_COMPLETED_REMEMBERED,
+) {
+    /** Key to the time it finished, oldest first. */
+    private val finished = LinkedHashMap<String, Long>()
+
+    fun add(key: String, nowMillis: Long) {
+        finished.remove(key)
+        finished[key] = nowMillis
+        expire(nowMillis)
+        while (finished.size > capacity) finished.remove(finished.keys.first())
+    }
+
+    /** True if [key] finished less than the lifetime ago. */
+    fun has(key: String, nowMillis: Long): Boolean {
+        expire(nowMillis)
+        return key in finished
+    }
+
+    private fun expire(nowMillis: Long) {
+        val iterator = finished.values.iterator()
+        while (iterator.hasNext()) {
+            if (nowMillis - iterator.next() >= lifetimeMillis) iterator.remove() else break
+        }
+    }
+}

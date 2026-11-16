@@ -703,7 +703,7 @@ private fun SmsConversation.toJson(): JSONObject = JSONObject()
     .put("names", JSONArray(names.map { it ?: JSONObject.NULL }))
     .putOpt("snippet", snippet)
     .put("time", time)
-    .put("unread", unread)
+    .putTrue("unread", unread)
 
 private fun JSONObject.toConversation(): SmsConversation? {
     val addresses = stringList("addresses") ?: return null
@@ -724,7 +724,7 @@ private fun SmsMessage.putInto(json: JSONObject): JSONObject = json
     .putOpt("address", address)
     .put("body", body)
     .put("time", time)
-    .put("outgoing", outgoing)
+    .putTrue("outgoing", outgoing)
     .putOpt("status", status)
 
 private fun JSONObject.toMessage(): SmsMessage? = SmsMessage(

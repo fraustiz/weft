@@ -176,6 +176,29 @@ class TransfersTest {
         assertEquals(OfferDecision.Reject(Packet.REJECT_TOO_LARGE), decideOffer(huge, true, 0, null, Long.MAX_VALUE))
     }
 
+    @Test
+    fun remembersFinishedTransfersForADay() {
+        val completed = CompletedTransfers()
+        assertFalse(completed.has("pc/$id", 0))
+        completed.add("pc/$id", 1_000)
+        assertTrue(completed.has("pc/$id", 1_000 + COMPLETED_MEMORY_MILLIS - 1))
+        // Same id from another device: a different transfer.
+        assertFalse(completed.has("other/$id", 2_000))
+        assertFalse(completed.has("pc/$id", 1_000 + COMPLETED_MEMORY_MILLIS))
+    }
+
+    @Test
+    fun forgetsTheOldestFinishedTransfersPastTheLimit() {
+        val completed = CompletedTransfers(capacity = 2)
+        completed.add("a", 1)
+        completed.add("b", 2)
+        completed.add("a", 3) // Finished again: now the newest.
+        completed.add("c", 4)
+        assertFalse(completed.has("b", 5))
+        assertTrue(completed.has("a", 5))
+        assertTrue(completed.has("c", 5))
+    }
+
     // endregion
 
     // region Partial files

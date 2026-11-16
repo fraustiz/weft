@@ -51,7 +51,11 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
     private val ringer = Ringer(context) {
         notifier.cancelRing()
         _ringing.value = false
+        ringSender = null
     }
+
+    /** The device that started the current ring: only its `ring.stop` stops it. Main thread. */
+    private var ringSender: String? = null
     private val _ringing = MutableStateFlow(false)
 
     /** True while this phone rings (until "Found it", `ring.stop` or 60 s). */
@@ -102,6 +106,9 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
     /** Guards [receiving]; held while a chunk is written, so chunks of one transfer stay in order. */
     private val receiveLock = Mutex()
     private val receiving = HashMap<String, Receiving>()
+
+    /** Guarded by [receiveLock]: transfers received lately, whose re-offer gets `file.done` again. */
+    private val completed = CompletedTransfers()
     private val sending = ConcurrentHashMap<String, Sending>()
     private val sendSlots = ConcurrentHashMap<String, Semaphore>()
 
@@ -221,6 +228,11 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
         for (job in sending.values) job.events.trySend(Event.Reconnected)
     }
 
+    /** Offers again our transfers to [deviceIdHex], as after our own reconnect. */
+    private fun offerAgain(deviceIdHex: String) {
+        for (job in sending.values) if (job.deviceIdHex == deviceIdHex) job.events.trySend(Event.Reconnected)
+    }
+
     /** Our capabilities, then our current state packets, to each of [deviceIds]. */
     private suspend fun sendCapabilitiesAndState(deviceIds: List<String>) {
         if (deviceIds.isEmpty()) return
@@ -256,17 +268,25 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
                 val known = _peers.value[senderHex]?.capabilities != null
                 updatePeer(senderHex) { it.copy(capabilities = packet) }
                 // A device that restarted: both sides converge.
-                if (!known) sendCapabilitiesAndState(listOf(senderHex))
+                if (!known) {
+                    sendCapabilitiesAndState(listOf(senderHex))
+                    offerAgain(senderHex)
+                }
             }
-            Packet.StateRequest -> sendCapabilitiesAndState(listOf(senderHex))
+            Packet.StateRequest -> {
+                sendCapabilitiesAndState(listOf(senderHex))
+                // It (re)connected: our transfers to it resume from what it has.
+                offerAgain(senderHex)
+            }
             is Packet.Battery -> updatePeer(senderHex) { it.copy(battery = packet) }
             is Packet.Connectivity -> updatePeer(senderHex) { it.copy(connectivity = packet) }
             Packet.Ring -> withContext(Dispatchers.Main) {
+                ringSender = senderHex
                 _ringing.value = true
                 ringer.start()
                 notifier.ring(label(senderHex))
             }
-            Packet.RingStop -> withContext(Dispatchers.Main) { ringer.stop() }
+            Packet.RingStop -> withContext(Dispatchers.Main) { if (ringSender == senderHex) ringer.stop() }
             is Packet.Ping -> notifier.ping(label(senderHex), packet.message)
             is Packet.ShareUrl -> notifier.link(label(senderHex), packet.url)
             is Packet.FileOffer -> onOffer(senderHex, packet)
@@ -432,7 +452,7 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
 
     /**
      * From [Sms], main thread. The SMS app stores the message a moment later; its thread and id
-     * are read from there, with Android's thread for [address] (and id 0) if it never shows up.
+     * are read from there, with Android's thread for [address] (and [fallbackSmsId]) if it never shows up.
      */
     private fun onSmsReceived(address: String, body: String, time: Long) {
         val receivedAt = System.currentTimeMillis()
@@ -444,7 +464,7 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
                 if (row != null) break
             }
             if (!settings.isEnabled(Feature.SMS)) return@launch
-            val message = row?.toMessage() ?: SmsMessage(0, address, body, time, outgoing = false)
+            val message = row?.toMessage() ?: SmsMessage(fallbackSmsId(receivedAt), address, body, time, outgoing = false)
             val thread = row?.thread ?: sms.threadOf(address) ?: return@launch
             send(trustedIds(), Packet.SmsReceived(thread, message))
         }
@@ -515,6 +535,11 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
             // The sender offered it again (lost acks, reconnect): resume from what is written.
             existing.transfer.touch(now)
             send(listOf(senderHex), Packet.FileAccept(offer.id, existing.transfer.written))
+            return@withLock
+        }
+        if (completed.has(key, now)) {
+            // Already received (its file.done was lost, or came after the sender offered again).
+            send(listOf(senderHex), Packet.FileDone(offer.id))
             return@withLock
         }
         val active = receiving.values.count { it.deviceIdHex == senderHex }
@@ -588,6 +613,7 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
             failReceiving(key, entry)
             return
         }
+        completed.add(key, System.currentTimeMillis())
         send(listOf(entry.deviceIdHex), Packet.FileDone(transfer.id))
         Log.i(TAG, "received a file from ${shortId(entry.deviceIdHex)} (${transfer.size} bytes)")
         notifier.received(transfer.id, name, label(entry.deviceIdHex), uri, context.contentResolver.getType(uri) ?: transfer.mime)

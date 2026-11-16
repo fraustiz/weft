@@ -37,6 +37,13 @@ fun SmsRow.toMessage(): SmsMessage? {
 }
 
 /**
+ * The id of a received SMS that never showed up in the SMS table: minus the time it was received
+ * (ms). Real row ids are positive, so it cannot match one, and computers that keep messages by id
+ * do not merge two such messages into one (a fixed 0 would).
+ */
+fun fallbackSmsId(receivedAtMillis: Long): Long = -receivedAtMillis
+
+/**
  * The threads of [rows] (newest first), at most [max]: the newest message gives the snippet and
  * the time, every address seen in the thread is listed, [unreadThreads] says which have unread
  * messages. [nameOf] looks up a contact name, once per address.
