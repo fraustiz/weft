@@ -1,0 +1,124 @@
+package fr.frohub.weft
+
+import android.app.Activity
+import android.app.Application
+import android.content.ClipData
+import android.content.ClipDescription
+import android.content.ClipboardManager
+import android.content.ComponentName
+import android.content.Intent
+import android.os.Bundle
+import android.os.PersistableBundle
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.filters.SdkSuppress
+import androidx.test.platform.app.InstrumentationRegistry
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+
+@RunWith(AndroidJUnit4::class)
+class ClipboardSendActivityTest {
+    private val app = ApplicationProvider.getApplicationContext<WeftApplication>()
+    private val sent = CopyOnWriteArrayList<String>()
+    private lateinit var realSender: ClipboardSender
+
+    @Before
+    fun swapSender() {
+        realSender = app.clipboardSender
+        app.clipboardSender = ClipboardSender { sent += it }
+    }
+
+    @After
+    fun restoreSender() {
+        app.clipboardSender = realSender
+    }
+
+    @Test
+    fun sendsClipboardText() {
+        setClip(ClipData.newPlainText("test", "Bonjour depuis Weft, ça marche"))
+
+        launchAndAwaitFinish(ClipboardSendActivity.intent(app))
+
+        assertEquals(listOf("Bonjour depuis Weft, ça marche"), sent)
+    }
+
+    @Test
+    fun sendsSharedTextWithoutReadingClipboard() {
+        setClip(ClipData.newPlainText("test", "clipboard text"))
+        val share = Intent(Intent.ACTION_SEND)
+            .setComponent(ComponentName(app, SHARE_ALIAS))
+            .setType("text/plain")
+            .putExtra(Intent.EXTRA_TEXT, "shared text")
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+        launchAndAwaitFinish(share)
+
+        assertEquals(listOf("shared text"), sent)
+    }
+
+    @Test
+    fun shareAliasNeverReadsClipboard() {
+        setClip(ClipData.newPlainText("test", "clipboard text"))
+        val direct = Intent()
+            .setComponent(ComponentName(app, SHARE_ALIAS))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+        launchAndAwaitFinish(direct)
+
+        assertEquals(emptyList<String>(), sent)
+    }
+
+    @Test
+    @SdkSuppress(minSdkVersion = 33)
+    fun doesNotSendSensitiveClip() {
+        val clip = ClipData.newPlainText("password", "hunter2")
+        clip.description.extras = PersistableBundle().apply {
+            putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+        }
+        setClip(clip)
+
+        launchAndAwaitFinish(ClipboardSendActivity.intent(app))
+
+        assertEquals(emptyList<String>(), sent)
+    }
+
+    private fun setClip(clip: ClipData) {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            app.getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)
+        }
+    }
+
+    /** Starts the activity and waits until it has finished on its own. */
+    private fun launchAndAwaitFinish(intent: Intent) {
+        val destroyed = CountDownLatch(1)
+        val callbacks = object : Application.ActivityLifecycleCallbacks {
+            override fun onActivityDestroyed(activity: Activity) {
+                if (activity is ClipboardSendActivity) destroyed.countDown()
+            }
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
+            override fun onActivityStarted(activity: Activity) = Unit
+            override fun onActivityResumed(activity: Activity) = Unit
+            override fun onActivityPaused(activity: Activity) = Unit
+            override fun onActivityStopped(activity: Activity) = Unit
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+        }
+        app.registerActivityLifecycleCallbacks(callbacks)
+        try {
+            app.startActivity(intent)
+            assertTrue("ClipboardSendActivity did not finish", destroyed.await(10, TimeUnit.SECONDS))
+        } finally {
+            app.unregisterActivityLifecycleCallbacks(callbacks)
+        }
+    }
+
+    private companion object {
+        const val SHARE_ALIAS = "fr.frohub.weft.ShareTextActivity"
+    }
+}

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name" translatable="false">Weft</string>
+    <string name="share_label">Send with Weft</string>
+    <string name="tile_label">Send clipboard</string>
+
+    <string name="status_not_paired">Not paired yet</string>
+    <string name="status_not_paired_detail">Pairing comes in a later version</string>
+
+    <string name="action_send_clipboard">Send clipboard</string>
+    <string name="last_sent_label">Last sent</string>
+    <string name="last_sent_none">Nothing sent yet</string>
+    <!-- %1$s: time (or date) of the last send, %2$s: character count, from the plural below. -->
+    <string name="last_sent_value">%1$s · %2$s</string>
+    <plurals name="characters">
+        <item quantity="one">%d character</item>
+        <item quantity="other">%d characters</item>
+    </plurals>
+
+    <string name="tile_hint_title">Quick Settings tile</string>
+    <string name="tile_hint_body">Send your clipboard from any app with the Weft tile in Quick Settings.</string>
+    <string name="tile_hint_manual">Edit Quick Settings and drag the Weft tile in.</string>
+    <string name="action_add_tile">Add tile</string>
+    <string name="tile_already_added">The tile is already in Quick Settings</string>
+
+    <string name="toast_clipboard_sent">Clipboard sent</string>
+    <string name="toast_text_sent">Text sent</string>
+    <string name="toast_clipboard_empty">Clipboard is empty</string>
+    <string name="toast_clipboard_not_text">Clipboard has no text</string>
+    <string name="toast_sensitive">Sensitive content, not sent</string>
+    <string name="toast_no_text">No text to send</string>
+</resources>

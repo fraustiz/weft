@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="share_label">Envoyer avec Weft</string>
+    <string name="tile_label">Envoyer le presse-papiers</string>
+
+    <string name="status_not_paired">Pas encore appairé</string>
+    <string name="status_not_paired_detail">L’appairage arrive dans une prochaine version</string>
+
+    <string name="action_send_clipboard">Envoyer le presse-papiers</string>
+    <string name="last_sent_label">Dernier envoi</string>
+    <string name="last_sent_none">Rien d’envoyé pour l’instant</string>
+    <string name="last_sent_value">%1$s · %2$s</string>
+    <plurals name="characters">
+        <item quantity="one">%d caractère</item>
+        <item quantity="many">%d caractères</item>
+        <item quantity="other">%d caractères</item>
+    </plurals>
+
+    <string name="tile_hint_title">Tuile des Réglages rapides</string>
+    <string name="tile_hint_body">Envoyez votre presse-papiers depuis n’importe quelle app avec la tuile Weft des Réglages rapides.</string>
+    <string name="tile_hint_manual">Modifiez les Réglages rapides et faites glisser la tuile Weft.</string>
+    <string name="action_add_tile">Ajouter la tuile</string>
+    <string name="tile_already_added">La tuile est déjà dans les Réglages rapides</string>
+
+    <string name="toast_clipboard_sent">Presse-papiers envoyé</string>
+    <string name="toast_text_sent">Texte envoyé</string>
+    <string name="toast_clipboard_empty">Le presse-papiers est vide</string>
+    <string name="toast_clipboard_not_text">Le presse-papiers ne contient pas de texte</string>
+    <string name="toast_sensitive">Contenu sensible, non envoyé</string>
+    <string name="toast_no_text">Aucun texte à envoyer</string>
+</resources>

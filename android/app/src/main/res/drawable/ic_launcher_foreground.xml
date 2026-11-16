@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The mark from brand/final/weft-mark.svg (100 x 100), scaled into the 66 dp safe zone.
+    VectorDrawable has no masks, so the gap around the needle is its outline painted in ink
+    (the background colour) over the pixels, then the needle itself in orange.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.56"
+        android:scaleY="0.56"
+        android:translateX="26"
+        android:translateY="26">
+        <path
+            android:fillColor="@color/weft_orange"
+            android:pathData="M27,20 H41 A7,7 0 0 1 48,27 V41 A7,7 0 0 1 41,48 H27 A7,7 0 0 1 20,41 V27 A7,7 0 0 1 27,20 Z M27,52 H41 A7,7 0 0 1 48,59 V73 A7,7 0 0 1 41,80 H27 A7,7 0 0 1 20,73 V59 A7,7 0 0 1 27,52 Z M59,52 H73 A7,7 0 0 1 80,59 V73 A7,7 0 0 1 73,80 H59 A7,7 0 0 1 52,73 V59 A7,7 0 0 1 59,52 Z" />
+        <group
+            android:rotation="-49.5"
+            android:translateX="14"
+            android:translateY="88">
+            <path
+                android:fillColor="@color/weft_ink"
+                android:pathData="M0,0 C24.64,-2.4 61.6,-3.2 86,-3.2 A3.2,3.2 0 0 1 86,3.2 C61.6,3.2 24.64,2.4 0,0 Z M77,-0.8 H83 A0.8,0.8 0 0 1 83,0.8 H77 A0.8,0.8 0 0 1 77,-0.8 Z"
+                android:strokeWidth="5"
+                android:strokeColor="@color/weft_ink"
+                android:strokeLineJoin="round" />
+            <path
+                android:fillColor="@color/weft_orange"
+                android:fillType="evenOdd"
+                android:pathData="M0,0 C24.64,-2.4 61.6,-3.2 86,-3.2 A3.2,3.2 0 0 1 86,3.2 C61.6,3.2 24.64,2.4 0,0 Z M77,-0.8 H83 A0.8,0.8 0 0 1 83,0.8 H77 A0.8,0.8 0 0 1 77,-0.8 Z" />
+        </group>
+    </group>
+</vector>

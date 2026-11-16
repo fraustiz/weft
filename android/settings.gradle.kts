@@ -22,5 +22,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "weft"
 
-// Library modules. The application module (":app") is added here later.
+include(":app")
 include(":protocol")

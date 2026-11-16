@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand colours (brand/README.md). -->
+    <color name="weft_orange">#FFF26A21</color>
+    <color name="weft_ink">#FF17130F</color>
+    <color name="window_background">#FFF9F8F6</color>
+</resources>
