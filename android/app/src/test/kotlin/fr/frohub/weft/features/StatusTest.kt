@@ -26,7 +26,11 @@ class StatusTest {
         assertEquals(Feature.LINKS, Feature.of(Packet.SHARE_URL))
         assertNull(Feature.of(Packet.CAPABILITIES))
         assertNull(Feature.of(Packet.STATE_REQUEST))
-        assertNull(Feature.of("media"))
+        assertEquals(Feature.MEDIA, Feature.of(Packet.MEDIA_COMMAND))
+        assertEquals(Feature.NOTIFICATIONS, Feature.of(Packet.NOTIFICATION_REPLY))
+        assertEquals(Feature.CALLS, Feature.of(Packet.CALL_MUTE))
+        assertEquals(Feature.VOLUME, Feature.of(Packet.VOLUME_SET))
+        assertNull(Feature.of("sms.send"))
     }
 
     @Test

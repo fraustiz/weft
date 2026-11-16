@@ -22,7 +22,8 @@ import kotlinx.coroutines.launch
 /**
  * Foreground service (type `connectedDevice`) that keeps the relay connection open while this
  * device is paired, so text from the other devices lands on the clipboard at any time. While it
- * runs, the battery and the network are watched for the status packets (docs/features.md).
+ * runs, the battery, the network, the media volume and calls are watched for their packets
+ * (docs/features.md).
  *
  * Started by the app (launch, after a join), never at boot: Android 15 forbids starting a
  * `connectedDevice` service from BOOT_COMPLETED for apps targeting it, so after a reboot the

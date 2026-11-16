@@ -173,6 +173,28 @@
     <string name="feature_links_body">Links shared with Weft open on the computer; links from it arrive as a notification</string>
     <string name="feature_files">Files</string>
     <string name="feature_files_body">Send files to your computers and receive theirs in Downloads</string>
+    <string name="feature_notifications">Notifications</string>
+    <string name="feature_notifications_body">Show this phone’s notifications on your computers, and reply to or dismiss them there</string>
+    <string name="feature_notifications_permission">Android first asks you to let Weft read notifications.</string>
+    <string name="feature_calls">Calls</string>
+    <string name="feature_calls_body">Show incoming calls on your computers, and silence the ringer from there</string>
+    <string name="feature_calls_permission">Weft needs phone access to see calls, and call log and contacts access to show the number and the name.</string>
+    <string name="feature_media">Media</string>
+    <string name="feature_media_body">Control what plays on this phone from your computers, and what plays on them from here</string>
+    <string name="feature_media_permission">Android shows this phone’s players only to apps that can read notifications. Your computers’ players work without it.</string>
+    <string name="feature_volume">Volume</string>
+    <string name="feature_volume_body">Change this phone’s media volume from your computers, and theirs from here</string>
+    <string name="excluded_apps">Choose apps</string>
+    <string name="excluded_apps_none">Every app is shown</string>
+    <plurals name="excluded_apps_count">
+        <item quantity="one">%d app stays on this phone</item>
+        <item quantity="other">%d apps stay on this phone</item>
+    </plurals>
+
+    <!-- Apps whose notifications are sent. -->
+    <string name="apps_title">Notification apps</string>
+    <string name="apps_body">Notifications from an app turned off here stay on this phone.</string>
+    <string name="apps_empty">Apps show up here once they post a notification.</string>
 
     <!-- Device details: what the other device tells, and its actions. -->
     <string name="device_battery">Battery</string>
@@ -236,4 +258,20 @@
     <string name="toast_file_unreadable">The file can’t be read</string>
     <string name="toast_files_some_unreadable">Sending; some files can’t be read</string>
     <string name="toast_files_sending">Sending…</string>
+
+    <!-- Device details: the other device's media and volume. -->
+    <!-- %1$s: the app that plays. -->
+    <string name="now_playing">Now playing · %1$s</string>
+    <string name="now_playing_untitled">Untitled</string>
+    <string name="media_position">Position</string>
+    <string name="action_play">Play</string>
+    <string name="action_pause">Pause</string>
+    <string name="action_next">Next</string>
+    <string name="action_previous">Previous</string>
+    <string name="device_volume">Volume</string>
+    <string name="action_mute">Mute</string>
+    <string name="action_unmute">Unmute</string>
+    <!-- %1$d: volume, 0 to 100. -->
+    <string name="volume_level">%1$d %%</string>
+    <string name="volume_muted">Muted</string>
 </resources>

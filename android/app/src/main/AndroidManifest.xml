@@ -16,6 +16,9 @@
         Asked only from the settings; without it only Wi-Fi and "none" are sent.
     -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- Calls: the caller's number (Android 10+) and name. Asked only when Calls is switched on. -->
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
     <!-- Ring: the "Found it" notice over the lock screen (Android 14+ lets the user refuse it). -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <!-- Received files go to the public Downloads folder; from Android 10 MediaStore needs none. -->
@@ -30,6 +33,14 @@
     <uses-feature
         android:name="android.hardware.camera.any"
         android:required="false" />
+
+    <!-- App names for mirrored notifications, media players and the excluded apps list. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
     <!-- No backups or device transfers: device keys will live in this app. -->
     <application
@@ -132,6 +143,20 @@
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!--
+            Notifications and media sessions for the computers. Bound by Android only once the
+            user allows Weft to read notifications in the system settings.
+        -->
+        <service
+            android:name=".features.WeftNotificationListener"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
 

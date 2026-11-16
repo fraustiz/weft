@@ -9,7 +9,9 @@ import fr.frohub.weft.core.RenameResult
 import fr.frohub.weft.core.WeftCore
 import fr.frohub.weft.features.Feature
 import fr.frohub.weft.features.Features
+import fr.frohub.weft.features.Packet
 import fr.frohub.weft.features.PeerInfo
+import fr.frohub.weft.features.SeenApp
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.SharingStarted
@@ -56,9 +58,21 @@ interface WeftModel {
     suspend fun stopRing(deviceId: String): Boolean = false
 
     suspend fun ping(deviceId: String): Boolean = false
+
+    suspend fun mediaCommand(deviceId: String, command: Packet.MediaCommand): Boolean = false
+
+    suspend fun setVolume(deviceId: String, command: Packet.VolumeSet): Boolean = false
+
+    /** Apps that posted notifications lately, newest first, and those whose stay on this phone. */
+    val notificationApps: StateFlow<List<SeenApp>> get() = NO_APPS
+    val excludedApps: StateFlow<Set<String>> get() = NO_EXCLUDED
+
+    fun setAppExcluded(packageName: String, excluded: Boolean) = Unit
 }
 
 private val NO_PEERS = MutableStateFlow<Map<String, PeerInfo>>(emptyMap())
+private val NO_APPS = MutableStateFlow<List<SeenApp>>(emptyList())
+private val NO_EXCLUDED = MutableStateFlow<Set<String>>(emptySet())
 private val ALL_FEATURES = MutableStateFlow(Feature.entries.toSet())
 
 class CoreModel(private val core: WeftCore, private val featureHub: Features) : WeftModel {
@@ -91,4 +105,13 @@ class CoreModel(private val core: WeftCore, private val featureHub: Features) : 
     override suspend fun stopRing(deviceId: String) = featureHub.stopRing(deviceId)
 
     override suspend fun ping(deviceId: String) = featureHub.ping(deviceId)
+
+    override suspend fun mediaCommand(deviceId: String, command: Packet.MediaCommand) = featureHub.mediaCommand(deviceId, command)
+
+    override suspend fun setVolume(deviceId: String, command: Packet.VolumeSet) = featureHub.setVolume(deviceId, command)
+
+    override val notificationApps: StateFlow<List<SeenApp>> get() = featureHub.notificationApps.seen
+    override val excludedApps: StateFlow<Set<String>> get() = featureHub.notificationApps.excluded
+
+    override fun setAppExcluded(packageName: String, excluded: Boolean) = featureHub.notificationApps.setExcluded(packageName, excluded)
 }

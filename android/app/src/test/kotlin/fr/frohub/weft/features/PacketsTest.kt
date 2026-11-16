@@ -37,7 +37,7 @@ class PacketsTest {
 
     @Test
     fun ignoresUnknownTypesAndMembers() {
-        assertNull(decode("""{"type":"media","players":[]}"""))
+        assertNull(decode("""{"type":"sms.send","addresses":[]}"""))
         assertEquals(Packet.Ring, decode("""{"type":"ring","volume":11,"extra":{"a":[1,2]}}"""))
         // Non-string items of a list are skipped, not fatal.
         assertEquals(
@@ -105,8 +105,63 @@ class PacketsTest {
             Packet.FileAck(id, 262144),
             Packet.FileDone(id),
             Packet.FileCancel(id),
+            Packet.Notification("k|1", "Chat", "com.chat", "Alice", "Lunch?", 1_763_000_000_000, true, listOf("Mark as read"), reply = true, silent = false),
+            Packet.Notification("k|2", null, null, null, null, null, false, null, reply = false, silent = true),
+            Packet.NotificationRemoved("k|1"),
+            Packet.NotificationDismiss("k|1"),
+            Packet.NotificationAction("k|1", "Mark as read"),
+            Packet.NotificationReply("k|1", "Yes"),
+            Packet.NotificationRequest,
+            Packet.Call(Packet.CALL_RINGING, "+33600000000", "Alice"),
+            Packet.Call(Packet.CALL_ENDED, null, null),
+            Packet.CallMute,
+            Packet.Media(emptyList()),
+            Packet.Media(
+                listOf(
+                    Packet.MediaPlayer("spotify", "Spotify", "Song", "Artist", "Album", true, 1_000, 200_000, true, true, true, false, true, 80),
+                    Packet.MediaPlayer("vlc", null, null, null, null, false, null, null, false, false, false, false, false),
+                ),
+            ),
+            Packet.MediaCommand("spotify", Packet.MEDIA_SEEK, 42_000),
+            Packet.MediaCommand("spotify", Packet.MEDIA_PLAY_PAUSE, null),
+            Packet.Volume(35, muted = true),
+            Packet.VolumeSet(50, null),
+            Packet.VolumeSet(null, false),
         )
         for (packet in packets) assertEquals(packet, decodePacket(encodePacket(packet)))
+    }
+
+    @Test
+    fun decodesSectionFiveAndSix() {
+        assertEquals(
+            Packet.Notification("a", "Mail", "com.mail", "Hi", "Body", 5, dismissable = true, actions = listOf("Archive"), reply = false, silent = false),
+            decode("""{"type":"notification","id":"a","app":"Mail","appId":"com.mail","title":"Hi","text":"Body","time":5,"dismissable":true,"actions":["Archive",1]}"""),
+        )
+        assertEquals(Packet.NotificationRequest, decode("""{"type":"notification.request"}"""))
+        assertEquals(Packet.CallMute, decode("""{"type":"call.mute"}"""))
+        assertEquals(Packet.Call("missed", null, null), decode("""{"type":"call","event":"missed"}"""))
+        // Players without an id are skipped; the rest of the packet stands.
+        assertEquals(
+            Packet.Media(listOf(Packet.MediaPlayer("p", null, "T", null, null, true, null, null, false, true, false, false, false))),
+            decode("""{"type":"media","players":[{"title":"x"},{"id":"p","title":"T","playing":true,"canPause":true,"position":-5}]}"""),
+        )
+        assertEquals(Packet.VolumeSet(null, true), decode("""{"type":"volume.set","level":150,"muted":true}"""))
+    }
+
+    @Test
+    fun dropsInvalidSectionFiveAndSixPackets() {
+        assertNull(decode("""{"type":"notification","title":"no id"}"""))
+        assertNull(decode("""{"type":"notification.action","id":"a"}"""))
+        assertNull(decode("""{"type":"notification.reply","id":"a"}"""))
+        assertNull(decode("""{"type":"call","event":"dialing"}"""))
+        assertNull(decode("""{"type":"media"}"""))
+        assertNull(decode("""{"type":"media.command","player":"p","action":"rewind"}"""))
+        assertNull(decode("""{"type":"media.command","action":"play"}"""))
+        assertNull(decode("""{"type":"volume","level":101,"muted":false}"""))
+        assertNull(decode("""{"type":"volume","level":10}"""))
+        // A received text is cut to 2000 characters.
+        val long = decode("""{"type":"notification","id":"a","text":"${"x".repeat(2500)}"}""") as Packet.Notification
+        assertEquals(Packet.MAX_NOTIFICATION_TEXT, long.text!!.length)
     }
 
     @Test

@@ -1,8 +1,8 @@
 package fr.frohub.weft.features
 
 /**
- * The features of this batch (docs/features.md, sections 3, 4 and 9), each with the packet types
- * it receives and sends. [key] is how its switch is saved.
+ * The features of docs/features.md (sections 3 to 6 and 9), each with the packet types it
+ * receives and sends. [key] is how its switch is saved. The settings list them in this order.
  */
 enum class Feature(val key: String, val incoming: Set<String>, val outgoing: Set<String>) {
     // The phone shows the other side's battery too, if it sends one.
@@ -12,6 +12,15 @@ enum class Feature(val key: String, val incoming: Set<String>, val outgoing: Set
     PING("ping", setOf(Packet.PING), setOf(Packet.PING)),
     LINKS("links", setOf(Packet.SHARE_URL), setOf(Packet.SHARE_URL)),
     FILES("files", FILE_TYPES, FILE_TYPES),
+    NOTIFICATIONS(
+        "notifications",
+        setOf(Packet.NOTIFICATION_DISMISS, Packet.NOTIFICATION_ACTION, Packet.NOTIFICATION_REPLY, Packet.NOTIFICATION_REQUEST),
+        setOf(Packet.NOTIFICATION, Packet.NOTIFICATION_REMOVED),
+    ),
+    CALLS("calls", setOf(Packet.CALL_MUTE), setOf(Packet.CALL)),
+    // Both ways: the phone's players for the computers, and the computers' players on the device screen.
+    MEDIA("media", setOf(Packet.MEDIA, Packet.MEDIA_COMMAND), setOf(Packet.MEDIA, Packet.MEDIA_COMMAND)),
+    VOLUME("volume", setOf(Packet.VOLUME, Packet.VOLUME_SET), setOf(Packet.VOLUME, Packet.VOLUME_SET)),
     ;
 
     companion object {
@@ -39,11 +48,17 @@ fun capabilitiesOf(enabled: Set<Feature>): Packet.Capabilities = Packet.Capabili
     outgoing = BASE_TYPES + enabled.flatMap { it.outgoing },
 )
 
-/** What is known about another device from its packets. Null members: nothing received yet. */
+/**
+ * What is known about another device from its packets. Null members: nothing received yet.
+ * [mediaAt] is when [media] arrived (ms since epoch), to move the positions of playing players on.
+ */
 data class PeerInfo(
     val capabilities: Packet.Capabilities? = null,
     val battery: Packet.Battery? = null,
     val connectivity: Packet.Connectivity? = null,
+    val media: Packet.Media? = null,
+    val mediaAt: Long = 0,
+    val volume: Packet.Volume? = null,
 ) {
     /** True if the other side says it acts on [type]. */
     fun handles(type: String): Boolean = capabilities?.incoming?.contains(type) == true

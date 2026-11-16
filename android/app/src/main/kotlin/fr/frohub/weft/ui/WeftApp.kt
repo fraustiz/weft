@@ -20,14 +20,16 @@ import fr.frohub.weft.features.Feature
 import fr.frohub.weft.features.Packet
 
 /**
- * The app's screens: main, pairing, device details and settings. A handful of screens with no
- * deep links, so the current one is a saved string rather than a navigation library: `main`,
- * `pair`, `settings` or `device:<id>`.
+ * The app's screens: main, pairing, device details, settings and the notification apps. A
+ * handful of screens with no deep links, so the current one is a saved string rather than a
+ * navigation library: `main`, `pair`, `settings`, `apps` or `device:<id>`.
  *
  * [onPaired] runs once a join succeeds, back on the main screen (the moment to ask for the
  * notification permission). [onSendFile] opens the file picker for a device; [onFeatureToggled]
  * runs after a switch changes (the moment to ask for the permission a feature needs);
- * [onAllowPhoneAccess] is non-null while the phone permission is missing.
+ * [onAllowPhoneAccess] is non-null while the phone permission is missing,
+ * [onAllowNotificationAccess] while Weft may not read notifications, [onAllowCallAccess] while
+ * a call permission is missing.
  */
 @Composable
 fun WeftApp(
@@ -39,6 +41,8 @@ fun WeftApp(
     onSendFile: ((String) -> Unit)? = null,
     onFeatureToggled: (Feature, Boolean) -> Unit = { _, _ -> },
     onAllowPhoneAccess: (() -> Unit)? = null,
+    onAllowNotificationAccess: (() -> Unit)? = null,
+    onAllowCallAccess: (() -> Unit)? = null,
 ) {
     var route by rememberSaveable { mutableStateOf(Route.MAIN) }
     var leaving by rememberSaveable { mutableStateOf(false) }
@@ -50,6 +54,7 @@ fun WeftApp(
     val name by model.name.collectAsStateWithLifecycle()
     val peers by model.peers.collectAsStateWithLifecycle()
     val features by model.features.collectAsStateWithLifecycle()
+    val excludedApps by model.excludedApps.collectAsStateWithLifecycle()
 
     LaunchedEffect(joinState) {
         val done = joinState as? JoinState.Done ?: return@LaunchedEffect
@@ -61,7 +66,8 @@ fun WeftApp(
     }
 
     val goMain = { route = Route.MAIN }
-    BackHandler(enabled = route != Route.MAIN, onBack = goMain)
+    val goSettings = { route = Route.SETTINGS }
+    BackHandler(enabled = route != Route.MAIN, onBack = { if (route == Route.APPS) goSettings() else goMain() })
     Crossfade(targetState = route, animationSpec = tween(MotionMedium), label = "route") { current ->
         when {
             current == Route.PAIR -> PairScreen(
@@ -82,7 +88,20 @@ fun WeftApp(
                 },
                 onAllowPhoneAccess = onAllowPhoneAccess,
                 onBack = goMain,
+                onAllowNotificationAccess = onAllowNotificationAccess,
+                onAllowCallAccess = onAllowCallAccess,
+                excludedApps = excludedApps.size,
+                onExcludedApps = { route = Route.APPS },
             )
+            current == Route.APPS -> {
+                val apps by model.notificationApps.collectAsStateWithLifecycle()
+                AppsScreen(
+                    apps = apps,
+                    excluded = excludedApps,
+                    onToggle = { app, sent -> model.setAppExcluded(app, !sent) },
+                    onBack = goSettings,
+                )
+            }
             current.startsWith(Route.DEVICE) -> {
                 val id = current.removePrefix(Route.DEVICE)
                 val device = devices?.firstOrNull { it.id == id }
@@ -99,7 +118,14 @@ fun WeftApp(
                         ping = if (offers(Feature.PING, Packet.PING)) ({ model.ping(id) }) else null,
                         sendFile = if (onSendFile != null && offers(Feature.FILES, Packet.FILE_OFFER)) ({ onSendFile(id) }) else null,
                     )
-                    DeviceScreen(device, onRemove = { model.remove(id) }, onBack = goMain, peer = peer, actions = actions)
+                    val media = DeviceMedia(
+                        media = peer?.media,
+                        mediaAt = peer?.mediaAt ?: 0,
+                        volume = peer?.volume,
+                        command = if (offers(Feature.MEDIA, Packet.MEDIA_COMMAND)) ({ model.mediaCommand(id, it) }) else null,
+                        setVolume = if (offers(Feature.VOLUME, Packet.VOLUME_SET)) ({ model.setVolume(id, it) }) else null,
+                    )
+                    DeviceScreen(device, onRemove = { model.remove(id) }, onBack = goMain, peer = peer, actions = actions, media = media)
                 }
             }
             else -> MainScreen(
@@ -147,5 +173,6 @@ private object Route {
     const val MAIN = "main"
     const val PAIR = "pair"
     const val SETTINGS = "settings"
+    const val APPS = "apps"
     const val DEVICE = "device:"
 }

@@ -67,6 +67,21 @@ class DeviceActions(
     val isEmpty: Boolean get() = ring == null && ping == null && sendFile == null
 }
 
+/**
+ * The other device's media players and volume, with the commands to control them. A null
+ * command is not offered (the feature is off, or the other side does not take it).
+ */
+class DeviceMedia(
+    val media: Packet.Media? = null,
+    val mediaAt: Long = 0,
+    val volume: Packet.Volume? = null,
+    val command: (suspend (Packet.MediaCommand) -> Boolean)? = null,
+    val setVolume: (suspend (Packet.VolumeSet) -> Boolean)? = null,
+) {
+    val showsMedia: Boolean get() = command != null && !media?.players.isNullOrEmpty()
+    val showsVolume: Boolean get() = setVolume != null && volume != null
+}
+
 /** One trusted device: what is known about it, its actions, and removing it from the group. */
 @Composable
 fun DeviceScreen(
@@ -75,6 +90,7 @@ fun DeviceScreen(
     onBack: () -> Unit,
     peer: PeerInfo? = null,
     actions: DeviceActions = DeviceActions(),
+    media: DeviceMedia = DeviceMedia(),
 ) {
     var confirming by rememberSaveable { mutableStateOf(false) }
     val change = rememberGroupChange(onDone = onBack)
@@ -106,6 +122,10 @@ fun DeviceScreen(
             peer?.connectivity?.let { connectivity ->
                 FactDivider()
                 Fact(stringResource(R.string.device_network), networkText(connectivity))
+            }
+            if (media.showsMedia || media.showsVolume) {
+                Spacer(Modifier.height(24.dp))
+                Media(media, snackbar)
             }
             if (!actions.isEmpty) {
                 Spacer(Modifier.height(24.dp))
@@ -148,6 +168,29 @@ fun DeviceScreen(
                 change.reset()
             },
         )
+    }
+}
+
+/** "Now playing" and the volume; a command that could not leave says so in a snackbar. */
+@Composable
+private fun Media(media: DeviceMedia, snackbar: SnackbarHostState) {
+    val scope = rememberCoroutineScope()
+    val notSent = stringResource(R.string.action_not_sent)
+    fun <T> run(action: suspend (T) -> Boolean, value: T) {
+        scope.launch { if (!action(value)) snackbar.showSnackbar(notSent) }
+    }
+    Column(Modifier.padding(horizontal = 16.dp)) {
+        val command = media.command
+        val players = media.media
+        if (media.showsMedia && command != null && players != null) {
+            NowPlayingCard(players, media.mediaAt, onCommand = { run(command, it) })
+        }
+        val setVolume = media.setVolume
+        val volume = media.volume
+        if (media.showsVolume && setVolume != null && volume != null) {
+            if (media.showsMedia) Spacer(Modifier.height(16.dp))
+            VolumeRow(volume, onSet = { run(setVolume, it) })
+        }
     }
 }
 
@@ -348,6 +391,20 @@ private fun DevicePreview() {
             {},
             PeerInfo(battery = Packet.Battery(72, charging = true, low = false), connectivity = Packet.Connectivity("wifi", 3)),
             DeviceActions(ring = { true }, stopRing = { true }, ping = { true }, sendFile = {}),
+            DeviceMedia(
+                media = Packet.Media(
+                    listOf(
+                        Packet.MediaPlayer(
+                            "spotify", "Spotify", "Teardrop", "Massive Attack", "Mezzanine", playing = false,
+                            position = 95_000, length = 330_000, canPlay = true, canPause = true, canNext = true,
+                            canPrevious = true, canSeek = true,
+                        ),
+                    ),
+                ),
+                volume = Packet.Volume(40, muted = false),
+                command = { true },
+                setVolume = { true },
+            ),
         )
     }
 }

@@ -2,12 +2,15 @@ package fr.frohub.weft
 
 import android.Manifest
 import android.app.StatusBarManager
+import android.content.ActivityNotFoundException
 import android.content.ComponentName
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -16,8 +19,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.lifecycleScope
+import fr.frohub.weft.features.CallMonitor
 import fr.frohub.weft.features.ConnectivityMonitor
 import fr.frohub.weft.features.Feature
+import fr.frohub.weft.features.WeftNotificationListener
 import fr.frohub.weft.ui.CoreModel
 import fr.frohub.weft.ui.WeftApp
 import fr.frohub.weft.ui.WeftTheme
@@ -36,6 +41,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private val phoneAccess = mutableStateOf(true)
+
+    // Calls: phone state, then the number (call log) and the name (contacts), asked together.
+    private val callPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        updateCallAccess()
+    }
+
+    private val callAccess = mutableStateOf(true)
+
+    /** Whether Weft may read notifications (Notifications and the phone's players in Media). */
+    private val notificationAccess = mutableStateOf(true)
 
     /** The device the file picker was opened for; kept across a recreation. */
     private var fileTarget: String? = null
@@ -69,6 +84,8 @@ class MainActivity : ComponentActivity() {
                     },
                     onFeatureToggled = ::onFeatureToggled,
                     onAllowPhoneAccess = if (phoneAccess.value) null else ({ phonePermission.launch(Manifest.permission.READ_PHONE_STATE) }),
+                    onAllowNotificationAccess = if (notificationAccess.value) null else ::openNotificationAccess,
+                    onAllowCallAccess = if (callAccess.value) null else ({ callPermissions.launch(CallMonitor.permissions().toTypedArray()) }),
                 )
             }
         }
@@ -83,6 +100,25 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // The user may have changed it in the system settings meanwhile.
         phoneAccess.value = ConnectivityMonitor.hasPhonePermission(this)
+        notificationAccess.value = WeftNotificationListener.isAllowed(this)
+        updateCallAccess()
+    }
+
+    /** Re-reads the call permissions; a change restarts the call monitor so it uses them. */
+    private fun updateCallAccess() {
+        val granted = CallMonitor.missingPermissions(this).isEmpty()
+        val changed = granted != callAccess.value
+        callAccess.value = granted
+        weft.features.refreshMonitors(restartCalls = changed)
+    }
+
+    /** Android's page for notification access: Weft's own where the phone has one, the list otherwise. */
+    private fun openNotificationAccess() {
+        try {
+            startActivity(WeftNotificationListener.settingsIntent(this))
+        } catch (_: ActivityNotFoundException) {
+            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -107,7 +143,11 @@ class MainActivity : ComponentActivity() {
             }
             Feature.FILES -> requestStoragePermission()
             Feature.RING, Feature.PING, Feature.LINKS -> requestNotificationPermission()
-            Feature.BATTERY -> Unit
+            Feature.NOTIFICATIONS, Feature.MEDIA -> if (!WeftNotificationListener.isAllowed(this)) openNotificationAccess()
+            Feature.CALLS -> if (CallMonitor.missingPermissions(this).isNotEmpty()) {
+                callPermissions.launch(CallMonitor.permissions().toTypedArray())
+            }
+            Feature.BATTERY, Feature.VOLUME -> Unit
         }
     }
 

@@ -39,9 +39,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * The packets of docs/features.md, sections 2 to 4 and 9: capabilities, state requests, battery,
- * connectivity, ring, ping, links and files. One instance per process, owned by the application;
- * it registers itself as the core's [PacketListener].
+ * The packets of docs/features.md, sections 2 to 6 and 9: capabilities, state requests, battery,
+ * connectivity, ring, ping, links, files, notifications, calls, media and volume. One instance
+ * per process, owned by the application; it registers itself as the core's [PacketListener].
  */
 class Features(private val context: Context, private val core: WeftCore) : PacketListener {
     val settings = FeatureSettings(context)
@@ -68,6 +68,28 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
     private val connectivity = StatusChannel(Feature.CONNECTIVITY, connectivityThrottle())
     private val batteryMonitor = BatteryMonitor(context, battery::update)
     private val connectivityMonitor = ConnectivityMonitor(context, connectivity::update)
+    private val volume = StatusChannel(Feature.VOLUME, volumeThrottle())
+    private val volumeMonitor = VolumeMonitor(context, volume::update)
+    private val callMonitor = CallMonitor(context, ::onCallEvent)
+
+    /** Main thread: whether the service runs, so the monitors above should. */
+    private var monitorsRunning = false
+
+    /** Apps whose notifications stay on the phone, and those seen lately. */
+    val notificationApps = NotificationApps(context)
+    private val mirror = NotificationMirror(context.packageName)
+
+    /**
+     * Notification and call events, handled one at a time in the order they happened (a post
+     * before its removal, ringing before talking).
+     */
+    private val serial = Channel<suspend () -> Unit>(Channel.UNLIMITED)
+
+    /** Set while Android has Weft's notification listener bound. Main thread. */
+    private var listener: WeftNotificationListener? = null
+    private var mediaWatcher: MediaWatcher? = null
+    private val mediaLock = Mutex()
+    private val mediaGate = MediaGate()
 
     /** Guards [receiving]; held while a chunk is written, so chunks of one transfer stay in order. */
     private val receiveLock = Mutex()
@@ -82,8 +104,13 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
         }
         scope.launch {
             // A feature switched on sends its current value at once.
-            settings.enabled.drop(1).collect { sendCapabilitiesAndState(trustedIds()) }
+            settings.enabled.drop(1).collect { enabled ->
+                withContext(Dispatchers.Main) { refreshMonitors() }
+                if (Feature.NOTIFICATIONS !in enabled) serial.trySend { mirror.clear() }
+                sendCapabilitiesAndState(trustedIds())
+            }
         }
+        scope.launch { for (job in serial) job() }
         scope.launch(Dispatchers.IO) { partials.expire() }
     }
 
@@ -93,11 +120,26 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
     fun startMonitors() {
         batteryMonitor.start()
         connectivityMonitor.start()
+        monitorsRunning = true
+        refreshMonitors()
     }
 
     fun stopMonitors() {
         batteryMonitor.stop()
         connectivityMonitor.stop()
+        monitorsRunning = false
+        refreshMonitors()
+    }
+
+    /**
+     * Main thread: starts or stops the volume, call and media monitors after a switch or a
+     * permission changed. [restartCalls] picks up a call permission granted meanwhile.
+     */
+    fun refreshMonitors(restartCalls: Boolean = false) {
+        if (monitorsRunning && settings.isEnabled(Feature.VOLUME)) volumeMonitor.start() else volumeMonitor.stop()
+        if (restartCalls || !monitorsRunning || !settings.isEnabled(Feature.CALLS)) callMonitor.stop()
+        if (monitorsRunning && settings.isEnabled(Feature.CALLS)) callMonitor.start()
+        refreshMedia()
     }
 
     /**
@@ -161,6 +203,7 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
         sendCapabilitiesAndState(ids)
         battery.markSent()
         connectivity.markSent()
+        volume.markSent()
         // Transfers cut by the lost connection resume from what the receiver has.
         for (job in sending.values) job.events.trySend(Event.Reconnected)
     }
@@ -171,6 +214,11 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
         send(deviceIds, capabilitiesOf(settings.enabled.value))
         if (settings.isEnabled(Feature.BATTERY)) battery.current?.let { send(deviceIds, it) }
         if (settings.isEnabled(Feature.CONNECTIVITY)) connectivity.current?.let { send(deviceIds, it) }
+        if (settings.isEnabled(Feature.VOLUME)) volume.current?.let { send(deviceIds, it) }
+        if (settings.isEnabled(Feature.MEDIA)) {
+            // Read again: the positions have moved on since the last packet.
+            withContext(Dispatchers.Main) { mediaWatcher?.takeIf { listener != null }?.current() }?.let { send(deviceIds, it) }
+        }
     }
 
     override suspend fun onNameSent(deviceIds: List<String>) = sendCapabilitiesAndState(deviceIds)
@@ -217,6 +265,24 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
                 toSender(senderHex, packet.id, packet)
                 dropReceiving(senderHex, packet.id, tellSender = false)
             }
+            is Packet.NotificationDismiss -> withContext(Dispatchers.Main) { listener?.dismiss(packet.id) }
+            is Packet.NotificationAction -> withContext(Dispatchers.Main) { listener?.runAction(packet.id, packet.action) }
+            is Packet.NotificationReply -> withContext(Dispatchers.Main) { listener?.reply(packet.id, packet.text) }
+            Packet.NotificationRequest -> {
+                val active = withContext(Dispatchers.Main) { listener?.active() } ?: return
+                serial.trySend {
+                    for (notification in mirror.all(active, notificationApps.excluded.value)) send(listOf(senderHex), notification)
+                }
+            }
+            Packet.CallMute -> withContext(Dispatchers.Main) { callMonitor.muteRinger() }
+            is Packet.Media -> updatePeer(senderHex) { it.copy(media = packet, mediaAt = System.currentTimeMillis()) }
+            is Packet.MediaCommand -> withContext(Dispatchers.Main) {
+                mediaWatcher?.takeIf { listener != null }?.controller(packet.player)?.run(packet)
+            }
+            is Packet.Volume -> updatePeer(senderHex) { it.copy(volume = packet) }
+            is Packet.VolumeSet -> withContext(Dispatchers.Main) { volumeMonitor.set(packet) }
+            // The phone sends these; it does not show the computers' own.
+            is Packet.Notification, is Packet.NotificationRemoved, is Packet.Call -> Unit
         }
     }
 
@@ -230,6 +296,67 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
 
     // endregion
 
+    // region Notifications, calls and media of this phone (sections 5 and 6)
+
+    /** From [WeftNotificationListener], main thread. */
+    fun onListenerConnected(service: WeftNotificationListener) {
+        listener = service
+        refreshMedia()
+    }
+
+    fun onListenerDisconnected(service: WeftNotificationListener) {
+        if (listener !== service) return
+        listener = null
+        refreshMedia()
+        serial.trySend { mirror.clear() }
+    }
+
+    fun onNotificationPosted(posted: PostedNotification) {
+        serial.trySend {
+            if (mirror.mirrors(posted, emptySet())) {
+                notificationApps.saw(posted.packageName, posted.appLabel ?: posted.packageName, System.currentTimeMillis())
+            }
+            if (!settings.isEnabled(Feature.NOTIFICATIONS)) return@trySend
+            mirror.posted(posted, notificationApps.excluded.value)?.let { send(trustedIds(), it) }
+        }
+    }
+
+    fun onNotificationRemoved(key: String) {
+        serial.trySend {
+            val packet = mirror.removed(key)
+            if (packet != null && settings.isEnabled(Feature.NOTIFICATIONS)) send(trustedIds(), packet)
+        }
+    }
+
+    /** From [CallMonitor], main thread. The contact name is looked up here, off the main thread. */
+    private fun onCallEvent(event: CallEvent) {
+        serial.trySend {
+            if (!settings.isEnabled(Feature.CALLS)) return@trySend
+            val name = event.number?.let { withContext(Dispatchers.IO) { CallMonitor.contactName(context, it) } }
+            send(trustedIds(), Packet.Call(event.event, event.number, name))
+        }
+    }
+
+    /** Main thread: media sessions are read while the listener is bound and Media is on. */
+    private fun refreshMedia() {
+        if (listener != null && settings.isEnabled(Feature.MEDIA)) {
+            val watcher = mediaWatcher ?: MediaWatcher(context, WeftNotificationListener.component(context), ::onLocalMedia).also { mediaWatcher = it }
+            watcher.start()
+        } else {
+            mediaWatcher?.stop()
+        }
+    }
+
+    private fun onLocalMedia(media: Packet.Media) {
+        scope.launch {
+            if (!settings.isEnabled(Feature.MEDIA)) return@launch
+            val changed = mediaLock.withLock { mediaGate.offer(media, System.currentTimeMillis()) }
+            if (changed) send(trustedIds(), media)
+        }
+    }
+
+    // endregion
+
     // region Actions from the screens
 
     /** Asks [deviceIdHex] to ring. False if the relay connection did not take it. */
@@ -238,6 +365,12 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
     suspend fun stopRing(deviceIdHex: String): Boolean = send(listOf(deviceIdHex), Packet.RingStop) > 0
 
     suspend fun ping(deviceIdHex: String): Boolean = send(listOf(deviceIdHex), Packet.Ping(null)) > 0
+
+    /** Controls one of [deviceIdHex]'s media players. */
+    suspend fun mediaCommand(deviceIdHex: String, command: Packet.MediaCommand): Boolean = send(listOf(deviceIdHex), command) > 0
+
+    /** Changes [deviceIdHex]'s volume; either member may be null. */
+    suspend fun setVolume(deviceIdHex: String, command: Packet.VolumeSet): Boolean = send(listOf(deviceIdHex), command) > 0
 
     /**
      * Sends a link shared with Weft: as `share.url` to the devices that open links, as clipboard

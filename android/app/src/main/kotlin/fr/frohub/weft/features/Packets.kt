@@ -77,6 +77,92 @@ sealed interface Packet {
         override val type get() = FILE_CANCEL
     }
 
+    /**
+     * A notification shown on the phone. [id] is stable for one notification (its key); [text]
+     * is at most [MAX_NOTIFICATION_TEXT] characters; [actions] null when it has none.
+     */
+    data class Notification(
+        val id: String,
+        val app: String?,
+        val appId: String?,
+        val title: String?,
+        val text: String?,
+        val time: Long?,
+        val dismissable: Boolean,
+        val actions: List<String>?,
+        val reply: Boolean,
+        val silent: Boolean,
+    ) : Packet {
+        override val type get() = NOTIFICATION
+    }
+
+    data class NotificationRemoved(val id: String) : Packet {
+        override val type get() = NOTIFICATION_REMOVED
+    }
+
+    data class NotificationDismiss(val id: String) : Packet {
+        override val type get() = NOTIFICATION_DISMISS
+    }
+
+    data class NotificationAction(val id: String, val action: String) : Packet {
+        override val type get() = NOTIFICATION_ACTION
+    }
+
+    data class NotificationReply(val id: String, val text: String) : Packet {
+        override val type get() = NOTIFICATION_REPLY
+    }
+
+    data object NotificationRequest : Packet {
+        override val type get() = NOTIFICATION_REQUEST
+    }
+
+    /** [event]: one of the `CALL_*` values. */
+    data class Call(val event: String, val number: String?, val name: String?) : Packet {
+        override val type get() = CALL
+    }
+
+    data object CallMute : Packet {
+        override val type get() = CALL_MUTE
+    }
+
+    /** One media player; [position] and [length] in ms, [volume] 0 to 100, null when unknown. */
+    data class MediaPlayer(
+        val id: String,
+        val app: String?,
+        val title: String?,
+        val artist: String?,
+        val album: String?,
+        val playing: Boolean,
+        val position: Long?,
+        val length: Long?,
+        val canPlay: Boolean,
+        val canPause: Boolean,
+        val canNext: Boolean,
+        val canPrevious: Boolean,
+        val canSeek: Boolean,
+        val volume: Int? = null,
+    )
+
+    /** Every player of the sender; empty when nothing plays. */
+    data class Media(val players: List<MediaPlayer>) : Packet {
+        override val type get() = MEDIA
+    }
+
+    /** [action]: one of the `MEDIA_*` values; [value]: ms for a seek, 0 to 100 for a volume. */
+    data class MediaCommand(val player: String, val action: String, val value: Long?) : Packet {
+        override val type get() = MEDIA_COMMAND
+    }
+
+    /** The phone's media volume, or the computer's default output. [level] 0 to 100. */
+    data class Volume(val level: Int, val muted: Boolean) : Packet {
+        override val type get() = VOLUME
+    }
+
+    /** Either member may be null: only the other one changes. */
+    data class VolumeSet(val level: Int?, val muted: Boolean?) : Packet {
+        override val type get() = VOLUME_SET
+    }
+
     companion object {
         const val CAPABILITIES = "capabilities"
         const val STATE_REQUEST = "state.request"
@@ -92,6 +178,18 @@ sealed interface Packet {
         const val FILE_ACK = "file.ack"
         const val FILE_DONE = "file.done"
         const val FILE_CANCEL = "file.cancel"
+        const val NOTIFICATION = "notification"
+        const val NOTIFICATION_REMOVED = "notification.removed"
+        const val NOTIFICATION_DISMISS = "notification.dismiss"
+        const val NOTIFICATION_ACTION = "notification.action"
+        const val NOTIFICATION_REPLY = "notification.reply"
+        const val NOTIFICATION_REQUEST = "notification.request"
+        const val CALL = "call"
+        const val CALL_MUTE = "call.mute"
+        const val MEDIA = "media"
+        const val MEDIA_COMMAND = "media.command"
+        const val VOLUME = "volume"
+        const val VOLUME_SET = "volume.set"
 
         const val PLATFORM_ANDROID = "android"
 
@@ -106,6 +204,24 @@ sealed interface Packet {
         const val REJECT_TOO_LARGE = "tooLarge"
         const val REJECT_NO_SPACE = "noSpace"
         const val REJECT_BUSY = "busy"
+
+        const val CALL_RINGING = "ringing"
+        const val CALL_TALKING = "talking"
+        const val CALL_MISSED = "missed"
+        const val CALL_ENDED = "ended"
+        val CALL_EVENTS = setOf(CALL_RINGING, CALL_TALKING, CALL_MISSED, CALL_ENDED)
+
+        const val MEDIA_PLAY = "play"
+        const val MEDIA_PAUSE = "pause"
+        const val MEDIA_PLAY_PAUSE = "playPause"
+        const val MEDIA_NEXT = "next"
+        const val MEDIA_PREVIOUS = "previous"
+        const val MEDIA_SEEK = "seek"
+        const val MEDIA_SET_VOLUME = "setVolume"
+        val MEDIA_ACTIONS = setOf(MEDIA_PLAY, MEDIA_PAUSE, MEDIA_PLAY_PAUSE, MEDIA_NEXT, MEDIA_PREVIOUS, MEDIA_SEEK, MEDIA_SET_VOLUME)
+
+        /** Longest `notification` text, in characters. */
+        const val MAX_NOTIFICATION_TEXT = 2000
 
         /** Largest file a transfer can carry: 4 GiB. */
         const val MAX_FILE_SIZE = 4L * 1024 * 1024 * 1024
@@ -163,6 +279,43 @@ fun decodePacket(plaintext: ByteArray): Packet? {
         )
         Packet.FILE_DONE -> Packet.FileDone(json.transferId() ?: return null)
         Packet.FILE_CANCEL -> Packet.FileCancel(json.transferId() ?: return null)
+        Packet.NOTIFICATION -> Packet.Notification(
+            id = json.string("id") ?: return null,
+            app = json.string("app"),
+            appId = json.string("appId"),
+            title = json.string("title"),
+            text = json.string("text")?.take(Packet.MAX_NOTIFICATION_TEXT),
+            time = json.long("time"),
+            dismissable = json.bool("dismissable") ?: false,
+            actions = json.stringList("actions"),
+            reply = json.bool("reply") ?: false,
+            silent = json.bool("silent") ?: false,
+        )
+        Packet.NOTIFICATION_REMOVED -> Packet.NotificationRemoved(json.string("id") ?: return null)
+        Packet.NOTIFICATION_DISMISS -> Packet.NotificationDismiss(json.string("id") ?: return null)
+        Packet.NOTIFICATION_ACTION -> Packet.NotificationAction(json.string("id") ?: return null, json.string("action") ?: return null)
+        Packet.NOTIFICATION_REPLY -> Packet.NotificationReply(json.string("id") ?: return null, json.string("text") ?: return null)
+        Packet.NOTIFICATION_REQUEST -> Packet.NotificationRequest
+        Packet.CALL -> Packet.Call(
+            event = json.string("event")?.takeIf { it in Packet.CALL_EVENTS } ?: return null,
+            number = json.string("number"),
+            name = json.string("name"),
+        )
+        Packet.CALL_MUTE -> Packet.CallMute
+        Packet.MEDIA -> {
+            val array = json.opt("players") as? JSONArray ?: return null
+            Packet.Media((0 until array.length()).mapNotNull { (array.opt(it) as? JSONObject)?.toPlayer() })
+        }
+        Packet.MEDIA_COMMAND -> Packet.MediaCommand(
+            player = json.string("player") ?: return null,
+            action = json.string("action")?.takeIf { it in Packet.MEDIA_ACTIONS } ?: return null,
+            value = json.long("value"),
+        )
+        Packet.VOLUME -> Packet.Volume(
+            level = json.percent("level") ?: return null,
+            muted = json.bool("muted") ?: return null,
+        )
+        Packet.VOLUME_SET -> Packet.VolumeSet(json.percent("level"), json.bool("muted"))
         else -> null
     }
 }
@@ -195,6 +348,27 @@ fun encodePacket(packet: Packet): ByteArray {
         is Packet.FileAck -> json.put("id", packet.id).put("offset", packet.offset)
         is Packet.FileDone -> json.put("id", packet.id)
         is Packet.FileCancel -> json.put("id", packet.id)
+        is Packet.Notification -> json
+            .put("id", packet.id)
+            .putOpt("app", packet.app)
+            .putOpt("appId", packet.appId)
+            .putOpt("title", packet.title)
+            .putOpt("text", packet.text)
+            .putOpt("time", packet.time)
+            .put("dismissable", packet.dismissable)
+            .putOpt("actions", packet.actions?.let { JSONArray(it) })
+            .put("reply", packet.reply)
+            .put("silent", packet.silent)
+        is Packet.NotificationRemoved -> json.put("id", packet.id)
+        is Packet.NotificationDismiss -> json.put("id", packet.id)
+        is Packet.NotificationAction -> json.put("id", packet.id).put("action", packet.action)
+        is Packet.NotificationReply -> json.put("id", packet.id).put("text", packet.text)
+        Packet.NotificationRequest, Packet.CallMute -> Unit
+        is Packet.Call -> json.put("event", packet.event).putOpt("number", packet.number).putOpt("name", packet.name)
+        is Packet.Media -> json.put("players", JSONArray(packet.players.map { it.toJson() }))
+        is Packet.MediaCommand -> json.put("player", packet.player).put("action", packet.action).putOpt("value", packet.value)
+        is Packet.Volume -> json.put("level", packet.level).put("muted", packet.muted)
+        is Packet.VolumeSet -> json.putOpt("level", packet.level).putOpt("muted", packet.muted)
     }
     return json.toString().toByteArray(Charsets.UTF_8)
 }
@@ -216,7 +390,49 @@ fun isShareableUrl(text: String): Boolean {
 /** A transfer id as it travels in packets: 32 lowercase hex characters. */
 fun transferIdHex(id: ByteArray): String = id.toHex()
 
+private fun JSONObject.toPlayer(): Packet.MediaPlayer? = Packet.MediaPlayer(
+    id = string("id") ?: return null,
+    app = string("app"),
+    title = string("title"),
+    artist = string("artist"),
+    album = string("album"),
+    playing = bool("playing") ?: false,
+    position = long("position")?.takeIf { it >= 0 },
+    length = long("length")?.takeIf { it > 0 },
+    canPlay = bool("canPlay") ?: false,
+    canPause = bool("canPause") ?: false,
+    canNext = bool("canNext") ?: false,
+    canPrevious = bool("canPrevious") ?: false,
+    canSeek = bool("canSeek") ?: false,
+    volume = percent("volume"),
+)
+
+private fun Packet.MediaPlayer.toJson(): JSONObject = JSONObject()
+    .put("id", id)
+    .putOpt("app", app)
+    .putOpt("title", title)
+    .putOpt("artist", artist)
+    .putOpt("album", album)
+    .put("playing", playing)
+    .putOpt("position", position)
+    .putOpt("length", length)
+    .put("canPlay", canPlay)
+    .put("canPause", canPause)
+    .put("canNext", canNext)
+    .put("canPrevious", canPrevious)
+    .put("canSeek", canSeek)
+    .putOpt("volume", volume)
+
 private fun JSONObject.string(name: String): String? = opt(name) as? String
+
+/** An integer member from 0 to 100; anything else counts as missing. */
+private fun JSONObject.percent(name: String): Int? = long(name)?.takeIf { it in 0..100 }?.toInt()
+
+/** The string items of an array member, in order; null when there is no array. */
+private fun JSONObject.stringList(name: String): List<String>? {
+    val array = opt(name) as? JSONArray ?: return null
+    return (0 until array.length()).mapNotNull { array.opt(it) as? String }
+}
 
 private fun JSONObject.bool(name: String): Boolean? = opt(name) as? Boolean
 

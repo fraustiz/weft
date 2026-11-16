@@ -162,6 +162,29 @@
     <string name="feature_links_body">Les liens partagés avec Weft s’ouvrent sur l’ordinateur ; les siens arrivent en notification</string>
     <string name="feature_files">Fichiers</string>
     <string name="feature_files_body">Envoyer des fichiers à vos ordinateurs et recevoir les leurs dans Téléchargements</string>
+    <string name="feature_notifications">Notifications</string>
+    <string name="feature_notifications_body">Afficher les notifications de ce téléphone sur vos ordinateurs, et y répondre ou les fermer de là</string>
+    <string name="feature_notifications_permission">Android vous demande d’abord d’autoriser Weft à lire les notifications.</string>
+    <string name="feature_calls">Appels</string>
+    <string name="feature_calls_body">Afficher les appels entrants sur vos ordinateurs, et couper la sonnerie de là</string>
+    <string name="feature_calls_permission">Weft a besoin de l’accès au téléphone pour voir les appels, et de l’accès au journal d’appels et aux contacts pour afficher le numéro et le nom.</string>
+    <string name="feature_media">Médias</string>
+    <string name="feature_media_body">Contrôler ce qui joue sur ce téléphone depuis vos ordinateurs, et ce qui joue sur eux depuis ici</string>
+    <string name="feature_media_permission">Android ne montre les lecteurs de ce téléphone qu’aux applis qui peuvent lire les notifications. Les lecteurs de vos ordinateurs fonctionnent sans.</string>
+    <string name="feature_volume">Volume</string>
+    <string name="feature_volume_body">Régler le volume multimédia de ce téléphone depuis vos ordinateurs, et le leur depuis ici</string>
+    <string name="excluded_apps">Choisir les applis</string>
+    <string name="excluded_apps_none">Toutes les applis sont affichées</string>
+    <plurals name="excluded_apps_count">
+        <item quantity="one">%d appli reste sur ce téléphone</item>
+        <item quantity="many">%d applis restent sur ce téléphone</item>
+        <item quantity="other">%d applis restent sur ce téléphone</item>
+    </plurals>
+
+    <!-- Applis dont les notifications sont envoyées. -->
+    <string name="apps_title">Applis à notifications</string>
+    <string name="apps_body">Les notifications d’une appli désactivée ici restent sur ce téléphone.</string>
+    <string name="apps_empty">Les applis apparaissent ici dès qu’elles affichent une notification.</string>
 
     <string name="device_battery">Batterie</string>
     <string name="device_network">Réseau</string>
@@ -214,4 +237,18 @@
     <string name="toast_file_unreadable">Le fichier ne peut pas être lu</string>
     <string name="toast_files_some_unreadable">Envoi en cours ; certains fichiers ne peuvent pas être lus</string>
     <string name="toast_files_sending">Envoi en cours…</string>
+
+    <!-- Détails de l’appareil : ses médias et son volume. -->
+    <string name="now_playing">En cours · %1$s</string>
+    <string name="now_playing_untitled">Sans titre</string>
+    <string name="media_position">Position</string>
+    <string name="action_play">Lire</string>
+    <string name="action_pause">Pause</string>
+    <string name="action_next">Suivant</string>
+    <string name="action_previous">Précédent</string>
+    <string name="device_volume">Volume</string>
+    <string name="action_mute">Couper le son</string>
+    <string name="action_unmute">Rétablir le son</string>
+    <string name="volume_level">%1$d %%</string>
+    <string name="volume_muted">Son coupé</string>
 </resources>
