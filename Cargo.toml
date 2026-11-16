@@ -1,5 +1,8 @@
 [workspace]
 members = ["crates/weft-protocol", "relay", "cli"]
+# The Windows app is its own workspace, with its own lock file: the relay
+# image and the other platforms never build its dependencies.
+exclude = ["windows"]
 resolver = "2"
 
 [workspace.package]

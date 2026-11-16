@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use weft_protocol::ControlError;
 
-pub use session::{DropReason, Event, Session};
+pub use session::{DropReason, Event, Next, Session};
 pub use state::{State, StateDir, TrustedDevice};
 
 /// Everything that can go wrong in the client.

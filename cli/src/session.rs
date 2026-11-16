@@ -44,10 +44,13 @@ pub const JOIN_TIMEOUT: Duration = Duration::from_secs(30);
 pub const NAME_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the relay has to answer a WebSocket ping.
 pub const SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
-/// Idle time after which `listen` checks the connection is still alive.
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
-const MIN_BACKOFF: Duration = Duration::from_secs(1);
-const MAX_BACKOFF: Duration = Duration::from_secs(30);
+/// Idle time after which a listener checks the connection is still alive
+/// ([`Session::settle`]).
+pub const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+/// Delay before the first reconnection attempt; it doubles after each
+/// failure, up to [`MAX_BACKOFF`].
+pub const MIN_BACKOFF: Duration = Duration::from_secs(1);
+pub const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// Where a relay url points to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +99,18 @@ fn tls_connector() -> Connector {
         .with_root_certificates(roots)
         .with_no_client_auth();
     Connector::Rustls(Arc::new(config))
+}
+
+/// How a call to [`Session::next_event_or`] ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Next<T> {
+    /// A frame arrived and was handled.
+    Event(Event),
+    /// The timeout passed first.
+    Idle,
+    /// The caller's future completed first, with this output. No frame was
+    /// taken from the connection.
+    Interrupted(T),
 }
 
 /// Something that happened on the connection, as reported by
@@ -293,6 +308,9 @@ impl Session {
     }
 
     /// The next frame, or `None` once `deadline` has passed.
+    ///
+    /// Cancel-safe: taking a kept frame does not wait, and a dropped read
+    /// leaves the frame, even one partly received, in the WebSocket.
     async fn next_frame(&mut self, deadline: Option<Instant>) -> Result<Option<Vec<u8>>> {
         if let Some(frame) = self.pending.pop_front() {
             return Ok(Some(frame));
@@ -391,10 +409,56 @@ impl Session {
     /// added), it sends that device its name before returning.
     pub async fn next_event(&mut self, timeout: Option<Duration>) -> Result<Option<Event>> {
         let deadline = timeout.map(|timeout| Instant::now() + timeout);
-        let Some(frame) = self.next_frame(deadline).await? else {
-            return Ok(None);
+        match self.next_frame(deadline).await? {
+            Some(frame) => self.handle(&frame).await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Like [`Session::next_event`], but also returns as soon as `interrupt`
+    /// completes: the way to wait for the connection and for something else
+    /// (a local request, a shutdown) at once.
+    ///
+    /// Unlike a `select!` around `next_event`, this never loses anything.
+    /// Only the wait for a frame races with `interrupt`, and dropping that
+    /// wait leaves the frame in the connection. Once a frame has been read,
+    /// it is handled to the end before this returns, and `interrupt` is
+    /// dropped: it must be cancel-safe as well if its output matters.
+    pub async fn next_event_or<F: Future>(
+        &mut self,
+        timeout: Option<Duration>,
+        interrupt: F,
+    ) -> Result<Next<F::Output>> {
+        let deadline = timeout.map(|timeout| Instant::now() + timeout);
+        let frame = tokio::select! {
+            frame = self.next_frame(deadline) => frame?,
+            output = interrupt => return Ok(Next::Interrupted(output)),
         };
-        let event = self.handle_frame(&frame)?;
+        match frame {
+            Some(frame) => self.handle(&frame).await.map(Next::Event),
+            None => Ok(Next::Idle),
+        }
+    }
+
+    /// Handles the next frame that was read ahead and kept for later (while
+    /// waiting for a pong or a pairing message), without reading from the
+    /// connection. Returns `None` when there is none.
+    ///
+    /// Lets a caller that waits for a device in short slices of
+    /// [`Session::wait_pair_request`] deliver the envelopes that arrive in
+    /// the meantime, without taking a pair request off the connection.
+    pub async fn next_queued_event(&mut self) -> Result<Option<Event>> {
+        match self.pending.pop_front() {
+            Some(frame) => self.handle(&frame).await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Handles one frame to the end: applies it, then sends this device's
+    /// name to the devices it made this one trust. Not cancel-safe: dropped
+    /// half-way, the event is lost and the names may not be sent.
+    async fn handle(&mut self, frame: &[u8]) -> Result<Event> {
+        let event = self.handle_frame(frame)?;
         match &event {
             Event::Welcome { from, added } => {
                 let mut devices = vec![*from];
@@ -404,7 +468,7 @@ impl Session {
             Event::DeviceAdded { device, .. } => self.send_name(&[*device]).await?,
             _ => {}
         }
-        Ok(Some(event))
+        Ok(event)
     }
 
     /// Handles events until a Device name envelope has arrived from each of
@@ -875,7 +939,9 @@ async fn listen_once(
     }
 }
 
-fn is_fatal(err: &Error) -> bool {
+/// Whether `err` is one a reconnection cannot fix (state file, relay url,
+/// relay name), as opposed to a lost or refused connection.
+pub fn is_fatal(err: &Error) -> bool {
     matches!(
         err,
         Error::Io { .. }

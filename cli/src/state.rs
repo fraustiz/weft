@@ -407,10 +407,30 @@ impl StateDir {
     }
 }
 
-/// The default name of this device: the host name (from the `hostname`
-/// command, else the `HOSTNAME` or `COMPUTERNAME` variable) made into a valid
-/// Device name, or [`FALLBACK_DEVICE_NAME`].
+/// The default name of this device: the host name made into a valid Device
+/// name, or [`FALLBACK_DEVICE_NAME`].
+///
+/// On Windows the host name is the `COMPUTERNAME` variable. Elsewhere it
+/// comes from the `hostname` command, else from the `HOSTNAME` or
+/// `COMPUTERNAME` variable.
 pub fn default_device_name() -> String {
+    host_names()
+        .into_iter()
+        .flatten()
+        .find_map(|raw| sanitize_device_name(&raw))
+        .unwrap_or_else(|| FALLBACK_DEVICE_NAME.to_owned())
+}
+
+/// Candidate host names, best first. Windows always sets `COMPUTERNAME`, and
+/// running `hostname` there would flash a console window when the caller is
+/// a graphical application.
+#[cfg(windows)]
+fn host_names() -> [Option<String>; 1] {
+    [std::env::var("COMPUTERNAME").ok()]
+}
+
+#[cfg(not(windows))]
+fn host_names() -> [Option<String>; 3] {
     let from_command = || {
         let output = std::process::Command::new("hostname")
             .stdin(std::process::Stdio::null())
@@ -428,10 +448,6 @@ pub fn default_device_name() -> String {
         from_env("HOSTNAME"),
         from_env("COMPUTERNAME"),
     ]
-    .into_iter()
-    .flatten()
-    .find_map(|raw| sanitize_device_name(&raw))
-    .unwrap_or_else(|| FALLBACK_DEVICE_NAME.to_owned())
 }
 
 /// Makes `raw` a valid Device name: control characters removed, surrounding
@@ -456,14 +472,19 @@ fn io_error(context: String, source: io::Error) -> Error {
 }
 
 /// Open options that create files readable by the owner only.
+#[cfg(unix)]
 fn private_options() -> OpenOptions {
+    use std::os::unix::fs::OpenOptionsExt;
     let mut options = OpenOptions::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
+    options.mode(0o600);
     options
+}
+
+/// Open options for the state files. Without Unix modes, they get the
+/// access rights of the state directory.
+#[cfg(not(unix))]
+fn private_options() -> OpenOptions {
+    OpenOptions::new()
 }
 
 /// Creates the state directory (0700 on Unix) if it does not exist.
