@@ -1,0 +1,8 @@
+# GitGuardian / ggshield configuration.
+# crates/weft-protocol/vectors/ holds public test vectors: every seed, key and
+# secret in it is a fixed byte sequence (00..1f, c0..df, ...) chosen to make
+# the vectors reproducible. None of them is used outside tests.
+version: 2
+secret:
+  ignored-paths:
+    - "crates/weft-protocol/vectors/**"
