@@ -79,7 +79,7 @@ pub fn view(text: &str) -> Option<View> {
             .background(CREAM)
             .corner_radius(8.0)
             .padding(Thickness::uniform(QUIET_ZONE as f64 * MODULE))
-            .horizontal_alignment(HorizontalAlignment::Left)
+            .horizontal_alignment(HorizontalAlignment::Center)
             .automation_name(t("Pairing QR code", "QR code d'association"))
             .content(canvas),
     )

@@ -95,6 +95,30 @@ pub fn primary_button(label: &str, on_click: Callback<()>) -> View {
         .content(label)
 }
 
+/// A button for an action that cannot be undone, in the Fluent critical
+/// red. White text on it reads at more than 4.5:1 in both themes.
+pub fn danger_button(label: &str, on_click: Callback<()>) -> View {
+    let red = Color::rgb(0xC4, 0x2B, 0x1C);
+    let hover = Color::argb(0xE6, 0xC4, 0x2B, 0x1C);
+    let pressed = Color::argb(0xCC, 0xC4, 0x2B, 0x1C);
+    let white = Color::rgb(0xFF, 0xFF, 0xFF);
+    let colours = ResourceOverrides::new()
+        .set("AccentButtonBackground", red)
+        .set("AccentButtonBackgroundPointerOver", hover)
+        .set("AccentButtonBackgroundPressed", pressed)
+        .set("AccentButtonBorderBrush", red)
+        .set("AccentButtonBorderBrushPointerOver", hover)
+        .set("AccentButtonBorderBrushPressed", pressed)
+        .set("AccentButtonForeground", white)
+        .set("AccentButtonForegroundPointerOver", white)
+        .set("AccentButtonForegroundPressed", white);
+    Button::new()
+        .style(ButtonStyle::Accent)
+        .resource_overrides(colours)
+        .on_click(on_click)
+        .content(label)
+}
+
 pub fn button(label: &str, on_click: Callback<()>) -> View {
     Button::new().on_click(on_click).content(label)
 }

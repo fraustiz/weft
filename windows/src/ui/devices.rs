@@ -6,7 +6,9 @@ use weft_cli::hex;
 use windows_reactor::*;
 
 use super::app::{Message, Weft};
-use super::widgets::{body, button, card, column, label, primary_button, secondary, status_mark};
+use super::widgets::{
+    body, button, card, column, danger_button, label, primary_button, secondary, status_mark,
+};
 use super::words;
 use crate::i18n::{is_french, t};
 use crate::worker::Device;
@@ -81,7 +83,9 @@ fn device_row(device: &Device, context: &ViewContext<Weft>) -> View {
     )
 }
 
-/// Asks before removing a device, naming it. Only in the tree while open:
+/// Asks before removing a device, naming it. The dialog's own buttons
+/// cannot be coloured, so both buttons are in its content, Remove in red.
+/// Only in the tree while open:
 /// a closed dialog would still take room on the page.
 fn confirm_removal(weft: &Weft, context: &ViewContext<Weft>) -> Option<View> {
     let device = weft
@@ -103,13 +107,26 @@ fn confirm_removal(weft: &Weft, context: &ViewContext<Weft>) -> Option<View> {
             ),
         )
     };
+    let buttons = StackPanel::new()
+        .orientation(Orientation::Horizontal)
+        .spacing(8.0)
+        .horizontal_alignment(HorizontalAlignment::Right)
+        .children((
+            button(
+                t("Cancel", "Annuler"),
+                context.message(Message::CancelRemove),
+            ),
+            danger_button(
+                t("Remove", "Retirer"),
+                context.message(Message::ConfirmRemove),
+            ),
+        ));
     let dialog = ContentDialog::new()
-        .is_open(true)
+        .is_open(weft.removal_hiding.is_none())
         .title(title)
-        .primary_button_text(t("Remove", "Retirer"))
-        .close_button_text(t("Cancel", "Annuler"))
-        .on_closed(context.callback(Message::RemoveClosed))
-        .content(body(text));
+        // Escape closes it too.
+        .on_closed(context.callback(|_| Message::RemovalHidden))
+        .content(column(24.0, vec![body(text).into(), buttons]));
     Some(dialog)
 }
 

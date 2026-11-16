@@ -51,7 +51,11 @@ pub enum Message {
     Join,
     DismissAdded,
     AskRemove([u8; 16]),
-    RemoveClosed(ContentDialogResult),
+    /// Remove was chosen in the confirmation.
+    ConfirmRemove,
+    CancelRemove,
+    /// The confirmation finished hiding.
+    RemovalHidden,
     NameEdited(String),
     SaveName,
     SetPaused(bool),
@@ -73,6 +77,8 @@ pub struct Weft {
     pub added: Option<[u8; 16]>,
     /// The device whose removal waits for a confirmation.
     pub removing: Option<[u8; 16]>,
+    /// The confirmation is hiding after a choice; `true` if it was Remove.
+    pub removal_hiding: Option<bool>,
     /// The device name being edited, if it differs from the saved one.
     pub name_draft: Option<String>,
     pub name_problem: Option<NameProblem>,
@@ -177,6 +183,7 @@ impl Component for Weft {
             join_code: String::new(),
             added: None,
             removing: None,
+            removal_hiding: None,
             name_draft: None,
             name_problem: None,
             autostart: autostart::is_enabled(),
@@ -225,11 +232,24 @@ impl Component for Weft {
             }
             Message::DismissAdded => self.added = None,
             Message::AskRemove(device) => self.removing = Some(device),
-            Message::RemoveClosed(result) => {
-                if let (Some(device), ContentDialogResult::Primary) = (self.removing, result) {
+            Message::ConfirmRemove | Message::CancelRemove => {
+                if self.removing.is_some() && self.removal_hiding.is_none() {
+                    let confirmed = matches!(message, Message::ConfirmRemove);
+                    // Closing the dialog from code does not report it
+                    // closed: drop it from the tree once it has hidden.
+                    self.removal_hiding = Some(confirmed);
+                    context.spawn_background(|_| {
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                        Message::RemovalHidden
+                    });
+                }
+            }
+            Message::RemovalHidden => {
+                if let (Some(device), Some(true)) = (self.removing, self.removal_hiding) {
                     worker.send(Command::RemoveDevice(device));
                 }
                 self.removing = None;
+                self.removal_hiding = None;
             }
             Message::NameEdited(name) => {
                 // Setting the field's text reports a change too: only a
