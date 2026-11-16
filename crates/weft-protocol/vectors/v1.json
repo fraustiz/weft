@@ -1,0 +1,72 @@
+{
+  "protocol_version": 1,
+  "devices": {
+    "a": {
+      "sign_seed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "kx_seed": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "sign_pk": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+      "kx_pk": "99f4674ecc87c0b8e712f192b8f49e7442a9376b4875967ababa28471019a93e",
+      "device_id": "40bca4eaf9d2b097ff8dbaa4d61767ed"
+    },
+    "b": {
+      "sign_seed": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "kx_seed": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+      "sign_pk": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
+      "kx_pk": "a7e09d2129568e8aa5cf96ea7fd9e0f881a5d78bf592269562963f7b6f689050",
+      "device_id": "0e934e02183f97e0cd83ad10d6c4be5a"
+    }
+  },
+  "session": {
+    "client": "b",
+    "a": {
+      "rx": "24114c87b65082754b076b30cc7bf379b03854cc428b621750d11ba838884524",
+      "tx": "16543c0e133a5d0de69033e22655631a1230c8ca5fd234bcb361bceb4d066234"
+    },
+    "b": {
+      "rx": "16543c0e133a5d0de69033e22655631a1230c8ca5fd234bcb361bceb4d066234",
+      "tx": "24114c87b65082754b076b30cc7bf379b03854cc428b621750d11ba838884524"
+    }
+  },
+  "envelopes": [
+    {
+      "name": "clipboard_text_a_to_b",
+      "sender": "a",
+      "recipient": "b",
+      "version": 1,
+      "kind": 1,
+      "message_id": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+      "counter": 1,
+      "nonce": "808182838485868788898a8b8c8d8e8f9091929394959697",
+      "key": "16543c0e133a5d0de69033e22655631a1230c8ca5fd234bcb361bceb4d066234",
+      "plaintext_utf8": "héllo, weft ✂",
+      "plaintext": "68c3a96c6c6f2c207765667420e29c82",
+      "header": "010140bca4eaf9d2b097ff8dbaa4d61767ed0e934e02183f97e0cd83ad10d6c4be5aa0a1a2a3a4a5a6a7a8a9aaabacadaeaf0000000000000001",
+      "frame": "010140bca4eaf9d2b097ff8dbaa4d61767ed0e934e02183f97e0cd83ad10d6c4be5aa0a1a2a3a4a5a6a7a8a9aaabacadaeaf0000000000000001808182838485868788898a8b8c8d8e8f90919293949596975a680321b6599a3a78c92ac467c50446d4efe523e20bf6082ac1ab449faeb1bd"
+    },
+    {
+      "name": "ping_b_to_a",
+      "sender": "b",
+      "recipient": "a",
+      "version": 1,
+      "kind": 2,
+      "message_id": "d0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+      "counter": 1,
+      "nonce": "b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7",
+      "key": "24114c87b65082754b076b30cc7bf379b03854cc428b621750d11ba838884524",
+      "plaintext_utf8": "",
+      "plaintext": "",
+      "header": "01020e934e02183f97e0cd83ad10d6c4be5a40bca4eaf9d2b097ff8dbaa4d61767edd0d1d2d3d4d5d6d7d8d9dadbdcdddedf0000000000000001",
+      "frame": "01020e934e02183f97e0cd83ad10d6c4be5a40bca4eaf9d2b097ff8dbaa4d61767edd0d1d2d3d4d5d6d7d8d9dadbdcdddedf0000000000000001b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7fee523de4a97861502ceb77bb04a627e"
+    }
+  ],
+  "auth": {
+    "relay_name": "weft.frohub.eu",
+    "nonce": "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+    "challenge_frame": "a00e776566742e66726f6875622e6575e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+    "device": "a",
+    "signed_message": "776566742d617574682d76310e776566742e66726f6875622e6575e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+    "signature": "9c1882f740b83ee0c395fa5222ce2d21589deed27b9fc3701ced9a0f13dd4b708dae801fcc655cb402d738faec0884ac8f03a5e31a17291a575cfb8ab12d6602",
+    "response_frame": "a103a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b89c1882f740b83ee0c395fa5222ce2d21589deed27b9fc3701ced9a0f13dd4b708dae801fcc655cb402d738faec0884ac8f03a5e31a17291a575cfb8ab12d6602",
+    "accepted_frame": "a2"
+  }
+}

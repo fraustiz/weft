@@ -1,0 +1,14 @@
+[package]
+name = "weft-protocol"
+version = "0.1.0"
+description = "Weft wire protocol v1: identities, session keys, envelopes and relay authentication"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+libsodium-sys-stable = "1.24.6"
+thiserror = "2.0.21"
+
+[dev-dependencies]
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
