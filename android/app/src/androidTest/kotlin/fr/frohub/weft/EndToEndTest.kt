@@ -9,6 +9,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import fr.frohub.weft.core.ConnectionStatus
 import fr.frohub.weft.core.JoinResult
+import fr.frohub.weft.core.RenameResult
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -33,16 +34,38 @@ class EndToEndTest {
     private val app = ApplicationProvider.getApplicationContext<WeftApplication>()
     private val args = InstrumentationRegistry.getArguments()
 
-    /** `-e weftCode WEFT1:…`: joins the group of the CLI that printed the code. */
+    /**
+     * `-e weftCode WEFT1:…`: joins the group of the CLI that printed the code. With
+     * `-e weftName …`, this phone is given that name first; with `-e weftExpectPeerName …`, the
+     * step waits until the CLI's announced name is stored.
+     */
     @Test
     fun join() {
         val code = args.getString("weftCode")
         assumeTrue("no weftCode argument", code != null)
         ActivityScenario.launch(MainActivity::class.java).use {
+            args.getString("weftName")?.let { name ->
+                assertEquals(RenameResult.Sent(0), runBlocking { app.core.rename(name) })
+            }
             val result = runBlocking { app.core.join(code!!) }
             assertTrue("join failed: $result", result is JoinResult.Joined)
             assertEquals(1, (result as JoinResult.Joined).devices.size)
             awaitConnected()
+            args.getString("weftExpectPeerName")?.let { expected ->
+                val name = poll(15_000) { app.core.devices.value.singleOrNull()?.name?.takeIf { it == expected } }
+                assertEquals(expected, name)
+            }
+        }
+    }
+
+    /** `-e weftName …`: renames this phone, which sends the new name to the CLI. */
+    @Test
+    fun rename() {
+        val name = args.getString("weftName")
+        assumeTrue("no weftName argument", name != null)
+        ActivityScenario.launch(MainActivity::class.java).use {
+            awaitConnected()
+            assertEquals(RenameResult.Sent(1), runBlocking { app.core.rename(name!!) })
         }
     }
 

@@ -18,8 +18,10 @@ import fr.frohub.weft.protocol.Weft
 import fr.frohub.weft.protocol.WeftException
 import fr.frohub.weft.protocol.classify
 import fr.frohub.weft.protocol.decodeDeviceAdded
+import fr.frohub.weft.protocol.decodeDeviceName
 import fr.frohub.weft.protocol.decodeDeviceRemoved
 import fr.frohub.weft.protocol.decodeWelcome
+import fr.frohub.weft.protocol.encodeDeviceName
 import fr.frohub.weft.protocol.encodeDeviceRemoved
 import fr.frohub.weft.protocol.open
 import fr.frohub.weft.protocol.sessionKeys
@@ -62,6 +64,8 @@ class WeftCore internal constructor(
     /** How long a group change waits for the relay connection. */
     private val connectWait: Duration = CONNECT_WAIT,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** This phone's name until the user picks one. */
+    private val defaultName: String = defaultDeviceName(),
 ) {
     constructor(context: Context) : this(context.applicationContext, context.applicationContext.noBackupFilesDir)
 
@@ -91,6 +95,11 @@ class WeftCore internal constructor(
     val devices: StateFlow<List<Device>> = repository.state
         .map { state -> state.devices.map { it.toDevice() } }
         .stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /** This phone's own name, as announced to the other devices. */
+    val name: StateFlow<String> = repository.state
+        .map { it.name ?: defaultName }
+        .stateIn(scope, SharingStarted.Eagerly, defaultName)
 
     private val _loaded = MutableStateFlow(false)
 
@@ -135,9 +144,11 @@ class WeftCore internal constructor(
             cachedIdentity ?: run {
                 val loaded = withContext(Dispatchers.IO) { seedStore.loadOrCreate() }
                 if (loaded.created) {
-                    // Whatever was trusted before was paired with keys that are gone.
+                    // Whatever was trusted before was paired with keys that are gone; the
+                    // phone's own name is not tied to them.
                     repository.update { state ->
-                        if (state == DeviceState()) state to Unit else DeviceState() to Unit
+                        val fresh = DeviceState(name = state.name)
+                        if (state == fresh) state to Unit else fresh to Unit
                     }
                 }
                 loaded.identity.also { cachedIdentity = it }
@@ -172,10 +183,10 @@ class WeftCore internal constructor(
     // region Pairing (joining side, docs/protocol.md section 5, device B)
 
     /** Starts [join] in the background; follow it with [joinState]. */
-    fun startJoin(code: String, name: String? = null) {
+    fun startJoin(code: String) {
         _joinState.value = JoinState.Joining
         scope.launch {
-            _joinState.value = JoinState.Done(join(code, name))
+            _joinState.value = JoinState.Done(join(code))
         }
     }
 
@@ -189,18 +200,19 @@ class WeftCore internal constructor(
      * pair request, waits up to 30 s for the Welcome from that device, then trusts it and the
      * members it lists. Nothing is saved unless the Welcome arrives. Devices trusted before are
      * dropped, since the relay moves this device out of its previous group (with a warning if
-     * the relay changes too). [name] is remembered for the device that showed the code.
+     * the relay changes too). Then sends this phone's name to every device it now trusts
+     * (docs/protocol.md section 5, step 6); they send theirs back.
      */
-    suspend fun join(code: String, name: String? = null): JoinResult {
+    suspend fun join(code: String): JoinResult {
         if (!groupMutex.tryLock()) return JoinResult.Busy
         try {
-            return joinLocked(code, name)
+            return joinLocked(code)
         } finally {
             groupMutex.unlock()
         }
     }
 
-    private suspend fun joinLocked(code: String, name: String?): JoinResult {
+    private suspend fun joinLocked(code: String): JoinResult {
         val pairing = try {
             PairingCode.decode(code.trim())
         } catch (_: WeftException) {
@@ -241,12 +253,15 @@ class WeftCore internal constructor(
             val ownSignPk = local.signPublicKey
             val now = clock()
             val (devices, dropped) = repository.update { state ->
-                // Devices that stay trusted keep the date they were first added.
-                fun addedAt(keys: PeerKeys) = state.device(keys.deviceId.toHex())?.addedAt ?: now
-                var next = DeviceState(relayUrl = pairing.relayUrl, peers = state.peers)
-                    .trust(owner, name?.trim()?.takeIf { it.isNotEmpty() }, addedAt(owner))
+                // Devices that stay trusted keep the date they were first added and their name.
+                fun DeviceState.keep(keys: PeerKeys): DeviceState {
+                    val before = state.device(keys.deviceId.toHex())
+                    val next = trust(keys, before?.addedAt ?: now)
+                    return before?.name?.let { next.withDeviceName(before.deviceIdHex, it) } ?: next
+                }
+                var next = DeviceState(relayUrl = pairing.relayUrl, name = state.name, peers = state.peers).keep(owner)
                 for (member in welcome.members) {
-                    if (!member.signPublicKey.contentEquals(ownSignPk)) next = next.trust(member, addedAt = addedAt(member))
+                    if (!member.signPublicKey.contentEquals(ownSignPk)) next = next.keep(member)
                 }
                 // Checked against the replay state when it arrived, under the same keys.
                 val ownerPeer = next.peer(pending.ownerIdHex).record(welcome.header.counter, welcome.header.messageId)
@@ -254,14 +269,18 @@ class WeftCore internal constructor(
                 val dropped = state.devices.filter { next.device(it.deviceIdHex) == null }
                 next to (next.devices to dropped)
             }
+            pending.settled.complete(Unit)
             for (device in dropped) {
                 Log.w(TAG, "no longer trusted, it belongs to the previous group: ${shortId(device.deviceIdHex)}")
             }
             Log.i(TAG, "joined the group: ${devices.size} trusted device(s)")
+            sendName(devices.map { it.deviceIdHex })
+            if (!relay.flush(FLUSH_TIMEOUT)) Log.w(TAG, "the relay connection closed before the name left")
             // Before the join lets go of the connection, so it stays up.
             startService()
             return JoinResult.Joined(devices.map { it.toDevice() }, replacedGroup = dropped.isNotEmpty())
         } finally {
+            pending.settled.complete(Unit)
             pendingJoin = null
             pending.rx.fill(0)
             heldUrl = null
@@ -321,9 +340,9 @@ class WeftCore internal constructor(
         return result
     }
 
-    /** Drops every trusted device and the relay url; counters stay, as for a removal. */
+    /** Drops every trusted device and the relay url; counters and this phone's name stay. */
     private suspend fun forgetGroup() {
-        repository.update { state -> DeviceState(relayUrl = null, peers = state.peers) to Unit }
+        repository.update { state -> DeviceState(relayUrl = null, name = state.name, peers = state.peers) to Unit }
         Log.i(TAG, "left the group")
     }
 
@@ -367,11 +386,46 @@ class WeftCore internal constructor(
 
     private class PendingJoin(val ownerIdHex: String, val rx: ByteArray) {
         val result = CompletableDeferred<JoinOutcome>()
+
+        /** Completed once the join has saved (or given up on) the new group. */
+        val settled = CompletableDeferred<Unit>()
     }
 
     private sealed interface JoinOutcome {
         class Welcome(val header: Header, val members: List<PeerKeys>) : JoinOutcome
         class Refused(val error: ControlError) : JoinOutcome
+    }
+
+    // endregion
+
+    // region Device names (docs/protocol.md section 5, step 6)
+
+    /**
+     * Changes this phone's name, saves it, then sends it to every trusted device. The name is
+     * saved even if the relay cannot be reached ([RenameResult.NotSent]); renaming again (even
+     * to the same name) sends it then.
+     */
+    suspend fun rename(name: String): RenameResult {
+        deviceNameProblem(name)?.let { return RenameResult.Invalid(it) }
+        val state = repository.update { state -> state.copy(name = name).let { it to it } }
+        if (state.devices.isEmpty()) return RenameResult.Sent(0)
+        var sent = 0
+        val result = groupChange { current ->
+            sent = sendName(current.devices.map { it.deviceIdHex })
+            if (sent == 0) GroupChangeResult.NotConnected else GroupChangeResult.Done
+        }
+        Log.i(TAG, "renamed this phone; sent to $sent device(s)")
+        return if (result == GroupChangeResult.Done) RenameResult.Sent(sent) else RenameResult.NotSent
+    }
+
+    /**
+     * Sends this phone's name (Device name envelope) to each of [deviceIds] that is trusted.
+     * Returns how many envelopes the relay connection took.
+     */
+    private suspend fun sendName(deviceIds: List<String>): Int {
+        if (deviceIds.isEmpty()) return 0
+        val plaintext = encodeDeviceName(repository.load().name ?: defaultName)
+        return sender.sendEnvelope(deviceIds, Kind.DEVICE_NAME, plaintext)
     }
 
     // endregion
@@ -423,13 +477,17 @@ class WeftCore internal constructor(
         when (event) {
             is Received.Clipboard -> writeClipboard(event.text)
             is Received.Dropped -> Log.w(TAG, "dropped an envelope from ${shortId(senderHex)}: ${event.reason}")
-            is Received.Changed -> Log.i(TAG, "${event.what} from ${shortId(senderHex)}")
+            is Received.Changed -> {
+                Log.i(TAG, "${event.what} from ${shortId(senderHex)}")
+                // Every device this one just started trusting gets its name.
+                sendName(event.newlyTrusted)
+            }
             Received.Ping -> Unit
         }
     }
 
     /** The Welcome a pending join waits for, from the device that showed the code. */
-    private fun handleJoinWelcome(pending: PendingJoin, frame: ByteArray) {
+    private suspend fun handleJoinWelcome(pending: PendingJoin, frame: ByteArray) {
         val (header, plaintext) = try {
             open(frame, pending.rx)
         } catch (_: WeftException) {
@@ -441,13 +499,19 @@ class WeftCore internal constructor(
             Log.w(TAG, "dropped a welcome: $replay")
             return
         }
-        pending.result.complete(JoinOutcome.Welcome(header, decodeWelcome(plaintext)))
+        if (!pending.result.complete(JoinOutcome.Welcome(header, decodeWelcome(plaintext)))) return
+        // What the owner sends right after the Welcome (its name) is only accepted from a
+        // trusted device: hold the next frames until the join has saved the group.
+        if (withTimeoutOrNull(SETTLE_WAIT) { pending.settled.await() } == null) {
+            Log.w(TAG, "the join took too long to save the group")
+        }
     }
 
     private sealed interface Received {
         class Clipboard(val text: String) : Received
         data object Ping : Received
-        class Changed(val what: String) : Received
+        /** [newlyTrusted]: the devices to send this phone's name to. */
+        class Changed(val what: String, val newlyTrusted: List<String> = emptyList()) : Received
         class Dropped(val reason: String) : Received
     }
 
@@ -473,20 +537,32 @@ class WeftCore internal constructor(
             Kind.PING -> next to Received.Ping
             Kind.WELCOME -> {
                 var updated = next
+                val added = mutableListOf<String>()
                 for (member in decodeWelcome(plaintext)) {
-                    if (!member.signPublicKey.contentEquals(ownSignPk)) updated = updated.trust(member, addedAt = clock())
+                    val id = member.deviceId.toHex()
+                    if (member.signPublicKey.contentEquals(ownSignPk)) continue
+                    if (updated.device(id) == null) added += id
+                    updated = updated.trust(member, addedAt = clock())
                 }
-                updated to Received.Changed("welcome")
+                // As the CLI does: the sender and the members trusted from it.
+                updated to Received.Changed("welcome", listOf(senderHex) + added)
             }
             Kind.DEVICE_ADDED -> {
                 val added = decodeDeviceAdded(plaintext)
-                val updated = if (added.signPublicKey.contentEquals(ownSignPk)) next else next.trust(added, addedAt = clock())
-                updated to Received.Changed("device added: ${shortId(added.deviceId.toHex())}")
+                val addedHex = added.deviceId.toHex()
+                if (added.signPublicKey.contentEquals(ownSignPk)) {
+                    next to Received.Changed("device added: this phone")
+                } else {
+                    next.trust(added, addedAt = clock()) to
+                        Received.Changed("device added: ${shortId(addedHex)}", listOf(addedHex))
+                }
             }
             Kind.DEVICE_REMOVED -> {
                 val removed = decodeDeviceRemoved(plaintext).toHex()
                 next.untrust(removed) to Received.Changed("device removed: ${shortId(removed)}")
             }
+            // Only for a trusted sender (checked above); it never changes trust.
+            Kind.DEVICE_NAME -> next.withDeviceName(senderHex, decodeDeviceName(plaintext)) to Received.Changed("device name")
         }
     }
 
@@ -510,6 +586,7 @@ class WeftCore internal constructor(
         /** How long a group change waits for the relay connection. */
         private val CONNECT_WAIT: Duration = 10.seconds
         private val FLUSH_TIMEOUT: Duration = 5.seconds
+        private val SETTLE_WAIT: Duration = 5.seconds
     }
 }
 

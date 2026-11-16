@@ -70,6 +70,16 @@
     <string name="action_cancel">Annuler</string>
     <string name="group_change_busy">Un appairage est en cours. Réessayez une fois terminé.</string>
 
+    <string name="action_rename">Renommer ce téléphone</string>
+    <string name="rename_title">Nom de ce téléphone</string>
+    <string name="rename_body">Vos autres appareils affichent ce nom.</string>
+    <string name="rename_save">Enregistrer</string>
+    <string name="rename_offline_body">Enregistré sur ce téléphone, mais le relais est injoignable : vos autres appareils affichent encore l’ancien nom. Réessayez une fois connecté.</string>
+    <string name="action_close">Fermer</string>
+    <string name="name_empty">Saisissez un nom</string>
+    <string name="name_too_long">Trop long (64 octets au maximum ; les lettres accentuées et les emoji en prennent plus d’un)</string>
+    <string name="name_invalid_character">Les retours à la ligne, tabulations et autres caractères de contrôle ne sont pas acceptés</string>
+
     <string name="device_name">Nom</string>
     <string name="device_no_name">Sans nom</string>
     <string name="device_id">Identifiant</string>
@@ -96,8 +106,6 @@
     <string name="code_label">Code d’appairage</string>
     <string name="action_paste">Coller depuis le presse-papiers</string>
     <string name="paste_nothing">Aucun texte dans le presse-papiers</string>
-    <string name="computer_name_label">Nom de l’ordinateur (facultatif)</string>
-    <string name="computer_name_hint">Affiché dans votre liste d’appareils</string>
     <string name="action_join">Appairer</string>
     <string name="joining_title">Appairage…</string>
     <string name="joining_body">En attente de la confirmation de votre ordinateur. Laissez %1$s tourner.</string>

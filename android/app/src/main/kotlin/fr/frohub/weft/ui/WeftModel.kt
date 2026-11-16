@@ -5,6 +5,7 @@ import fr.frohub.weft.core.ConnectionStatus
 import fr.frohub.weft.core.Device
 import fr.frohub.weft.core.GroupChangeResult
 import fr.frohub.weft.core.JoinState
+import fr.frohub.weft.core.RenameResult
 import fr.frohub.weft.core.WeftCore
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.SharingStarted
@@ -21,13 +22,19 @@ interface WeftModel {
     val lastSent: StateFlow<LastSent?>
     val joinState: StateFlow<JoinState>
 
-    fun startJoin(code: String, name: String?)
+    /** This phone's own name, as the other devices see it. */
+    val name: StateFlow<String>
+
+    fun startJoin(code: String)
 
     fun clearJoin()
 
     suspend fun remove(deviceId: String): GroupChangeResult
 
     suspend fun leave(evenIfOffline: Boolean): GroupChangeResult
+
+    /** Renames this phone and tells the other devices. */
+    suspend fun rename(name: String): RenameResult
 }
 
 class CoreModel(private val core: WeftCore) : WeftModel {
@@ -37,8 +44,9 @@ class CoreModel(private val core: WeftCore) : WeftModel {
     }.stateIn(core.scope, SharingStarted.Eagerly, null)
     override val lastSent: StateFlow<LastSent?> get() = core.sender.lastSent
     override val joinState: StateFlow<JoinState> get() = core.joinState
+    override val name: StateFlow<String> get() = core.name
 
-    override fun startJoin(code: String, name: String?) = core.startJoin(code, name)
+    override fun startJoin(code: String) = core.startJoin(code)
 
     override fun clearJoin() = core.clearJoin()
 
@@ -46,4 +54,6 @@ class CoreModel(private val core: WeftCore) : WeftModel {
     override suspend fun remove(deviceId: String) = core.scope.async { core.remove(deviceId) }.await()
 
     override suspend fun leave(evenIfOffline: Boolean) = core.scope.async { core.leave(evenIfOffline) }.await()
+
+    override suspend fun rename(name: String) = core.scope.async { core.rename(name) }.await()
 }

@@ -4,7 +4,9 @@ import android.content.Context
 import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -24,6 +26,7 @@ import fr.frohub.weft.core.Device
 import fr.frohub.weft.core.GroupChangeResult
 import fr.frohub.weft.core.JoinResult
 import fr.frohub.weft.core.JoinState
+import fr.frohub.weft.core.RenameResult
 import fr.frohub.weft.protocol.ControlError
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -76,7 +79,8 @@ class WeftAppTest {
         launch()
         compose.onNodeWithTag(PAIR_BUTTON).performClick()
         compose.onNodeWithTag(JOIN_BUTTON).performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithTag(NAME_FIELD).performTextInput("Work laptop")
+        // The computer announces its own name now: there is nothing to type for it.
+        compose.onNodeWithText("Computer name", substring = true).assertDoesNotExist()
 
         val failures = listOf(
             JoinResult.InvalidCode,
@@ -93,7 +97,7 @@ class WeftAppTest {
             compose.onNodeWithTag(CODE_FIELD).performTextInput("  $code ")
             compose.onNodeWithTag(JOIN_BUTTON).performScrollTo().performClick()
 
-            assertEquals(code to "Work laptop", model.joins.last())
+            assertEquals(code, model.joins.last())
             val (title, body) = joinErrorText(failure)
             compose.onNodeWithTag(JOIN_ERROR).assertIsDisplayed()
             compose.onNodeWithText(string(title)).assertIsDisplayed()
@@ -187,6 +191,75 @@ class WeftAppTest {
         assertEquals(listOf(false), model.leaves)
     }
 
+    @Test
+    fun renamingThisPhoneChecksTheNameAsItIsTyped() {
+        model.devices.value = listOf(LAPTOP)
+        launch()
+        compose.onNodeWithContentDescription(string(R.string.more_options)).performClick()
+        compose.onNodeWithTag(RENAME_MENU_ITEM).performClick()
+        compose.onNodeWithTag(RENAME_DIALOG).assertIsDisplayed()
+        compose.onNodeWithText(string(R.string.rename_title)).assertIsDisplayed()
+        // The current name, ready to edit.
+        compose.onNodeWithTag(RENAME_FIELD).assertTextContains("Pixel 8")
+        compose.onNodeWithTag(RENAME_SAVE).assertIsEnabled()
+
+        val field = compose.onNodeWithTag(RENAME_FIELD)
+        fun type(text: String) {
+            field.performTextClearance()
+            if (text.isNotEmpty()) field.performTextInput(text)
+        }
+
+        type("")
+        compose.onNodeWithText(string(R.string.name_empty)).assertIsDisplayed()
+        compose.onNodeWithTag(RENAME_SAVE).assertIsNotEnabled()
+        // Spaces only: nothing left once trimmed.
+        type("   ")
+        compose.onNodeWithText(string(R.string.name_empty)).assertIsDisplayed()
+        compose.onNodeWithTag(RENAME_SAVE).assertIsNotEnabled()
+
+        type("a".repeat(65))
+        compose.onNodeWithText(string(R.string.name_too_long)).assertIsDisplayed()
+        compose.onNodeWithTag(RENAME_SAVE).assertIsNotEnabled()
+        // 33 characters, but 66 bytes.
+        type("é".repeat(33))
+        compose.onNodeWithText(string(R.string.name_too_long)).assertIsDisplayed()
+        // Exactly 64 bytes.
+        type("é".repeat(32))
+        compose.onNodeWithText(string(R.string.name_too_long)).assertDoesNotExist()
+        compose.onNodeWithTag(RENAME_SAVE).assertIsEnabled()
+
+        type("tab\there")
+        compose.onNodeWithText(string(R.string.name_invalid_character)).assertIsDisplayed()
+        compose.onNodeWithTag(RENAME_SAVE).assertIsNotEnabled()
+
+        // Offline: saved here, and it says the other devices still show the old name.
+        model.renameResult = RenameResult.NotSent
+        type("  Pixel de test ")
+        compose.onNodeWithTag(RENAME_SAVE).performClick()
+        compose.onNodeWithText(string(R.string.rename_offline_body)).assertIsDisplayed()
+        compose.onNodeWithText(string(R.string.action_try_again)).assertIsDisplayed()
+
+        model.renameResult = RenameResult.Sent(1)
+        compose.onNodeWithTag(RENAME_SAVE).performClick()
+        compose.onNodeWithTag(RENAME_DIALOG).assertDoesNotExist()
+        assertEquals(listOf("Pixel de test", "Pixel de test"), model.renames)
+        assertEquals("Pixel de test", model.name.value)
+    }
+
+    @Test
+    fun cancellingARenameChangesNothing() {
+        model.devices.value = listOf(LAPTOP)
+        launch()
+        compose.onNodeWithContentDescription(string(R.string.more_options)).performClick()
+        compose.onNodeWithTag(RENAME_MENU_ITEM).performClick()
+        compose.onNodeWithTag(RENAME_FIELD).performTextClearance()
+        compose.onNodeWithTag(RENAME_FIELD).performTextInput("Other")
+        compose.onNodeWithText(string(R.string.action_cancel)).performClick()
+        compose.onNodeWithTag(RENAME_DIALOG).assertDoesNotExist()
+        assertTrue(model.renames.isEmpty())
+        assertEquals("Pixel 8", model.name.value)
+    }
+
     private fun string(id: Int) = context.getString(id)
 
     private class FakeModel : WeftModel {
@@ -194,14 +267,17 @@ class WeftAppTest {
         override val devices = MutableStateFlow<List<Device>?>(emptyList())
         override val lastSent = MutableStateFlow<LastSent?>(null)
         override val joinState = MutableStateFlow<JoinState>(JoinState.Idle)
-        val joins = CopyOnWriteArrayList<Pair<String, String?>>()
+        override val name = MutableStateFlow("Pixel 8")
+        val joins = CopyOnWriteArrayList<String>()
+        val renames = CopyOnWriteArrayList<String>()
+        var renameResult: RenameResult = RenameResult.Sent(1)
         val removed = CopyOnWriteArrayList<String>()
         val leaves = CopyOnWriteArrayList<Boolean>()
         var nextJoin: JoinResult = JoinResult.InvalidCode
         var removeResult: GroupChangeResult = GroupChangeResult.Done
 
-        override fun startJoin(code: String, name: String?) {
-            joins += code to name
+        override fun startJoin(code: String) {
+            joins += code
             (nextJoin as? JoinResult.Joined)?.let { devices.value = it.devices }
             joinState.value = JoinState.Done(nextJoin)
         }
@@ -214,6 +290,12 @@ class WeftAppTest {
             removed += deviceId
             if (removeResult == GroupChangeResult.Done) devices.value = devices.value?.filterNot { it.id == deviceId }
             return removeResult
+        }
+
+        override suspend fun rename(name: String): RenameResult {
+            renames += name
+            if (renameResult !is RenameResult.Invalid) this.name.value = name
+            return renameResult
         }
 
         override suspend fun leave(evenIfOffline: Boolean): GroupChangeResult {

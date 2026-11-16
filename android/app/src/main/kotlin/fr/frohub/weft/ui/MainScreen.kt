@@ -54,6 +54,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import fr.frohub.weft.LastSent
@@ -81,6 +82,7 @@ fun MainScreen(
     onOpenDevice: (Device) -> Unit,
     onLeave: () -> Unit,
     onAddTile: (() -> Unit)?,
+    onRename: () -> Unit = {},
 ) {
     val paired = !devices.isNullOrEmpty()
     Scaffold(
@@ -98,7 +100,7 @@ fun MainScreen(
                         Text(stringResource(R.string.app_name))
                     }
                 },
-                actions = { if (paired) OverflowMenu(onLeave) },
+                actions = { if (paired) OverflowMenu(onRename, onLeave) },
             )
         },
     ) { innerPadding ->
@@ -119,13 +121,21 @@ fun MainScreen(
 }
 
 @Composable
-private fun OverflowMenu(onLeave: () -> Unit) {
+private fun OverflowMenu(onRename: () -> Unit, onLeave: () -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
         IconButton(onClick = { open = true }) {
             Icon(painterResource(R.drawable.ic_more_vert), contentDescription = stringResource(R.string.more_options))
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.action_rename)) },
+                onClick = {
+                    open = false
+                    onRename()
+                },
+                modifier = Modifier.testTag(RENAME_MENU_ITEM),
+            )
             DropdownMenuItem(
                 text = { Text(stringResource(R.string.action_leave)) },
                 onClick = {
@@ -306,11 +316,14 @@ val ConnectionProblem.label: Int
 @Composable
 private fun DeviceRow(device: Device, onClick: () -> Unit) {
     val openLabel = stringResource(R.string.device_open)
+    // Named or not, the title is set the same way; the short id sits under a name, small.
     ListItem(
-        headlineContent = {
-            Text(device.label, style = if (device.name == null) MaterialTheme.typography.bodyLarge.merge(MonoStyle) else TextStyle.Default)
+        headlineContent = { Text(device.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        supportingContent = if (device.name != null) {
+            { Text(device.shortId, style = MaterialTheme.typography.bodySmall.merge(MonoStyle)) }
+        } else {
+            null
         },
-        supportingContent = device.name?.let { { Text(device.shortId, style = MonoStyle) } },
         leadingContent = {
             Icon(painterResource(R.drawable.ic_computer), contentDescription = null)
         },

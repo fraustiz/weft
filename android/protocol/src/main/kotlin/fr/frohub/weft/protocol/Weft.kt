@@ -2,7 +2,7 @@
 //
 // Implements docs/protocol.md: device identities, session keys between two
 // devices, the encrypted message envelope, the relay authentication frames,
-// the group change plaintexts and frame dispatch. Pairing (pairing code, pair
+// the group change plaintexts, device names and frame dispatch. Pairing (pairing code, pair
 // request MAC, control frames) lives in Pairing.kt. Mirrors the Rust
 // reference (crates/weft-protocol) and must produce byte-identical output
 // (see crates/weft-protocol/vectors/v1.json).
@@ -39,6 +39,8 @@ object Weft {
     const val MAX_WELCOME_DEVICES = MAX_GROUP_SIZE - 2
     /** Size of one `sign_pk || kx_pk` entry in a group change plaintext. */
     const val PEER_KEYS_LENGTH = Sodium.SIGN_PK_BYTES + Sodium.KX_PK_BYTES
+    /** Largest device name, in bytes of UTF-8. */
+    const val MAX_DEVICE_NAME_LENGTH = 64
 
     /** Prefix of the pairing code string. */
     const val PAIRING_CODE_PREFIX = "WEFT1:"
@@ -276,7 +278,9 @@ enum class Kind(val value: UByte) {
     /** Keys of a device that joined the group; see [encodeDeviceAdded]. */
     DEVICE_ADDED(0x04u),
     /** Id of a device that left the group; see [encodeDeviceRemoved]. */
-    DEVICE_REMOVED(0x05u);
+    DEVICE_REMOVED(0x05u),
+    /** The sender's own name; see [encodeDeviceName]. */
+    DEVICE_NAME(0x06u);
 
     /** Largest plaintext allowed for this kind. */
     internal val maxPlaintextLength: Int
@@ -286,6 +290,7 @@ enum class Kind(val value: UByte) {
             WELCOME -> 1 + Weft.MAX_WELCOME_DEVICES * Weft.PEER_KEYS_LENGTH
             DEVICE_ADDED -> Weft.PEER_KEYS_LENGTH
             DEVICE_REMOVED -> Weft.DEVICE_ID_LENGTH
+            DEVICE_NAME -> Weft.MAX_DEVICE_NAME_LENGTH
         }
 
     /**
@@ -293,6 +298,7 @@ enum class Kind(val value: UByte) {
      * so [open] can reject a frame before decrypting it.
      */
     internal fun checkPlaintextLength(length: Int) {
+        if (this == DEVICE_NAME) return checkDeviceNameLength(length)
         if (length > maxPlaintextLength) {
             fail(if (this == PING) WeftError.PingNotEmpty else WeftError.PlaintextTooLarge(length))
         }
@@ -301,6 +307,7 @@ enum class Kind(val value: UByte) {
             WELCOME -> length % Weft.PEER_KEYS_LENGTH == 1
             DEVICE_ADDED -> length == Weft.PEER_KEYS_LENGTH
             DEVICE_REMOVED -> length == Weft.DEVICE_ID_LENGTH
+            DEVICE_NAME -> error("checked above")
         }
         if (!valid) fail(WeftError.InvalidPlaintextLength(length))
     }
@@ -310,6 +317,7 @@ enum class Kind(val value: UByte) {
         when (this) {
             CLIPBOARD_TEXT -> if (decodeUtf8(plaintext) == null) fail(WeftError.InvalidUtf8)
             WELCOME -> decodeWelcome(plaintext)
+            DEVICE_NAME -> decodeDeviceName(plaintext)
             // Fully checked by their length.
             PING, DEVICE_ADDED, DEVICE_REMOVED -> Unit
         }
@@ -530,6 +538,39 @@ fun encodeDeviceRemoved(deviceId: ByteArray): ByteArray = fixed(deviceId, Weft.D
 fun decodeDeviceRemoved(plaintext: ByteArray): ByteArray {
     if (plaintext.size != Weft.DEVICE_ID_LENGTH) fail(WeftError.InvalidPlaintextLength(plaintext.size))
     return plaintext.copyOf()
+}
+
+// endregion
+
+// region Device name
+
+/**
+ * Device name plaintext (kind `0x06`): the sender's own name in UTF-8, 1 to
+ * [Weft.MAX_DEVICE_NAME_LENGTH] bytes, without control characters (U+0000–U+001F,
+ * U+007F–U+009F). A string with an unpaired surrogate is [WeftError.InvalidUtf8].
+ */
+fun encodeDeviceName(name: String): ByteArray {
+    val bytes = encodeUtf8(name) ?: fail(WeftError.InvalidUtf8)
+    checkDeviceNameLength(bytes.size)
+    checkNoControlCharacter(name)
+    return bytes
+}
+
+/** Parses a Device name plaintext, with the same rules as [encodeDeviceName]. */
+fun decodeDeviceName(plaintext: ByteArray): String {
+    checkDeviceNameLength(plaintext.size)
+    val name = decodeUtf8(plaintext) ?: fail(WeftError.InvalidUtf8)
+    checkNoControlCharacter(name)
+    return name
+}
+
+internal fun checkDeviceNameLength(length: Int) {
+    if (length == 0 || length > Weft.MAX_DEVICE_NAME_LENGTH) fail(WeftError.DeviceNameLength(length))
+}
+
+/** The control characters are all in the BMP, so checking UTF-16 units is enough. */
+private fun checkNoControlCharacter(name: String) {
+    if (name.any { it in '\u0000'..'\u001f' || it in '\u007f'..'\u009f' }) fail(WeftError.DeviceNameControlCharacter)
 }
 
 // endregion

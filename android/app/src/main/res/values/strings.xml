@@ -74,6 +74,17 @@
     <string name="action_cancel">Cancel</string>
     <string name="group_change_busy">A pairing is in progress. Try again when it is done.</string>
 
+    <!-- This phone's name. -->
+    <string name="action_rename">Rename this phone</string>
+    <string name="rename_title">Name of this phone</string>
+    <string name="rename_body">Your other devices show this name.</string>
+    <string name="rename_save">Save</string>
+    <string name="rename_offline_body">Saved on this phone, but the relay can’t be reached, so your other devices still show the old name. Try again once connected.</string>
+    <string name="action_close">Close</string>
+    <string name="name_empty">Enter a name</string>
+    <string name="name_too_long">Too long (64 bytes at most; accented letters and emoji take more than one)</string>
+    <string name="name_invalid_character">Line breaks, tabs and other control characters can’t be used</string>
+
     <!-- Device details. -->
     <string name="device_name">Name</string>
     <string name="device_no_name">No name</string>
@@ -105,8 +116,6 @@
     <string name="code_placeholder" translatable="false">WEFT1:…</string>
     <string name="action_paste">Paste from clipboard</string>
     <string name="paste_nothing">No text on the clipboard</string>
-    <string name="computer_name_label">Computer name (optional)</string>
-    <string name="computer_name_hint">Shown in your list of devices</string>
     <string name="action_join">Pair</string>
     <string name="joining_title">Pairing…</string>
     <string name="joining_body">Waiting for your computer to confirm. Keep %1$s running.</string>

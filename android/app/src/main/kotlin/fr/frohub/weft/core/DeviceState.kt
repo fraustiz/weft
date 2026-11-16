@@ -17,6 +17,11 @@ const val REPLAY_WINDOW: ULong = 1024u
 data class DeviceState(
     /** Relay this device connects to; null until it has joined a group. */
     val relayUrl: String? = null,
+    /**
+     * This device's own name, announced to the devices it trusts (Device name envelope). Null
+     * until the user picks one: the default name ([defaultDeviceName]) is used meanwhile.
+     */
+    val name: String? = null,
     val devices: List<TrustedDevice> = emptyList(),
     /**
      * Keyed by the peer's device id in hex. Kept when a device is removed, so counters keep
@@ -31,16 +36,24 @@ data class DeviceState(
     fun withPeer(deviceIdHex: String, peer: PeerState): DeviceState = copy(peers = peers + (deviceIdHex to peer))
 
     /**
-     * Adds [keys] to the trusted devices, or updates their kx key (and name, if given).
-     * [addedAt] (epoch millis) is only recorded for a device that was not trusted yet.
+     * Adds [keys] to the trusted devices, or updates their kx key. A device already trusted
+     * keeps the name it announced. [addedAt] (epoch millis) is only recorded for a device that
+     * was not trusted yet.
      */
-    fun trust(keys: PeerKeys, name: String? = null, addedAt: Long? = null): DeviceState {
-        val device = TrustedDevice(keys.signPublicKey.toHex(), keys.kxPublicKey.toHex(), name, addedAt)
+    fun trust(keys: PeerKeys, addedAt: Long? = null): DeviceState {
+        val device = TrustedDevice(keys.signPublicKey.toHex(), keys.kxPublicKey.toHex(), addedAt = addedAt)
         val existing = device(device.deviceIdHex)
             ?: return copy(devices = devices + device)
-        val updated = existing.copy(kxPublicKeyHex = device.kxPublicKeyHex, name = name ?: existing.name)
+        val updated = existing.copy(kxPublicKeyHex = device.kxPublicKeyHex)
         return copy(devices = devices.map { if (it.deviceIdHex == device.deviceIdHex) updated else it })
     }
+
+    /**
+     * Records the name a trusted device announced, replacing the previous one. Does nothing for
+     * a device that is not trusted.
+     */
+    fun withDeviceName(deviceIdHex: String, name: String): DeviceState =
+        copy(devices = devices.map { if (it.deviceIdHex == deviceIdHex) it.copy(name = name) else it })
 
     fun untrust(deviceIdHex: String): DeviceState = copy(devices = devices.filterNot { it.deviceIdHex == deviceIdHex })
 
@@ -60,6 +73,7 @@ data class DeviceState(
     fun toJson(): JSONObject = JSONObject()
         .put("format", FORMAT_VERSION)
         .put("relay_url", relayUrl ?: JSONObject.NULL)
+        .apply { if (name != null) put("name", name) }
         .put("devices", JSONArray().apply { devices.forEach { put(it.toJson()) } })
         .put("peers", JSONObject().apply { peers.toSortedMap().forEach { (id, peer) -> put(id, peer.toJson()) } })
 
@@ -70,6 +84,8 @@ data class DeviceState(
         fun fromJson(json: JSONObject): DeviceState {
             require(json.getInt("format") == FORMAT_VERSION) { "unsupported state format" }
             val relayUrl = if (json.isNull("relay_url")) null else json.getString("relay_url")
+            // A name that is not a valid Device name is dropped: the default takes over.
+            val name = json.optString("name").takeIf { json.has("name") && !json.isNull("name") && deviceNameProblem(it) == null }
             val devicesJson = json.optJSONArray("devices") ?: JSONArray()
             val devices = List(devicesJson.length()) { TrustedDevice.fromJson(devicesJson.getJSONObject(it)) }
             val peersJson = json.optJSONObject("peers") ?: JSONObject()
@@ -77,7 +93,7 @@ data class DeviceState(
                 require(id.hexToBytesOrNull(Weft.DEVICE_ID_LENGTH) != null) { "invalid peer id" }
                 PeerState.fromJson(peersJson.getJSONObject(id))
             }
-            return DeviceState(relayUrl, devices, peers)
+            return DeviceState(relayUrl, name, devices, peers)
         }
     }
 }
@@ -86,6 +102,10 @@ data class DeviceState(
 data class TrustedDevice(
     val signPublicKeyHex: String,
     val kxPublicKeyHex: String,
+    /**
+     * The name the device announced (Device name envelope), or for state saved before names
+     * were announced, the label typed when pairing; null if neither.
+     */
     val name: String? = null,
     /** When this device trusted it, in epoch millis; null for devices saved before it was kept. */
     val addedAt: Long? = null,

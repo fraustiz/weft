@@ -89,13 +89,12 @@ val DefaultScanner: Scanner = { onCode, onUnavailable, modifier -> QrScanner(onC
 @Composable
 fun PairScreen(
     joinState: JoinState,
-    onJoin: (code: String, name: String?) -> Unit,
+    onJoin: (code: String) -> Unit,
     onRetry: () -> Unit,
     onBack: () -> Unit,
     scanner: Scanner = DefaultScanner,
 ) {
     var code by rememberSaveable { mutableStateOf("") }
-    var name by rememberSaveable { mutableStateOf("") }
     val failure = (joinState as? JoinState.Done)?.result?.takeIf { it !is JoinResult.Joined }
     // A finished join shows as in progress until the caller moves on.
     val phase = when {
@@ -103,7 +102,7 @@ fun PairScreen(
         joinState == JoinState.Idle -> Phase.INPUT
         else -> Phase.JOINING
     }
-    val join = { pairingCode: String -> onJoin(pairingCode.trim(), name.trim().ifEmpty { null }) }
+    val join = { pairingCode: String -> onJoin(pairingCode.trim()) }
     Scaffold(topBar = { BackTopBar(stringResource(R.string.pair_title), onBack) }) { innerPadding ->
         AnimatedContent(
             targetState = phase,
@@ -115,8 +114,6 @@ fun PairScreen(
                 Phase.INPUT -> PairInput(
                     code = code,
                     onCodeChange = { code = it },
-                    name = name,
-                    onNameChange = { name = it },
                     onScanned = join,
                     onSubmit = { join(code) },
                     scanner = scanner,
@@ -134,8 +131,6 @@ private enum class Phase { INPUT, JOINING, FAILED }
 private fun PairInput(
     code: String,
     onCodeChange: (String) -> Unit,
-    name: String,
-    onNameChange: (String) -> Unit,
     onScanned: (String) -> Unit,
     onSubmit: () -> Unit,
     scanner: Scanner,
@@ -190,25 +185,12 @@ private fun PairInput(
             keyboardOptions = KeyboardOptions(
                 capitalization = KeyboardCapitalization.None,
                 autoCorrectEnabled = false,
-                imeAction = ImeAction.Next,
+                imeAction = ImeAction.Done,
             ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag(CODE_FIELD),
-        )
-        Spacer(Modifier.height(16.dp))
-        OutlinedTextField(
-            value = name,
-            onValueChange = onNameChange,
-            label = { Text(stringResource(R.string.computer_name_label)) },
-            supportingText = { Text(stringResource(R.string.computer_name_hint)) },
-            singleLine = true,
-            colors = fieldColors(),
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = { if (code.isNotBlank()) onSubmit() }),
             modifier = Modifier
                 .fillMaxWidth()
-                .testTag(NAME_FIELD),
+                .testTag(CODE_FIELD),
         )
         Spacer(Modifier.height(24.dp))
         Button(
@@ -436,7 +418,6 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 
 /** Test tags. */
 const val CODE_FIELD = "code_field"
-const val NAME_FIELD = "name_field"
 const val PASTE_BUTTON = "paste_button"
 const val JOIN_BUTTON = "join_button"
 const val CAMERA_BLOCK = "camera_block"
@@ -448,6 +429,6 @@ const val RETRY_BUTTON = "retry_button"
 @Composable
 private fun PairErrorPreview() {
     WeftTheme(darkTheme = false) {
-        PairScreen(JoinState.Done(JoinResult.Refused(ControlError.UNKNOWN_PAIRING)), { _, _ -> }, {}, {})
+        PairScreen(JoinState.Done(JoinResult.Refused(ControlError.UNKNOWN_PAIRING)), { _ -> }, {}, {})
     }
 }

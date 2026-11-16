@@ -87,7 +87,8 @@ class StorageTest {
         val peerId = keys.deviceId.toHex()
         val repository = StateRepository(file)
         repository.update { state ->
-            val trusted = state.copy(relayUrl = "wss://relay.example/v1").trust(keys, "Mac")
+            val trusted = state.copy(relayUrl = "wss://relay.example/v1", name = "Téléphone de test")
+                .trust(keys).withDeviceName(peerId, "Mac")
             val (next, _) = trusted.nextCounters(listOf(peerId))
             next.withPeer(peerId, next.peer(peerId).record(7u, ByteArray(16) { 7 })) to Unit
         }
@@ -96,6 +97,7 @@ class StorageTest {
 
         assertEquals(repository.state.value, reloaded)
         assertEquals("wss://relay.example/v1", reloaded.relayUrl)
+        assertEquals("Téléphone de test", reloaded.name)
         assertEquals(listOf(TrustedDevice(keys.signPublicKey.toHex(), keys.kxPublicKey.toHex(), "Mac")), reloaded.devices)
         assertEquals(1uL, reloaded.peer(peerId).sendCounter)
         assertEquals(7uL, reloaded.peer(peerId).recvHighest)
@@ -103,6 +105,43 @@ class StorageTest {
         assertEquals(listOf("state.json"), dir.list()!!.filter { it.startsWith("state") })
         JSONObject(file.readText())
         Unit
+    }
+
+    @Test
+    fun stateFromBeforeNamesStillLoads() = runBlocking {
+        val peer = Identity.generate()
+        val file = File(dir, "state.json")
+        // Written by an earlier version: no own name, and a label typed when pairing.
+        file.writeText(
+            JSONObject()
+                .put("format", 1)
+                .put("relay_url", "wss://relay.example/v1")
+                .put(
+                    "devices",
+                    org.json.JSONArray().put(
+                        JSONObject().put("sign_pk", peer.signPublicKey.toHex()).put("kx_pk", peer.kxPublicKey.toHex()).put("name", "Work laptop"),
+                    ),
+                )
+                .toString(),
+        )
+        val repository = StateRepository(file)
+        val state = repository.load()
+        assertEquals(null, state.name)
+        assertEquals("Work laptop", state.devices.single().name)
+
+        // Replaced by the name the device announces.
+        val id = peer.deviceId.toHex()
+        repository.update { it.withDeviceName(id, "MacBook Air") to Unit }
+        assertEquals("MacBook Air", StateRepository(file).load().device(id)?.name)
+    }
+
+    @Test
+    fun invalidOwnNameFallsBackToTheDefault() = runBlocking {
+        val file = File(dir, "state.json")
+        file.writeText(JSONObject().put("format", 1).put("relay_url", JSONObject.NULL).put("name", "a\tb").toString())
+        val state = StateRepository(file).load()
+        assertEquals(null, state.name)
+        assertFalse(File(dir, "state.json.invalid").exists())
     }
 
     @Test

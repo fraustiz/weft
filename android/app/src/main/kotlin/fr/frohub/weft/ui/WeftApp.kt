@@ -35,10 +35,12 @@ fun WeftApp(
 ) {
     var route by rememberSaveable { mutableStateOf(Route.MAIN) }
     var leaving by rememberSaveable { mutableStateOf(false) }
+    var renaming by rememberSaveable { mutableStateOf(false) }
     val status by model.status.collectAsStateWithLifecycle()
     val devices by model.devices.collectAsStateWithLifecycle()
     val lastSent by model.lastSent.collectAsStateWithLifecycle()
     val joinState by model.joinState.collectAsStateWithLifecycle()
+    val name by model.name.collectAsStateWithLifecycle()
 
     LaunchedEffect(joinState) {
         val done = joinState as? JoinState.Done ?: return@LaunchedEffect
@@ -85,8 +87,13 @@ fun WeftApp(
                 onOpenDevice = { route = Route.DEVICE + it.id },
                 onLeave = { leaving = true },
                 onAddTile = onAddTile,
+                onRename = { renaming = true },
             )
         }
+    }
+
+    if (renaming) {
+        RenameDialog(current = name, onRename = model::rename, onDismiss = { renaming = false })
     }
 
     if (leaving) {

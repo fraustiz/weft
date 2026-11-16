@@ -15,10 +15,7 @@ import fr.frohub.weft.protocol.decodeDeviceRemoved
 import fr.frohub.weft.protocol.open
 import fr.frohub.weft.protocol.sessionKeys
 import java.io.File
-import java.util.concurrent.CopyOnWriteArrayList
-import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -122,7 +119,7 @@ class GroupChangeTest {
     private suspend fun pairWithBoth() {
         core.identity()
         core.repository.update { state ->
-            state.copy(relayUrl = RELAY_URL).trust(laptop.keys(), "Laptop", addedAt = 1L).trust(desktop.keys()) to Unit
+            state.copy(relayUrl = RELAY_URL).trust(laptop.keys(), addedAt = 1L).withDeviceName(laptop.hex(), "Laptop").trust(desktop.keys()) to Unit
         }
     }
 
@@ -139,27 +136,6 @@ class GroupChangeTest {
     private fun Identity.keys() = PeerKeys(signPublicKey, kxPublicKey)
 
     private fun Identity.hex() = deviceId.toHex()
-
-    /** Connected until told otherwise; keeps every frame and every url asked for. */
-    private class FakeRelay : RelayConnection {
-        override val status = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Connected)
-        val frames = CopyOnWriteArrayList<ByteArray>()
-        val urls = CopyOnWriteArrayList<String?>()
-
-        override val isConnected: Boolean get() = status.value == ConnectionStatus.Connected
-
-        override fun connectTo(url: String?) {
-            urls += url
-        }
-
-        override suspend fun flush(timeout: Duration): Boolean = true
-
-        override fun send(frame: ByteArray): Boolean {
-            if (!isConnected) return false
-            frames += frame
-            return true
-        }
-    }
 
     private companion object {
         const val KEY_ALIAS = "weft.test.group"

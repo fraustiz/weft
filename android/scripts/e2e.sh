@@ -4,9 +4,11 @@
 #
 #   1. builds weft-relay and weft (cargo) and installs the debug app and its tests (Gradle);
 #   2. runs a relay on 127.0.0.1:8090 and makes it reachable from the device (adb reverse);
-#   3. the CLI (device A) shows a pairing code, the app (device B) joins with it;
+#   3. the CLI (device A) shows a pairing code, the app (device B) joins with it; each one then
+#      has the other's name (Device name envelopes): `weft devices` shows the phone's name and
+#      the app stores the CLI's;
 #   4. the app sends its clipboard through the "Send clipboard" notification action, and
-#      `weft listen` must print it;
+#      `weft listen` must print it; the app is renamed, and `weft devices` must show the new name;
 #   5. `weft send` sends text, and the app must put it on the device clipboard (read back by an
 #      instrumented test with the app's activity focused, as any foreground app reads it).
 #
@@ -119,18 +121,31 @@ WEFT_BIND="127.0.0.1:$PORT" WEFT_RELAY_NAME=127.0.0.1 WEFT_DB="$TMP/relay.sqlite
 PIDS+=($!)
 wait_for 15 nc -z 127.0.0.1 "$PORT" 2>/dev/null || fail "the relay did not start (see relay.log)"
 
+MAC_NAME="E2E Mac"
+PHONE_NAME="E2E Pixel"
+PHONE_RENAMED="E2E Pixel renamed"
+
+# True if `weft devices` lists one device with exactly the name $1.
+cli_shows_name() {
+    "$WEFT" --state "$STATE_A" devices | grep -qE "^[0-9a-f]{32}  $1\$"
+}
+
 log "pairing: the CLI shows a code, the app joins"
-"$WEFT" --state "$STATE_A" init --relay "$RELAY_URL" >/dev/null 2>&1
+"$WEFT" --state "$STATE_A" init --relay "$RELAY_URL" --name "$MAC_NAME" >/dev/null 2>&1
 "$WEFT" --state "$STATE_A" pair >"$TMP/pair.out" 2>"$TMP/pair.err" &
 PAIR_PID=$!
 PIDS+=("$PAIR_PID")
 wait_for 20 grep -q '^WEFT1:' "$TMP/pair.out" || fail "weft pair printed no code"
 CODE="$(grep -m1 '^WEFT1:' "$TMP/pair.out")"
 device_ready
-instrument join -e weftCode "$CODE" || fail "the app could not join"
+instrument join -e weftCode "$CODE" -e weftName "'$PHONE_NAME'" -e weftExpectPeerName "'$MAC_NAME'" ||
+    fail "the app could not join, or did not get the CLI's name"
 wait "$PAIR_PID" || fail "weft pair did not accept the app"
 [ "$("$WEFT" --state "$STATE_A" devices | wc -l | tr -d ' ')" = 1 ] || fail "the CLI does not trust the app"
 echo "joined: the CLI trusts $("$WEFT" --state "$STATE_A" devices | cut -c1-8)…"
+cli_shows_name "$PHONE_NAME" || fail "weft devices does not show the phone's name"
+echo "weft devices: $("$WEFT" --state "$STATE_A" devices | cut -c1-8)…  $PHONE_NAME"
+echo "the app stores the CLI's name: $MAC_NAME"
 
 log "phone -> mac: the notification action sends the clipboard"
 "$WEFT" --state "$STATE_A" listen >"$TMP/listen.out" 2>"$TMP/listen.err" &
@@ -142,6 +157,12 @@ device_ready
 instrument sendClipboard -e weftSendText "$PHONE_TEXT" || fail "the app could not send its clipboard"
 wait_for 15 grep -q "\"text\":\"$PHONE_TEXT\"" "$TMP/listen.out" || fail "weft listen did not print the text"
 echo "weft listen printed: $(grep -m1 "$PHONE_TEXT" "$TMP/listen.out")"
+
+log "rename: the app sends its new name, weft listen stores it"
+device_ready
+instrument rename -e weftName "'$PHONE_RENAMED'" || fail "the app could not send its new name"
+wait_for 15 cli_shows_name "$PHONE_RENAMED" || fail "weft devices does not show the new name"
+echo "weft devices: $("$WEFT" --state "$STATE_A" devices | cut -c1-8)…  $PHONE_RENAMED"
 kill "$LISTEN_PID"
 wait "$LISTEN_PID" 2>/dev/null || true
 

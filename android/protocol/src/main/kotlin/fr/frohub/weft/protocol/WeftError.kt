@@ -31,6 +31,10 @@ sealed interface WeftError {
     data class UnknownControlError(val code: UByte) : WeftError
     /** The relay name in the challenge is not the host the client connected to. */
     data object RelayNameMismatch : WeftError
+    /** A device name must be 1 to [Weft.MAX_DEVICE_NAME_LENGTH] bytes of UTF-8; [length] is its size in bytes. */
+    data class DeviceNameLength(val length: Int) : WeftError
+    /** A device name contains a control character (U+0000–U+001F, U+007F–U+009F). */
+    data object DeviceNameControlCharacter : WeftError
 }
 
 /** The only exception the protocol API throws on bad input; [error] says why. */

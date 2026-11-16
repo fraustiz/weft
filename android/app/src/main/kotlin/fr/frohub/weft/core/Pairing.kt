@@ -6,7 +6,7 @@ import fr.frohub.weft.protocol.ControlError
 data class Device(
     /** 16-byte device id in hex. */
     val id: String,
-    /** Name given when pairing, if any. */
+    /** The name the device announced, if any yet. */
     val name: String?,
     /** When this device started trusting it, in epoch millis, if known. */
     val addedAt: Long? = null,
