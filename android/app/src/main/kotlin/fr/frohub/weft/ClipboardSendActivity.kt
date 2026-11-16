@@ -8,6 +8,9 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.annotation.StringRes
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Invisible activity that sends the clipboard, like KDE Connect's ClipboardFloatingActivity.
@@ -24,6 +27,9 @@ class ClipboardSendActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // From the tile after a cold start, the connection is not up yet: bring it up now,
+        // while this activity makes the app foreground; the send waits for it.
+        weft.startServiceIfPaired()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             overrideActivityTransition(OVERRIDE_TRANSITION_OPEN, 0, 0)
             overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, 0)
@@ -53,8 +59,7 @@ class ClipboardSendActivity : Activity() {
     private fun sendShared() {
         val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
         if (text.isNullOrEmpty()) return toast(R.string.toast_no_text)
-        weft.clipboardSender.send(text)
-        toast(R.string.toast_text_sent)
+        send(text, R.string.toast_text_sent)
     }
 
     private fun sendClipboard() {
@@ -67,8 +72,25 @@ class ClipboardSendActivity : Activity() {
         }
         val text = clip.getItemAt(0).text?.toString() ?: return toast(R.string.toast_clipboard_not_text)
         if (text.isEmpty()) return toast(R.string.toast_clipboard_empty)
-        weft.clipboardSender.send(text)
-        toast(R.string.toast_clipboard_sent)
+        send(text, R.string.toast_clipboard_sent)
+    }
+
+    /**
+     * Sends in the application scope: this activity finishes at once and must not hold the
+     * screen while the relay connects. The toast comes when the send is done.
+     */
+    private fun send(text: String, @StringRes sentMessage: Int) {
+        val app = weft
+        val sender = app.clipboardSender
+        app.core.scope.launch {
+            val message = when (sender.send(text)) {
+                is SendResult.Sent -> sentMessage
+                SendResult.NotConnected -> R.string.toast_not_connected
+                SendResult.NoPairedDevice -> R.string.toast_no_paired_device
+                SendResult.TooLarge -> R.string.toast_too_large
+            }
+            withContext(Dispatchers.Main) { Toast.makeText(app, message, Toast.LENGTH_SHORT).show() }
+        }
     }
 
     private fun toast(@StringRes message: Int) {

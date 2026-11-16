@@ -20,11 +20,15 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class ClipboardSendActivityTest {
+    @get:Rule
+    val deviceReady = DeviceReadyRule()
+
     private val app = ApplicationProvider.getApplicationContext<WeftApplication>()
     private val sent = CopyOnWriteArrayList<String>()
     private lateinit var realSender: ClipboardSender
@@ -32,7 +36,10 @@ class ClipboardSendActivityTest {
     @Before
     fun swapSender() {
         realSender = app.clipboardSender
-        app.clipboardSender = ClipboardSender { sent += it }
+        app.clipboardSender = ClipboardSender {
+            sent += it
+            SendResult.Sent(1)
+        }
     }
 
     @After
@@ -46,7 +53,7 @@ class ClipboardSendActivityTest {
 
         launchAndAwaitFinish(ClipboardSendActivity.intent(app))
 
-        assertEquals(listOf("Bonjour depuis Weft, ça marche"), sent)
+        assertEquals(listOf("Bonjour depuis Weft, ça marche"), awaitSent(1))
     }
 
     @Test
@@ -60,7 +67,7 @@ class ClipboardSendActivityTest {
 
         launchAndAwaitFinish(share)
 
-        assertEquals(listOf("shared text"), sent)
+        assertEquals(listOf("shared text"), awaitSent(1))
     }
 
     @Test
@@ -72,7 +79,7 @@ class ClipboardSendActivityTest {
 
         launchAndAwaitFinish(direct)
 
-        assertEquals(emptyList<String>(), sent)
+        assertEquals(emptyList<String>(), awaitSent(0))
     }
 
     @Test
@@ -86,7 +93,17 @@ class ClipboardSendActivityTest {
 
         launchAndAwaitFinish(ClipboardSendActivity.intent(app))
 
-        assertEquals(emptyList<String>(), sent)
+        assertEquals(emptyList<String>(), awaitSent(0))
+    }
+
+    /**
+     * The activity hands the text to the sender in the background after it finishes: waits for
+     * [count] sends (or a short while when none is expected), then returns what was sent.
+     */
+    private fun awaitSent(count: Int): List<String> {
+        val deadline = System.currentTimeMillis() + if (count == 0) 500 else 5_000
+        while (System.currentTimeMillis() < deadline && (count == 0 || sent.size < count)) Thread.sleep(20)
+        return sent.toList()
     }
 
     private fun setClip(clip: ClipData) {
@@ -112,7 +129,14 @@ class ClipboardSendActivityTest {
         app.registerActivityLifecycleCallbacks(callbacks)
         try {
             app.startActivity(intent)
-            assertTrue("ClipboardSendActivity did not finish", destroyed.await(10, TimeUnit.SECONDS))
+            // A system dialog popping up meanwhile (an "isn't responding" one, on a loaded
+            // emulator) would keep the focus away: keep closing them while waiting.
+            var finished = false
+            repeat(10) {
+                if (!finished) finished = destroyed.await(1, TimeUnit.SECONDS)
+                if (!finished) DeviceReadyRule.closeSystemDialogs()
+            }
+            assertTrue("ClipboardSendActivity did not finish; focus: ${DeviceReadyRule.focus()}", finished)
         } finally {
             app.unregisterActivityLifecycleCallbacks(callbacks)
         }

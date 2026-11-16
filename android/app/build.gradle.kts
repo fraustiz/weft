@@ -35,6 +35,9 @@ android {
 }
 
 dependencies {
+    implementation(project(":protocol"))
+    implementation(libs.okhttp)
+    implementation(libs.kotlinx.coroutines.android)
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.material3)
     implementation(libs.compose.ui.tooling.preview)

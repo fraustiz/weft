@@ -5,7 +5,15 @@
     <string name="tile_label">Send clipboard</string>
 
     <string name="status_not_paired">Not paired yet</string>
-    <string name="status_not_paired_detail">Pairing comes in a later version</string>
+    <string name="status_not_paired_detail">Join with the code shown by a computer</string>
+    <string name="status_connected">Connected</string>
+    <string name="status_connecting">Connecting…</string>
+    <string name="status_reconnecting">Reconnecting…</string>
+    <string name="status_disconnected">Disconnected</string>
+    <plurals name="paired_devices">
+        <item quantity="one">%d paired device</item>
+        <item quantity="other">%d paired devices</item>
+    </plurals>
 
     <string name="action_send_clipboard">Send clipboard</string>
     <string name="last_sent_label">Last sent</string>
@@ -29,4 +37,27 @@
     <string name="toast_clipboard_not_text">Clipboard has no text</string>
     <string name="toast_sensitive">Sensitive content, not sent</string>
     <string name="toast_no_text">No text to send</string>
+    <string name="toast_not_connected">Not connected</string>
+    <string name="toast_no_paired_device">No paired device</string>
+    <string name="toast_too_large">Too long to send (256 KB at most)</string>
+
+    <!-- Temporary join field, until the QR scanner exists. -->
+    <string name="join_code_label">Pairing code (WEFT1:…)</string>
+    <string name="action_join">Join with a code…</string>
+    <string name="join_in_progress">Joining…</string>
+    <plurals name="join_joined">
+        <item quantity="one">Joined: %d device</item>
+        <item quantity="other">Joined: %d devices</item>
+    </plurals>
+    <string name="join_invalid_code">Not a valid pairing code</string>
+    <string name="join_own_code">This code comes from this device</string>
+    <string name="join_insecure_relay">This relay is not encrypted (ws://)</string>
+    <string name="join_connection_failed">Could not reach the relay</string>
+    <string name="join_timed_out">No answer from the other device</string>
+    <string name="join_refused">Refused by the relay: the code may have expired</string>
+    <string name="join_busy">A pairing is already running</string>
+
+    <string name="notification_channel">Connection</string>
+    <string name="notification_connected">Connected</string>
+    <string name="notification_reconnecting">Reconnecting…</string>
 </resources>

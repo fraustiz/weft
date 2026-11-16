@@ -4,7 +4,16 @@
     <string name="tile_label">Envoyer le presse-papiers</string>
 
     <string name="status_not_paired">Pas encore appairé</string>
-    <string name="status_not_paired_detail">L’appairage arrive dans une prochaine version</string>
+    <string name="status_not_paired_detail">Rejoignez un groupe avec le code affiché par un ordinateur</string>
+    <string name="status_connected">Connecté</string>
+    <string name="status_connecting">Connexion…</string>
+    <string name="status_reconnecting">Reconnexion…</string>
+    <string name="status_disconnected">Déconnecté</string>
+    <plurals name="paired_devices">
+        <item quantity="one">%d appareil appairé</item>
+        <item quantity="many">%d appareils appairés</item>
+        <item quantity="other">%d appareils appairés</item>
+    </plurals>
 
     <string name="action_send_clipboard">Envoyer le presse-papiers</string>
     <string name="last_sent_label">Dernier envoi</string>
@@ -28,4 +37,27 @@
     <string name="toast_clipboard_not_text">Le presse-papiers ne contient pas de texte</string>
     <string name="toast_sensitive">Contenu sensible, non envoyé</string>
     <string name="toast_no_text">Aucun texte à envoyer</string>
+    <string name="toast_not_connected">Non connecté</string>
+    <string name="toast_no_paired_device">Aucun appareil appairé</string>
+    <string name="toast_too_large">Trop long pour être envoyé (256 Ko au maximum)</string>
+
+    <string name="join_code_label">Code d’appairage (WEFT1:…)</string>
+    <string name="action_join">Rejoindre avec un code…</string>
+    <string name="join_in_progress">Appairage…</string>
+    <plurals name="join_joined">
+        <item quantity="one">Groupe rejoint : %d appareil</item>
+        <item quantity="many">Groupe rejoint : %d appareils</item>
+        <item quantity="other">Groupe rejoint : %d appareils</item>
+    </plurals>
+    <string name="join_invalid_code">Code d’appairage invalide</string>
+    <string name="join_own_code">Ce code vient de cet appareil</string>
+    <string name="join_insecure_relay">Ce relais n’est pas chiffré (ws://)</string>
+    <string name="join_connection_failed">Relais injoignable</string>
+    <string name="join_timed_out">Pas de réponse de l’autre appareil</string>
+    <string name="join_refused">Refusé par le relais : le code a peut-être expiré</string>
+    <string name="join_busy">Un appairage est déjà en cours</string>
+
+    <string name="notification_channel">Connexion</string>
+    <string name="notification_connected">Connecté</string>
+    <string name="notification_reconnecting">Reconnexion…</string>
 </resources>

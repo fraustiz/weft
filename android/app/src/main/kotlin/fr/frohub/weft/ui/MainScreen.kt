@@ -26,13 +26,21 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -41,17 +49,25 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import fr.frohub.weft.LastSent
 import fr.frohub.weft.R
+import fr.frohub.weft.core.ConnectionStatus
+import fr.frohub.weft.core.JoinResult
+import fr.frohub.weft.core.JoinState
 import java.text.DateFormat
 
 /**
- * The only screen for now: connection state, the send action and the tile hint.
+ * The only screen for now: connection state, the send action and the tile hint, plus a
+ * temporary field to join with a pasted code until the QR scanner exists.
  *
  * [onAddTile] is null where the system cannot add the tile for us (below API 33).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
+    status: ConnectionStatus,
+    deviceCount: Int,
     lastSent: LastSent?,
+    joinState: JoinState,
+    onJoin: (String) -> Unit,
     onSendClipboard: () -> Unit,
     onAddTile: (() -> Unit)?,
 ) {
@@ -80,7 +96,7 @@ fun MainScreen(
                 .padding(innerPadding)
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
-            StatusCard()
+            StatusCard(status, deviceCount)
             Spacer(Modifier.height(24.dp))
             Button(
                 onClick = onSendClipboard,
@@ -94,36 +110,53 @@ fun MainScreen(
             LastSentLine(lastSent)
             Spacer(Modifier.height(32.dp))
             TileHintCard(onAddTile)
+            Spacer(Modifier.height(16.dp))
+            JoinWithCode(joinState, onJoin)
         }
     }
 }
 
 /** A small rounded square, the pixel from the mark, used as the connection indicator. */
 @Composable
-private fun StatusPixel() {
+private fun StatusPixel(on: Boolean) {
+    val shape = RoundedCornerShape(3.dp)
     Box(
-        Modifier
-            .size(12.dp)
-            .border(2.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(3.dp)),
+        if (on) {
+            Modifier.size(12.dp).background(MaterialTheme.colorScheme.primary, shape)
+        } else {
+            Modifier.size(12.dp).border(2.dp, MaterialTheme.colorScheme.outline, shape)
+        },
     )
 }
 
 @Composable
-private fun StatusCard() {
+private fun StatusCard(status: ConnectionStatus, deviceCount: Int) {
+    val paired = deviceCount > 0
+    val title = when {
+        !paired -> stringResource(R.string.status_not_paired)
+        status == ConnectionStatus.Connected -> stringResource(R.string.status_connected)
+        status == ConnectionStatus.Disconnected -> stringResource(R.string.status_disconnected)
+        status == ConnectionStatus.Connecting -> stringResource(R.string.status_connecting)
+        else -> stringResource(R.string.status_reconnecting)
+    }
+    val detail = if (paired) {
+        pluralStringResource(R.plurals.paired_devices, deviceCount, deviceCount)
+    } else {
+        stringResource(R.string.status_not_paired_detail)
+    }
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Row(Modifier.padding(20.dp)) {
-            Box(Modifier.height(24.dp), contentAlignment = Alignment.Center) { StatusPixel() }
+            Box(Modifier.height(24.dp), contentAlignment = Alignment.Center) {
+                StatusPixel(on = paired && status == ConnectionStatus.Connected)
+            }
             Spacer(Modifier.size(12.dp))
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    stringResource(R.string.status_not_paired),
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Text(
-                    stringResource(R.string.status_not_paired_detail),
+                    detail,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -209,11 +242,70 @@ private fun TileHintCard(onAddTile: (() -> Unit)?) {
     }
 }
 
+/** Temporary: joins with a pasted `WEFT1:` code until the QR scanner exists. */
+@Composable
+private fun JoinWithCode(joinState: JoinState, onJoin: (String) -> Unit) {
+    var code by rememberSaveable { mutableStateOf("") }
+    val joining = joinState == JoinState.Joining
+    LaunchedEffect(joinState) {
+        if (joinState is JoinState.Done && joinState.result is JoinResult.Joined) code = ""
+    }
+    Column(Modifier.fillMaxWidth()) {
+        OutlinedTextField(
+            value = code,
+            onValueChange = { code = it },
+            label = { Text(stringResource(R.string.join_code_label)) },
+            singleLine = true,
+            enabled = !joining,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag(JOIN_CODE_FIELD),
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(onClick = { onJoin(code) }, enabled = !joining && code.isNotBlank()) {
+                Text(stringResource(R.string.action_join))
+            }
+            Spacer(Modifier.size(12.dp))
+            joinMessage(joinState)?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun joinMessage(state: JoinState): String? = when (state) {
+    JoinState.Idle -> null
+    JoinState.Joining -> stringResource(R.string.join_in_progress)
+    is JoinState.Done -> when (val result = state.result) {
+        is JoinResult.Joined -> pluralStringResource(R.plurals.join_joined, result.devices.size, result.devices.size)
+        JoinResult.InvalidCode -> stringResource(R.string.join_invalid_code)
+        JoinResult.OwnCode -> stringResource(R.string.join_own_code)
+        JoinResult.InsecureRelay -> stringResource(R.string.join_insecure_relay)
+        is JoinResult.ConnectionFailed -> stringResource(R.string.join_connection_failed)
+        JoinResult.TimedOut -> stringResource(R.string.join_timed_out)
+        is JoinResult.Refused -> stringResource(R.string.join_refused)
+        JoinResult.Busy -> stringResource(R.string.join_busy)
+    }
+}
+
+/** Test tag of the temporary join field. */
+const val JOIN_CODE_FIELD = "join_code"
+
 @Preview
 @Composable
 private fun MainScreenPreview() {
     WeftTheme(darkTheme = false) {
-        MainScreen(LastSent(System.currentTimeMillis(), 42), onSendClipboard = {}, onAddTile = {})
+        MainScreen(
+            status = ConnectionStatus.Connected,
+            deviceCount = 2,
+            lastSent = LastSent(System.currentTimeMillis(), 42),
+            joinState = JoinState.Idle,
+            onJoin = {},
+            onSendClipboard = {},
+            onAddTile = {},
+        )
     }
 }
 
@@ -221,6 +313,14 @@ private fun MainScreenPreview() {
 @Composable
 private fun MainScreenDarkPreview() {
     WeftTheme(darkTheme = true) {
-        MainScreen(lastSent = null, onSendClipboard = {}, onAddTile = null)
+        MainScreen(
+            status = ConnectionStatus.Disconnected,
+            deviceCount = 0,
+            lastSent = null,
+            joinState = JoinState.Idle,
+            onJoin = {},
+            onSendClipboard = {},
+            onAddTile = null,
+        )
     }
 }
