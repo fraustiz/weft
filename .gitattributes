@@ -1,0 +1,4 @@
+# The test vectors and the scripts are compared or run byte for byte: keep
+# LF on every platform, whatever core.autocrlf says.
+* text=auto eol=lf
+*.bat -text
