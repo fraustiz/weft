@@ -95,6 +95,12 @@ pub fn adopt(hidden: bool) -> bool {
     true
 }
 
+/// The main window once adopted, as a raw handle, or 0: the owner of
+/// dialogs opened from other threads.
+pub fn handle() -> isize {
+    WINDOW.load(Ordering::Acquire)
+}
+
 /// Shows the main window, hidden or minimised, in front. Any thread.
 pub fn show() {
     let window = WINDOW.load(Ordering::Acquire) as HWND;

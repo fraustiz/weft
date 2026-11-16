@@ -5,6 +5,7 @@ use windows_reactor::*;
 
 use super::app::{Message, Weft};
 use super::widgets::{body, card, column, label, secondary};
+use crate::features::Features;
 use crate::i18n::t;
 
 /// The repository, shown in About.
@@ -106,6 +107,52 @@ pub fn view(weft: &Weft, context: &mut ViewContext<Weft>) -> View {
             .into(),
         );
     }
+    let current = snapshot.features;
+    let toggle = |change: fn(&mut Features, bool)| {
+        context.callback(move |on| {
+            let mut features = current;
+            change(&mut features, on);
+            Message::SetFeatures(features)
+        })
+    };
+    let features = vec![
+        switch(
+            t("Files", "Fichiers"),
+            t(
+                "Send files to your devices, and receive theirs in Downloads",
+                "Envoyer des fichiers à vos appareils, et recevoir les leurs dans Téléchargements",
+            ),
+            current.files,
+            toggle(|features, on| features.files = on),
+        ),
+        switch(
+            t("Links", "Liens"),
+            t(
+                "Links your devices share open in your browser",
+                "Les liens partagés par vos appareils s'ouvrent dans votre navigateur",
+            ),
+            current.links,
+            toggle(|features, on| features.links = on),
+        ),
+        switch(
+            t("Ring", "Sonnerie"),
+            t(
+                "Ring your devices to find them, and let them ring this computer",
+                "Faire sonner vos appareils pour les retrouver, et les laisser faire sonner cet ordinateur",
+            ),
+            current.ring,
+            toggle(|features, on| features.ring = on),
+        ),
+        switch(
+            t("Battery and network", "Batterie et réseau"),
+            t(
+                "Show the battery and network of your devices",
+                "Afficher la batterie et le réseau de vos appareils",
+            ),
+            current.battery,
+            toggle(|features, on| features.battery = on),
+        ),
+    ];
     let relay = card(column(
         2.0,
         vec![
@@ -149,6 +196,13 @@ pub fn view(weft: &Weft, context: &mut ViewContext<Weft>) -> View {
                 vec![
                     label(t("Sync", "Synchronisation")).into(),
                     column(4.0, sync),
+                ],
+            ),
+            column(
+                8.0,
+                vec![
+                    label(t("With your devices", "Avec vos appareils")).into(),
+                    column(4.0, features),
                 ],
             ),
             column(8.0, vec![label(t("Connection", "Connexion")).into(), relay]),

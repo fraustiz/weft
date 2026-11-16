@@ -6,9 +6,18 @@
 //! knows is published as an immutable [`Snapshot`] that any thread can read
 //! and wait on.
 //!
-//! Clipboard text and pairing codes are never logged.
+//! It also handles the packets of `docs/features.md` sections 2 to 4:
+//! capabilities and status of the other devices, ring, ping, links and
+//! files. What the user should see or hear of them goes to a [`Notice`]
+//! callback; the worker itself never opens, plays or shows anything.
+//!
+//! Clipboard text, pairing codes, links and file contents are never logged.
 
+use std::collections::BTreeMap;
+use std::fs::File;
 use std::future::Future;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
@@ -19,9 +28,16 @@ use weft_cli::session::{
     JOIN_TIMEOUT, KEEPALIVE_INTERVAL, MAX_BACKOFF, MIN_BACKOFF, PAIRING_TIMEOUT, is_fatal,
 };
 use weft_cli::{Error, Event, Next, Result, Session, State, StateDir, hex, short_id};
-use weft_protocol::{ControlError, PairingCode, device_id_from_sign_pk};
+use weft_protocol::{ControlError, PairingCode, device_id_from_sign_pk, random_message_id};
 
+use crate::features::Features;
+use crate::files;
+use crate::packets::{
+    self, Battery, Capabilities, Connectivity, FileOffer, Packet, Parsed, RejectReason,
+    is_shareable_url, parse_transfer_id, transfer_id,
+};
 use crate::sync::Pause;
+use crate::transfer::{self, Failure, Incoming, Outgoing, Stage, Tick};
 
 /// The relay a new installation uses.
 pub const DEFAULT_RELAY_URL: &str = "wss://weft.frohub.eu/v1";
@@ -29,6 +45,21 @@ pub const DEFAULT_RELAY_URL: &str = "wss://weft.frohub.eu/v1";
 /// How long one wait for a joining device lasts before the worker looks at
 /// its commands and at the frames that arrived meanwhile.
 const PAIRING_SLICE: Duration = Duration::from_millis(250);
+
+/// How long a ring lasts unless someone stops it.
+pub const RING_DURATION: Duration = Duration::from_secs(60);
+
+/// How often the clocks of rings and transfers are looked at while one runs.
+const TICK: Duration = Duration::from_secs(1);
+
+/// The shortest time between two snapshots that only move a progress bar.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Finished transfers kept in the snapshot, per direction.
+const FINISHED_SHOWN: usize = 8;
+
+/// Finished incoming transfers remembered, to answer a repeated offer.
+const COMPLETED_KEPT: usize = 64;
 
 /// A request to the worker.
 pub enum Command {
@@ -46,6 +77,18 @@ pub enum Command {
     Rename(String),
     /// Pause or resume the synchronisation in both directions.
     SetPaused(bool),
+    /// Change the feature switches, saved and announced.
+    SetFeatures(Features),
+    /// Make a device ring.
+    Ring([u8; 16]),
+    /// Stop the ring this device started on another one.
+    StopRinging([u8; 16]),
+    /// The user found this computer: stop its ring.
+    FoundIt,
+    /// Send these files to a device.
+    SendFiles([u8; 16], Vec<PathBuf>),
+    /// Cancel a transfer, either way, by its id.
+    CancelTransfer([u8; 16]),
     /// Close the connection and end the thread.
     Shutdown,
 }
@@ -69,6 +112,73 @@ pub enum Status {
 pub struct Device {
     pub id: [u8; 16],
     pub name: Option<String>,
+}
+
+/// What a trusted device told about itself since this worker started.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PeerInfo {
+    pub capabilities: Option<Capabilities>,
+    pub battery: Option<Battery>,
+    pub connectivity: Option<Connectivity>,
+}
+
+impl PeerInfo {
+    /// Whether the device acts on `kind`, as far as this device knows.
+    pub fn handles(&self, kind: &str) -> bool {
+        self.capabilities
+            .as_ref()
+            .is_some_and(|capabilities| capabilities.handles(kind))
+    }
+}
+
+/// A transfer as an interface shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferView {
+    pub id: [u8; 16],
+    /// The device on the other end.
+    pub device: [u8; 16],
+    /// Sent by this device, rather than received.
+    pub outgoing: bool,
+    pub name: String,
+    pub size: u64,
+    /// Bytes confirmed (sent) or written (received).
+    pub done: u64,
+    pub stage: Stage,
+}
+
+/// Something the user should see or hear. `device` is the other device's
+/// name, when it announced one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Notice {
+    /// A device rings this computer, until [`Notice::RingEnded`].
+    Ring {
+        from: [u8; 16],
+        device: Option<String>,
+    },
+    RingEnded,
+    Ping {
+        from: [u8; 16],
+        device: Option<String>,
+        message: Option<String>,
+    },
+    /// A web link to open, already checked with [`is_shareable_url`].
+    Link {
+        from: [u8; 16],
+        device: Option<String>,
+        url: String,
+    },
+    /// A file was received and saved at `path`.
+    FileReceived {
+        from: [u8; 16],
+        device: Option<String>,
+        path: PathBuf,
+    },
+    TransferFailed {
+        device: Option<String>,
+        name: String,
+        outgoing: bool,
+        failure: Failure,
+    },
 }
 
 /// Where the pairing started by [`Command::StartPairing`] or
@@ -167,14 +277,26 @@ pub struct Snapshot {
     pub relay_url: String,
     /// The trusted devices, this one excluded.
     pub devices: Vec<Device>,
+    /// What the trusted devices told about themselves, by id.
+    pub peers: BTreeMap<[u8; 16], PeerInfo>,
     pub pause: Pause,
+    pub features: Features,
     pub pairing: PairingState,
     pub last_activity: Option<Activity>,
+    /// The device ringing this computer, while it rings.
+    pub ringing: Option<[u8; 16]>,
+    /// Transfers under way, then the last finished ones.
+    pub transfers: Vec<TransferView>,
 }
 
 impl Snapshot {
     pub fn is_connected(&self) -> bool {
         self.status == Status::Connected
+    }
+
+    /// What `device` told about itself; nothing yet for an unknown one.
+    pub fn peer(&self, device: &[u8; 16]) -> PeerInfo {
+        self.peers.get(device).cloned().unwrap_or_default()
     }
 }
 
@@ -235,38 +357,48 @@ impl Handle {
     }
 }
 
+/// How the worker reaches the rest of the app.
+pub struct Hooks {
+    /// Called with every clipboard text to put on the local clipboard.
+    pub on_text: Box<dyn FnMut(String) + Send>,
+    /// Called with what the user should see or hear, from the worker
+    /// thread or from a pool thread.
+    pub on_notice: Arc<dyn Fn(Notice) + Send + Sync>,
+    /// Where received files go once complete.
+    pub downloads: PathBuf,
+}
+
 /// Loads the state in `dir`, creating an identity on [`DEFAULT_RELAY_URL`]
-/// if there is none, and starts the worker thread. `on_text` is called on
-/// that thread with every clipboard text to put on the local clipboard.
+/// if there is none, and starts the worker thread.
 ///
 /// Fails if the state cannot be read or created; nothing is started then.
-pub fn spawn(
-    dir: StateDir,
-    on_text: impl FnMut(String) + Send + 'static,
-) -> Result<(Handle, JoinHandle<()>)> {
-    spawn_on(dir, DEFAULT_RELAY_URL, on_text)
+pub fn spawn(dir: StateDir, hooks: Hooks) -> Result<(Handle, JoinHandle<()>)> {
+    spawn_on(dir, DEFAULT_RELAY_URL, hooks)
 }
 
 /// [`spawn`], with the relay a new identity is created on. An existing
 /// state keeps its relay.
-pub fn spawn_on(
-    dir: StateDir,
-    relay_url: &str,
-    on_text: impl FnMut(String) + Send + 'static,
-) -> Result<(Handle, JoinHandle<()>)> {
+pub fn spawn_on(dir: StateDir, relay_url: &str, hooks: Hooks) -> Result<(Handle, JoinHandle<()>)> {
     let state = match dir.load() {
         Err(Error::NotInitialised(_)) => dir.load_or_create(relay_url)?,
         loaded => loaded?,
     };
+    let features = Features::load(dir.path());
+    let partial_dir = files::partial_dir(dir.path());
+    files::remove_stale(&partial_dir);
     let mut view = Snapshot {
         status: Status::Connecting,
         name: String::new(),
         device_id: state.identity().device_id(),
         relay_url: state.relay_url.clone(),
         devices: Vec::new(),
+        peers: BTreeMap::new(),
         pause: Pause::default(),
+        features,
         pairing: PairingState::Idle,
         last_activity: None,
+        ringing: None,
+        transfers: Vec::new(),
     };
     describe(&mut view, &state);
     let shared = Arc::new(Shared {
@@ -280,13 +412,21 @@ pub fn spawn_on(
         changed: Condvar::new(),
     });
     let (commands, inbox) = unbounded_channel();
+    let now = Instant::now();
     let worker = Worker {
         dir,
         commands: inbox,
         shared: shared.clone(),
-        on_text,
+        hooks,
+        partial_dir,
         view,
         pairing: None,
+        ring_until: None,
+        outgoing: Vec::new(),
+        incoming: Vec::new(),
+        completed: Vec::new(),
+        traffic_at: now,
+        progress_at: now,
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -310,7 +450,8 @@ pub fn spawn_on(
     Ok((Handle { commands, shared }, thread))
 }
 
-/// Copies what the snapshot shows of the state.
+/// Copies what the snapshot shows of the state, and forgets what devices
+/// no longer trusted told.
 fn describe(view: &mut Snapshot, state: &State) {
     view.name = state.name().to_owned();
     view.devices = state
@@ -321,6 +462,9 @@ fn describe(view: &mut Snapshot, state: &State) {
             name: device.name.clone(),
         })
         .collect();
+    let devices = &view.devices;
+    view.peers
+        .retain(|id, _| devices.iter().any(|device| device.id == *id));
 }
 
 /// A pairing slot this device opened and is waiting on.
@@ -331,14 +475,39 @@ struct OpenPairing {
     keepalive_at: Instant,
 }
 
-struct Worker<F> {
+/// A file being sent, and the open file once offered.
+struct Sending {
+    transfer: Outgoing,
+    path: PathBuf,
+    file: Option<File>,
+}
+
+/// A file being received into its partial file.
+struct Receiving {
+    transfer: Incoming,
+    partial: PathBuf,
+    file: Option<File>,
+}
+
+struct Worker {
     dir: StateDir,
     commands: UnboundedReceiver<Command>,
     shared: Arc<Shared>,
-    on_text: F,
+    hooks: Hooks,
+    partial_dir: PathBuf,
     /// The next snapshot, published by [`Worker::publish`].
     view: Snapshot,
     pairing: Option<OpenPairing>,
+    /// When the ring of this computer stops by itself.
+    ring_until: Option<Instant>,
+    outgoing: Vec<Sending>,
+    incoming: Vec<Receiving>,
+    /// Incoming transfers already complete, as (sender, id).
+    completed: Vec<([u8; 16], [u8; 16])>,
+    /// The last frame from the relay, for the keepalive.
+    traffic_at: Instant,
+    /// The last snapshot that moved a progress bar.
+    progress_at: Instant,
 }
 
 /// Errors that say a request failed, not that the connection is lost.
@@ -355,7 +524,41 @@ fn is_refusal(err: &Error) -> bool {
     ) && !is_fatal(err)
 }
 
-impl<F: FnMut(String)> Worker<F> {
+/// A connection error is passed on; a refusal is logged and swallowed.
+fn only_connection_errors(done: Result<()>, what: &str) -> Result<()> {
+    match done {
+        Err(err) if is_refusal(&err) => {
+            tracing::warn!(error = %err, "{what} not sent");
+            Ok(())
+        }
+        done => done,
+    }
+}
+
+/// Reads the `len` bytes at `offset` of `file`.
+fn read_chunk(file: &mut File, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+    let mut data = vec![0; len];
+    file.seek(SeekFrom::Start(offset))?;
+    file.read_exact(&mut data)?;
+    Ok(data)
+}
+
+/// Opens the partial file at `offset` bytes, cutting what is past it.
+fn open_partial(path: &std::path::Path, offset: u64) -> std::io::Result<File> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)?;
+    file.set_len(offset)?;
+    file.seek(SeekFrom::Start(offset))?;
+    Ok(file)
+}
+
+impl Worker {
     /// Publishes the view if it differs from the last snapshot.
     fn publish(&self) {
         let mut board = self.shared.board.lock().unwrap();
@@ -371,6 +574,18 @@ impl<F: FnMut(String)> Worker<F> {
     fn set_status(&mut self, status: Status) {
         self.view.status = status;
         self.publish();
+    }
+
+    fn notify(&self, notice: Notice) {
+        (self.hooks.on_notice)(notice);
+    }
+
+    fn device_name(&self, device: &[u8; 16]) -> Option<String> {
+        self.view
+            .devices
+            .iter()
+            .find(|known| known.id == *device)
+            .and_then(|known| known.name.clone())
     }
 
     /// Connects, serves the connection, and starts again after a delay of
@@ -434,7 +649,7 @@ impl<F: FnMut(String)> Worker<F> {
     }
 
     /// Waits for `wait` while there is no connection, running the commands
-    /// that do not need one. Returns `None` on shutdown.
+    /// that do not need one and the clocks. Returns `None` on shutdown.
     async fn offline_until<T>(&mut self, wait: impl Future<Output = T>) -> Option<T> {
         tokio::pin!(wait);
         loop {
@@ -444,6 +659,10 @@ impl<F: FnMut(String)> Worker<F> {
                     None | Some(Command::Shutdown) => return None,
                     Some(command) => self.offline_command(command),
                 },
+                () = tokio::time::sleep(TICK), if self.is_busy() => {
+                    self.clocks(Instant::now());
+                    self.publish();
+                }
             }
         }
     }
@@ -466,13 +685,44 @@ impl<F: FnMut(String)> Worker<F> {
                 Ok((Err(err), _)) | Err(err) => tracing::warn!(error = %err, "rename failed"),
             },
             Command::SetPaused(paused) => self.view.pause.all = paused,
+            // Announced at the next connection.
+            Command::SetFeatures(features) => self.set_features(features),
+            Command::Ring(device) | Command::StopRinging(device) => {
+                tracing::info!(device = %short_id(&device), "ring not sent: {OFFLINE}");
+            }
+            Command::FoundIt => self.stop_ring(),
+            // Offered at the next connection.
+            Command::SendFiles(device, paths) => self.queue_files(device, paths),
+            Command::CancelTransfer(id) => {
+                self.cancel_locally(&id);
+            }
             Command::Shutdown => {}
         }
+        self.show_transfers();
         self.publish();
+    }
+
+    /// Whether a clock runs: a ring, or a transfer under way.
+    fn is_busy(&self) -> bool {
+        self.ring_until.is_some()
+            || self.outgoing.iter().any(|s| s.transfer.stage.is_active())
+            || self.incoming.iter().any(|r| r.transfer.stage.is_active())
     }
 
     /// Serves the connection until shutdown (`Ok`) or until it is lost.
     async fn online(&mut self, session: &mut Session) -> Result<()> {
+        // Tell every device what this one does, ask for their state, and
+        // pick up the transfers the connection loss interrupted.
+        let devices: Vec<[u8; 16]> = self.view.devices.iter().map(|device| device.id).collect();
+        for device in devices {
+            self.send_capabilities(session, device).await?;
+            self.send(session, device, &Packet::StateRequest {}).await?;
+            self.offer_again(session, device).await?;
+        }
+        self.start_queued(session).await?;
+        self.traffic_at = Instant::now();
+        self.show_transfers();
+        self.publish();
         loop {
             if self.pairing.is_some() {
                 self.pairing_slice(session).await?;
@@ -485,19 +735,89 @@ impl<F: FnMut(String)> Worker<F> {
                         Err(TryRecvError::Empty) => break,
                     }
                 }
+                self.online_clocks(session).await?;
                 continue;
             }
+            let keepalive =
+                (self.traffic_at + KEEPALIVE_INTERVAL).saturating_duration_since(Instant::now());
+            let wait = if self.is_busy() {
+                keepalive.min(TICK)
+            } else {
+                keepalive
+            };
             let next = session
-                .next_event_or(Some(KEEPALIVE_INTERVAL), self.commands.recv())
+                .next_event_or(Some(wait), self.commands.recv())
                 .await?;
             match next {
-                Next::Event(event) => self.event(session, event),
-                // Idle: make sure the connection is still alive.
-                Next::Idle => session.settle().await?,
+                Next::Event(event) => {
+                    self.traffic_at = Instant::now();
+                    self.event(session, event).await?;
+                }
+                Next::Idle => {}
                 Next::Interrupted(None | Some(Command::Shutdown)) => return Ok(()),
                 Next::Interrupted(Some(command)) => self.command(session, command).await?,
             }
+            self.online_clocks(session).await?;
         }
+    }
+
+    /// Runs the clocks, sends what they ask for, and checks the connection
+    /// once it has been quiet for a while.
+    async fn online_clocks(&mut self, session: &mut Session) -> Result<()> {
+        let now = Instant::now();
+        for (to, packet) in self.clocks(now) {
+            self.send(session, to, &packet).await?;
+        }
+        self.start_queued(session).await?;
+        if now.duration_since(self.traffic_at) >= KEEPALIVE_INTERVAL {
+            session.settle().await?;
+            self.traffic_at = Instant::now();
+        }
+        self.show_transfers();
+        self.publish();
+        Ok(())
+    }
+
+    /// Ends a ring that lasted long enough, offers again what stalled and
+    /// gives up on what stalled too long. Returns the packets to send.
+    fn clocks(&mut self, now: Instant) -> Vec<([u8; 16], Packet)> {
+        if self.ring_until.is_some_and(|until| now >= until) {
+            self.stop_ring();
+        }
+        let mut packets = Vec::new();
+        let mut failed = Vec::new();
+        for sending in &mut self.outgoing {
+            let transfer = &mut sending.transfer;
+            match transfer.tick(now) {
+                Tick::Nothing => {}
+                Tick::Offer => {
+                    tracing::debug!(id = %short_id(&transfer.id), "no progress; offering again");
+                    packets.push((transfer.to, transfer.start(now)));
+                }
+                Tick::GiveUp => {
+                    tracing::warn!(id = %short_id(&transfer.id), "no progress; giving up");
+                    sending.file = None;
+                    let id = transfer_id(&transfer.id);
+                    packets.push((transfer.to, Packet::FileCancel { id }));
+                    failed.push((transfer.to, transfer.name.clone()));
+                }
+            }
+        }
+        for (to, name) in failed {
+            self.notify(Notice::TransferFailed {
+                device: self.device_name(&to),
+                name,
+                outgoing: true,
+                failure: Failure::NoProgress,
+            });
+        }
+        for receiving in &mut self.incoming {
+            if receiving.transfer.tick(now) {
+                // The partial file stays for a resume.
+                receiving.file = None;
+            }
+        }
+        packets
     }
 
     /// Waits a moment for a device to use the code being shown, then
@@ -533,6 +853,7 @@ impl<F: FnMut(String)> Worker<F> {
                 tracing::info!(device = %short_id(&device), "device added");
                 self.pairing = None;
                 self.view.pairing = PairingState::Success { device };
+                self.send_capabilities(session, device).await?;
             }
             // Nobody yet.
             Err(Error::Timeout(_)) => {}
@@ -544,21 +865,21 @@ impl<F: FnMut(String)> Worker<F> {
             Err(err) => return Err(err),
         }
         while let Some(event) = session.next_queued_event().await? {
-            self.event(session, event);
+            self.event(session, event).await?;
         }
         describe(&mut self.view, session.state());
         self.publish();
         Ok(())
     }
 
-    fn event(&mut self, session: &Session, event: Event) {
+    async fn event(&mut self, session: &mut Session, event: Event) -> Result<()> {
         match event {
             Event::Clipboard { from, text } => {
                 if self.view.pause.blocks_receive() {
                     tracing::debug!(from = %short_id(&from), "clipboard text ignored: paused");
                 } else {
                     tracing::debug!(from = %short_id(&from), "clipboard text received (not shown)");
-                    (self.on_text)(text);
+                    (self.hooks.on_text)(text);
                     self.record(Direction::Received);
                 }
             }
@@ -566,18 +887,34 @@ impl<F: FnMut(String)> Worker<F> {
                 tracing::info!(device = %short_id(&from), %name, "device name received");
             }
             Event::Ping { from } => tracing::debug!(from = %short_id(&from), "ping"),
-            // Packets and file chunks are not handled by this app yet.
-            Event::Packet { from, .. } | Event::FileChunk { from, .. } => {
-                tracing::debug!(from = %short_id(&from), "packet or file chunk ignored");
+            Event::Packet { from, json } => {
+                describe(&mut self.view, session.state());
+                self.packet(session, from, &json).await?;
+            }
+            Event::FileChunk {
+                from,
+                transfer_id,
+                offset,
+                data,
+            } => {
+                self.chunk(session, from, transfer_id, offset, &data)
+                    .await?
             }
             Event::Welcome { from, added } => {
                 tracing::info!(from = %short_id(&from), added = added.len(), "welcome received");
+                describe(&mut self.view, session.state());
+                for device in std::iter::once(from).chain(added) {
+                    self.send_capabilities(session, device).await?;
+                }
             }
             Event::DeviceAdded { by, device } => {
                 tracing::info!(by = %short_id(&by), device = %short_id(&device), "device added");
+                describe(&mut self.view, session.state());
+                self.send_capabilities(session, device).await?;
             }
             Event::DeviceRemoved { by, device } => {
                 tracing::info!(by = %short_id(&by), device = %short_id(&device), "device removed");
+                self.drop_transfers_with(&device);
             }
             Event::RelayError(code) => {
                 tracing::warn!(error = %Error::Relay(code), "from the relay");
@@ -588,7 +925,9 @@ impl<F: FnMut(String)> Worker<F> {
             }
         }
         describe(&mut self.view, session.state());
+        self.show_transfers();
         self.publish();
+        Ok(())
     }
 
     fn record(&mut self, direction: Direction) {
@@ -596,6 +935,643 @@ impl<F: FnMut(String)> Worker<F> {
             direction,
             at: SystemTime::now(),
         });
+    }
+
+    /// Sends `packet` to `to`. Only a lost connection is an error.
+    async fn send(&mut self, session: &mut Session, to: [u8; 16], packet: &Packet) -> Result<()> {
+        let done = session.send_packet(to, &packet.to_json()).await;
+        only_connection_errors(done, "packet")
+    }
+
+    async fn send_capabilities(&mut self, session: &mut Session, to: [u8; 16]) -> Result<()> {
+        let packet = Packet::Capabilities(self.view.features.capabilities());
+        self.send(session, to, &packet).await
+    }
+
+    /// Acts on a packet from a trusted device. Packets of a switched-off
+    /// feature are ignored, except file offers, which get a reason.
+    async fn packet(&mut self, session: &mut Session, from: [u8; 16], json: &str) -> Result<()> {
+        let packet = match packets::parse(json) {
+            Parsed::Known(packet) => packet,
+            Parsed::Unknown(kind) => {
+                tracing::debug!(from = %short_id(&from), %kind, "packet of an unknown type ignored");
+                return Ok(());
+            }
+            Parsed::Invalid => {
+                tracing::warn!(from = %short_id(&from), "dropped an invalid packet");
+                return Ok(());
+            }
+        };
+        let features = self.view.features;
+        let now = Instant::now();
+        match packet {
+            Packet::Capabilities(capabilities) => {
+                tracing::info!(
+                    from = %short_id(&from),
+                    platform = %capabilities.platform,
+                    "capabilities received"
+                );
+                let peer = self.view.peers.entry(from).or_default();
+                let fresh = peer.capabilities.is_none();
+                peer.capabilities = Some(capabilities);
+                // It may have restarted: it needs this device's too.
+                if fresh {
+                    self.send_capabilities(session, from).await?;
+                    self.offer_again(session, from).await?;
+                }
+            }
+            Packet::StateRequest {} => {
+                self.send_capabilities(session, from).await?;
+                // It just came back: what it was receiving is waiting.
+                self.offer_again(session, from).await?;
+            }
+            Packet::Battery(battery) if features.battery => {
+                let battery = Battery {
+                    level: battery.level.filter(|level| *level <= 100),
+                    ..battery
+                };
+                self.view.peers.entry(from).or_default().battery = Some(battery);
+            }
+            Packet::Connectivity(connectivity) if features.battery => {
+                let connectivity = Connectivity {
+                    signal: connectivity.signal.filter(|signal| *signal <= 4),
+                    ..connectivity
+                };
+                self.view.peers.entry(from).or_default().connectivity = Some(connectivity);
+            }
+            Packet::Ring {} if features.ring => {
+                tracing::info!(from = %short_id(&from), "ringing");
+                self.ring_until = Some(now + RING_DURATION);
+                self.view.ringing = Some(from);
+                self.notify(Notice::Ring {
+                    from,
+                    device: self.device_name(&from),
+                });
+            }
+            Packet::RingStop {} if features.ring => {
+                if self.view.ringing == Some(from) {
+                    self.stop_ring();
+                }
+            }
+            Packet::Ping { message } => self.notify(Notice::Ping {
+                from,
+                device: self.device_name(&from),
+                message,
+            }),
+            Packet::ShareUrl { url } if features.links => {
+                if is_shareable_url(&url) {
+                    tracing::info!(from = %short_id(&from), "link received (not shown)");
+                    self.notify(Notice::Link {
+                        from,
+                        device: self.device_name(&from),
+                        url,
+                    });
+                } else {
+                    tracing::warn!(from = %short_id(&from), "dropped a link that is not a web link");
+                }
+            }
+            Packet::FileOffer(offer) => self.offered(session, from, offer).await?,
+            Packet::FileAccept { id, offset } => {
+                if let Some(index) = self.sending(from, &id) {
+                    if !self.outgoing[index].transfer.accept(offset, now) {
+                        tracing::warn!(from = %short_id(&from), "ignored an acceptance that does not fit");
+                    }
+                    self.pump(session, index).await?;
+                }
+            }
+            Packet::FileAck { id, offset } => {
+                if let Some(index) = self.sending(from, &id) {
+                    self.outgoing[index].transfer.ack(offset, now);
+                    self.pump(session, index).await?;
+                }
+            }
+            Packet::FileDone { id } => {
+                if let Some(index) = self.sending(from, &id) {
+                    let sending = &mut self.outgoing[index];
+                    sending.transfer.done();
+                    sending.file = None;
+                    tracing::info!(to = %short_id(&from), "file sent");
+                }
+            }
+            Packet::FileReject { id, reason } => {
+                if let Some(index) = self.sending(from, &id) {
+                    let reason = RejectReason::parse(&reason);
+                    let failure = Failure::Rejected(reason);
+                    let sending = &mut self.outgoing[index];
+                    sending.transfer.end(Stage::Failed(failure));
+                    sending.file = None;
+                    let name = sending.transfer.name.clone();
+                    tracing::info!(to = %short_id(&from), ?reason, "file refused");
+                    self.notify(Notice::TransferFailed {
+                        device: self.device_name(&from),
+                        name,
+                        outgoing: true,
+                        failure,
+                    });
+                }
+            }
+            Packet::FileCancel { id } => {
+                if let Some(id) = parse_transfer_id(&id) {
+                    tracing::info!(from = %short_id(&from), "transfer cancelled by the other device");
+                    self.cancel_from(&from, &id);
+                }
+            }
+            // A switched-off feature.
+            _ => tracing::debug!(from = %short_id(&from), "packet of a disabled feature ignored"),
+        }
+        Ok(())
+    }
+
+    fn stop_ring(&mut self) {
+        if self.ring_until.take().is_some() || self.view.ringing.is_some() {
+            self.view.ringing = None;
+            self.notify(Notice::RingEnded);
+        }
+    }
+
+    /// The outgoing transfer `id` (as hex) to `to`.
+    fn sending(&self, to: [u8; 16], id: &str) -> Option<usize> {
+        let id = parse_transfer_id(id)?;
+        self.outgoing
+            .iter()
+            .position(|sending| sending.transfer.id == id && sending.transfer.to == to)
+    }
+
+    fn queue_files(&mut self, to: [u8; 16], paths: Vec<PathBuf>) {
+        let now = Instant::now();
+        for path in paths {
+            let size = match std::fs::metadata(&path) {
+                Ok(metadata) if metadata.is_file() => metadata.len(),
+                _ => {
+                    tracing::warn!("not a file; not sent");
+                    continue;
+                }
+            };
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "file".into());
+            let transfer = Outgoing::new(random_message_id(), to, name, size, now);
+            if let Stage::Failed(failure) = transfer.stage {
+                self.notify(Notice::TransferFailed {
+                    device: self.device_name(&to),
+                    name: transfer.name.clone(),
+                    outgoing: true,
+                    failure,
+                });
+            }
+            self.outgoing.push(Sending {
+                transfer,
+                path,
+                file: None,
+            });
+        }
+    }
+
+    /// Offers the queued files while each device has a free slot.
+    async fn start_queued(&mut self, session: &mut Session) -> Result<()> {
+        if !self.view.features.files {
+            return Ok(());
+        }
+        let now = Instant::now();
+        for index in 0..self.outgoing.len() {
+            let transfer = &self.outgoing[index].transfer;
+            if !transfer.queued || !transfer.stage.is_active() {
+                continue;
+            }
+            let to = transfer.to;
+            let running = self
+                .outgoing
+                .iter()
+                .filter(|s| {
+                    s.transfer.to == to && !s.transfer.queued && s.transfer.stage.is_active()
+                })
+                .count();
+            if running >= transfer::MAX_ACTIVE {
+                continue;
+            }
+            let sending = &mut self.outgoing[index];
+            match File::open(&sending.path) {
+                Ok(file) => {
+                    sending.file = Some(file);
+                    let offer = sending.transfer.start(now);
+                    self.send(session, to, &offer).await?;
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "could not open a file to send");
+                    sending.transfer.queued = false;
+                    sending.transfer.end(Stage::Failed(Failure::Disk));
+                    let name = sending.transfer.name.clone();
+                    self.notify(Notice::TransferFailed {
+                        device: self.device_name(&to),
+                        name,
+                        outgoing: true,
+                        failure: Failure::Disk,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Offers again what was under way to `to`, so it resumes.
+    async fn offer_again(&mut self, session: &mut Session, to: [u8; 16]) -> Result<()> {
+        let now = Instant::now();
+        for index in 0..self.outgoing.len() {
+            let transfer = &mut self.outgoing[index].transfer;
+            if transfer.to == to && !transfer.queued && transfer.stage.is_active() {
+                let offer = transfer.start(now);
+                self.send(session, to, &offer).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends the chunks the window allows for the transfer at `index`.
+    async fn pump(&mut self, session: &mut Session, index: usize) -> Result<()> {
+        loop {
+            let sending = &mut self.outgoing[index];
+            let Some((offset, len)) = sending.transfer.next_chunk() else {
+                return Ok(());
+            };
+            let read = match sending.file.as_mut() {
+                Some(file) => read_chunk(file, offset, len),
+                None => Err(std::io::ErrorKind::NotFound.into()),
+            };
+            let (to, id) = (sending.transfer.to, sending.transfer.id);
+            let data = match read {
+                Ok(data) => data,
+                Err(err) => {
+                    tracing::warn!(error = %err, "could not read a file being sent");
+                    sending.transfer.end(Stage::Failed(Failure::Disk));
+                    sending.file = None;
+                    let name = sending.transfer.name.clone();
+                    self.notify(Notice::TransferFailed {
+                        device: self.device_name(&to),
+                        name,
+                        outgoing: true,
+                        failure: Failure::Disk,
+                    });
+                    let cancel = Packet::FileCancel {
+                        id: transfer_id(&id),
+                    };
+                    return self.send(session, to, &cancel).await;
+                }
+            };
+            let sent = session.send_file_chunk(to, id, offset, &data).await;
+            only_connection_errors(sent, "file chunk")?;
+            self.outgoing[index].transfer.chunk_sent(len);
+        }
+    }
+
+    /// Answers an offer: resumes, accepts or rejects it.
+    async fn offered(
+        &mut self,
+        session: &mut Session,
+        from: [u8; 16],
+        offer: FileOffer,
+    ) -> Result<()> {
+        let Some(id) = parse_transfer_id(&offer.id) else {
+            tracing::warn!(from = %short_id(&from), "dropped an offer with an invalid id");
+            return Ok(());
+        };
+        let reply_id = offer.id.clone();
+        if self.completed.contains(&(from, id)) {
+            // The done got lost on the way.
+            return self
+                .send(session, from, &Packet::FileDone { id: reply_id })
+                .await;
+        }
+        let now = Instant::now();
+        let existing = self
+            .incoming
+            .iter()
+            .position(|r| r.transfer.id == id && r.transfer.from == from);
+        if let Some(index) = existing {
+            let receiving = &mut self.incoming[index];
+            let resumable = matches!(
+                receiving.transfer.stage,
+                Stage::Running | Stage::Failed(Failure::NoProgress)
+            ) && receiving.transfer.size == offer.size;
+            if resumable && self.view.features.files {
+                if receiving.file.is_none() {
+                    match open_partial(&receiving.partial, receiving.transfer.written) {
+                        Ok(file) => receiving.file = Some(file),
+                        Err(err) => {
+                            tracing::warn!(error = %err, "could not reopen a partial file");
+                            let reason = RejectReason::NoSpace.as_str().into();
+                            receiving.transfer.stage = Stage::Failed(Failure::Disk);
+                            return self
+                                .send(
+                                    session,
+                                    from,
+                                    &Packet::FileReject {
+                                        id: reply_id,
+                                        reason,
+                                    },
+                                )
+                                .await;
+                        }
+                    }
+                }
+                receiving.transfer.resume(now);
+                let offset = receiving.transfer.written;
+                tracing::info!(from = %short_id(&from), offset, "resuming a file");
+                return self
+                    .send(
+                        session,
+                        from,
+                        &Packet::FileAccept {
+                            id: reply_id,
+                            offset,
+                        },
+                    )
+                    .await;
+            }
+            // Ended here: a new attempt starts afresh.
+            self.incoming.remove(index);
+        }
+        let partial = files::partial_path(&self.partial_dir, &from, &id);
+        let active = self
+            .incoming
+            .iter()
+            .filter(|r| r.transfer.from == from && r.transfer.stage.is_active())
+            .count();
+        let decision = transfer::decide_offer(
+            self.view.features.files,
+            offer.size,
+            active,
+            files::kept_len(&partial),
+            files::free_space(&self.partial_dir).or_else(|| files::free_space(self.dir.path())),
+        );
+        let opened = decision.and_then(|offset| {
+            open_partial(&partial, offset)
+                .map(|file| (offset, file))
+                .map_err(|err| {
+                    tracing::warn!(error = %err, "could not create a partial file");
+                    RejectReason::NoSpace
+                })
+        });
+        let (offset, file) = match opened {
+            Ok(opened) => opened,
+            Err(reason) => {
+                tracing::info!(from = %short_id(&from), ?reason, "file refused");
+                let reason = reason.as_str().into();
+                return self
+                    .send(
+                        session,
+                        from,
+                        &Packet::FileReject {
+                            id: reply_id,
+                            reason,
+                        },
+                    )
+                    .await;
+            }
+        };
+        let name = transfer::sanitize_name(&offer.name);
+        tracing::info!(from = %short_id(&from), size = offer.size, offset, "receiving a file");
+        self.incoming.push(Receiving {
+            transfer: Incoming::new(id, from, name, offer.size, offset, now),
+            partial,
+            file: Some(file),
+        });
+        self.send(
+            session,
+            from,
+            &Packet::FileAccept {
+                id: reply_id,
+                offset,
+            },
+        )
+        .await?;
+        let index = self.incoming.len() - 1;
+        if self.incoming[index].transfer.is_complete() {
+            self.complete(session, index).await?;
+        }
+        Ok(())
+    }
+
+    /// Writes a chunk that comes in order, acknowledges it, and finishes
+    /// the file with its last one. Any other chunk is ignored.
+    async fn chunk(
+        &mut self,
+        session: &mut Session,
+        from: [u8; 16],
+        id: [u8; 16],
+        offset: u64,
+        data: &[u8],
+    ) -> Result<()> {
+        let Some(index) = self
+            .incoming
+            .iter()
+            .position(|r| r.transfer.id == id && r.transfer.from == from)
+        else {
+            tracing::debug!(from = %short_id(&from), "chunk of no transfer ignored");
+            return Ok(());
+        };
+        let receiving = &mut self.incoming[index];
+        if !receiving.transfer.wants(offset, data.len()) {
+            tracing::debug!(from = %short_id(&from), offset, "chunk out of order ignored");
+            return Ok(());
+        }
+        let written = match receiving.file.as_mut() {
+            Some(file) => file.write_all(data),
+            None => Err(std::io::ErrorKind::NotFound.into()),
+        };
+        if let Err(err) = written {
+            tracing::warn!(error = %err, "could not write a file being received");
+            receiving.transfer.stage = Stage::Failed(Failure::Disk);
+            receiving.file = None;
+            let _ = std::fs::remove_file(&receiving.partial);
+            let name = receiving.transfer.name.clone();
+            self.notify(Notice::TransferFailed {
+                device: self.device_name(&from),
+                name,
+                outgoing: false,
+                failure: Failure::Disk,
+            });
+            let cancel = Packet::FileCancel {
+                id: transfer_id(&id),
+            };
+            return self.send(session, from, &cancel).await;
+        }
+        let complete = receiving.transfer.wrote(data.len(), Instant::now());
+        let ack = Packet::FileAck {
+            id: transfer_id(&id),
+            offset: receiving.transfer.written,
+        };
+        self.send(session, from, &ack).await?;
+        if complete {
+            self.complete(session, index).await?;
+        }
+        Ok(())
+    }
+
+    /// Closes a complete file, says so, and moves it to Downloads on a
+    /// pool thread: across volumes the move is a copy.
+    async fn complete(&mut self, session: &mut Session, index: usize) -> Result<()> {
+        let receiving = &mut self.incoming[index];
+        let flushed = receiving.file.take().map(|file| file.sync_all());
+        if let Some(Err(err)) = flushed {
+            tracing::warn!(error = %err, "could not flush a received file");
+        }
+        receiving.transfer.stage = Stage::Done;
+        let (from, id) = (receiving.transfer.from, receiving.transfer.id);
+        let (partial, name) = (receiving.partial.clone(), receiving.transfer.name.clone());
+        self.completed.push((from, id));
+        if self.completed.len() > COMPLETED_KEPT {
+            self.completed.remove(0);
+        }
+        tracing::info!(from = %short_id(&from), "file received");
+        self.send(
+            session,
+            from,
+            &Packet::FileDone {
+                id: transfer_id(&id),
+            },
+        )
+        .await?;
+
+        let (notify, downloads) = (self.hooks.on_notice.clone(), self.hooks.downloads.clone());
+        let device = self.device_name(&from);
+        tokio::task::spawn_blocking(move || {
+            match files::move_unique(&partial, &downloads, &name) {
+                Ok(path) => notify(Notice::FileReceived { from, device, path }),
+                Err(err) => {
+                    tracing::warn!(error = %err, "could not move a received file to Downloads");
+                    notify(Notice::TransferFailed {
+                        device,
+                        name,
+                        outgoing: false,
+                        failure: Failure::Disk,
+                    });
+                }
+            }
+        });
+        Ok(())
+    }
+
+    /// The other device cancelled the transfer `id`.
+    fn cancel_from(&mut self, device: &[u8; 16], id: &[u8; 16]) {
+        if let Some(sending) = self
+            .outgoing
+            .iter_mut()
+            .find(|s| s.transfer.id == *id && s.transfer.to == *device)
+        {
+            sending.transfer.end(Stage::Cancelled);
+            sending.file = None;
+        }
+        if let Some(receiving) = self
+            .incoming
+            .iter_mut()
+            .find(|r| r.transfer.id == *id && r.transfer.from == *device)
+            && receiving.transfer.stage != Stage::Done
+        {
+            receiving.transfer.stage = Stage::Cancelled;
+            receiving.file = None;
+            let _ = std::fs::remove_file(&receiving.partial);
+        }
+    }
+
+    /// Cancels the transfer `id` here. Returns the device on the other
+    /// end, to tell it, if the transfer was under way.
+    fn cancel_locally(&mut self, id: &[u8; 16]) -> Option<[u8; 16]> {
+        if let Some(sending) = self
+            .outgoing
+            .iter_mut()
+            .find(|s| s.transfer.id == *id && s.transfer.stage.is_active())
+        {
+            let offered = !sending.transfer.queued;
+            sending.transfer.end(Stage::Cancelled);
+            sending.file = None;
+            return offered.then_some(sending.transfer.to);
+        }
+        let receiving = self
+            .incoming
+            .iter_mut()
+            .find(|r| r.transfer.id == *id && r.transfer.stage.is_active())?;
+        receiving.transfer.stage = Stage::Cancelled;
+        receiving.file = None;
+        let _ = std::fs::remove_file(&receiving.partial);
+        Some(receiving.transfer.from)
+    }
+
+    /// A device left: its transfers end, and their partial files go.
+    fn drop_transfers_with(&mut self, device: &[u8; 16]) {
+        let ids: Vec<[u8; 16]> = self
+            .outgoing
+            .iter()
+            .filter(|s| s.transfer.to == *device)
+            .map(|s| s.transfer.id)
+            .chain(
+                self.incoming
+                    .iter()
+                    .filter(|r| r.transfer.from == *device)
+                    .map(|r| r.transfer.id),
+            )
+            .collect();
+        for id in ids {
+            self.cancel_locally(&id);
+        }
+    }
+
+    fn set_features(&mut self, features: Features) {
+        if let Err(err) = features.save(self.dir.path()) {
+            tracing::warn!(error = %err, "could not save the feature settings");
+        }
+        self.view.features = features;
+        if !features.battery {
+            for peer in self.view.peers.values_mut() {
+                peer.battery = None;
+                peer.connectivity = None;
+            }
+        }
+        if !features.ring {
+            self.stop_ring();
+        }
+    }
+
+    /// Rebuilds the transfers of the view: at once when one starts or
+    /// ends, at most every [`PROGRESS_INTERVAL`] when only bytes move.
+    /// Finished ones beyond the last few are forgotten.
+    fn show_transfers(&mut self) {
+        prune(&mut self.outgoing, |s| s.transfer.stage);
+        prune(&mut self.incoming, |r| r.transfer.stage);
+        let views: Vec<TransferView> = self
+            .outgoing
+            .iter()
+            .map(|s| TransferView {
+                id: s.transfer.id,
+                device: s.transfer.to,
+                outgoing: true,
+                name: s.transfer.name.clone(),
+                size: s.transfer.size,
+                done: s.transfer.acked,
+                stage: s.transfer.stage,
+            })
+            .chain(self.incoming.iter().map(|r| TransferView {
+                id: r.transfer.id,
+                device: r.transfer.from,
+                outgoing: false,
+                name: r.transfer.name.clone(),
+                size: r.transfer.size,
+                done: r.transfer.written,
+                stage: r.transfer.stage,
+            }))
+            .collect();
+        let outline = |views: &[TransferView]| -> Vec<([u8; 16], Stage)> {
+            views.iter().map(|view| (view.id, view.stage)).collect()
+        };
+        let now = Instant::now();
+        let only_progress = outline(&views) == outline(&self.view.transfers);
+        if only_progress && now.duration_since(self.progress_at) < PROGRESS_INTERVAL {
+            return;
+        }
+        if views != self.view.transfers {
+            self.progress_at = now;
+            self.view.transfers = views;
+        }
     }
 
     /// Runs one command on the connection. An error means the connection
@@ -622,9 +1598,12 @@ impl<F: FnMut(String)> Worker<F> {
                 Ok(())
             }
             Command::Join(code) => self.join(session, &code).await,
-            Command::RemoveDevice(device) => session.remove(&hex(&device)).await.map(|_| {
-                tracing::info!(device = %short_id(&device), "device removed");
-            }),
+            Command::RemoveDevice(device) => {
+                self.drop_transfers_with(&device);
+                session.remove(&hex(&device)).await.map(|_| {
+                    tracing::info!(device = %short_id(&device), "device removed");
+                })
+            }
             Command::Rename(name) => session.rename(&name).await.map(|_| {
                 tracing::info!(%name, "device renamed");
             }),
@@ -632,9 +1611,38 @@ impl<F: FnMut(String)> Worker<F> {
                 self.view.pause.all = paused;
                 Ok(())
             }
+            Command::SetFeatures(features) => {
+                self.set_features(features);
+                let packet = Packet::Capabilities(features.capabilities());
+                session.send_packet_all(&packet.to_json()).await.map(|_| ())
+            }
+            Command::Ring(device) if self.view.features.ring => {
+                tracing::info!(device = %short_id(&device), "ringing a device");
+                self.send(session, device, &Packet::Ring {}).await
+            }
+            Command::StopRinging(device) => self.send(session, device, &Packet::RingStop {}).await,
+            Command::Ring(_) => Ok(()),
+            Command::FoundIt => {
+                self.stop_ring();
+                Ok(())
+            }
+            Command::SendFiles(device, paths) => {
+                self.queue_files(device, paths);
+                self.start_queued(session).await
+            }
+            Command::CancelTransfer(id) => match self.cancel_locally(&id) {
+                Some(device) => {
+                    let cancel = Packet::FileCancel {
+                        id: transfer_id(&id),
+                    };
+                    self.send(session, device, &cancel).await
+                }
+                None => Ok(()),
+            },
             Command::Shutdown => Ok(()),
         };
         describe(&mut self.view, session.state());
+        self.show_transfers();
         self.publish();
         match done {
             Err(err) if is_refusal(&err) => {
@@ -692,6 +1700,10 @@ impl<F: FnMut(String)> Worker<F> {
                 self.view.pairing = PairingState::Success {
                     device: device_id_from_sign_pk(&code.sign_pk),
                 };
+                describe(&mut self.view, session.state());
+                for device in devices {
+                    self.send_capabilities(session, device).await?;
+                }
                 Ok(())
             }
             // No answer in time: the code expired, or its device is gone.
@@ -703,4 +1715,17 @@ impl<F: FnMut(String)> Worker<F> {
             Err(err) => Err(err),
         }
     }
+}
+
+/// Forgets the oldest finished transfers past [`FINISHED_SHOWN`].
+fn prune<T>(list: &mut Vec<T>, stage: impl Fn(&T) -> Stage) {
+    let finished = list.iter().filter(|item| !stage(item).is_active()).count();
+    let mut extra = finished.saturating_sub(FINISHED_SHOWN);
+    list.retain(|item| {
+        if extra > 0 && !stage(item).is_active() {
+            extra -= 1;
+            return false;
+        }
+        true
+    });
 }

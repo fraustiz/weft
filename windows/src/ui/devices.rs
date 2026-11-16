@@ -51,26 +51,41 @@ fn added(weft: &Weft, context: &ViewContext<Weft>) -> Option<View> {
     )
 }
 
-fn device_row(device: &Device, context: &ViewContext<Weft>) -> View {
+/// A device of the list: its name opens its details, the bin removes it.
+fn device_row(weft: &Weft, device: &Device, context: &ViewContext<Weft>) -> View {
     let name = words::device_name(device);
     let remove_label = if is_french() {
         format!("Retirer {name}")
     } else {
         format!("Remove {name}")
     };
+    // The short id, after the battery level once the device sent it.
+    let mut caption = words::device_id(device);
+    let battery = weft.snapshot.peer(&device.id).battery;
+    if weft.snapshot.features.battery
+        && let Some((figure, _)) = battery.as_ref().and_then(words::battery)
+    {
+        caption = format!("{figure} · {caption}");
+    }
     card(
         Grid::new()
             .columns([GridLength::STAR, GridLength::Auto])
             .column_spacing(8.0)
             .children((
-                StackPanel::new()
+                Button::new()
                     .grid_column(0)
-                    .spacing(2.0)
-                    .vertical_alignment(VerticalAlignment::Center)
-                    .children((
-                        body(name),
-                        secondary(words::device_id(device)).font_size(12.0),
-                    )),
+                    .style(ButtonStyle::Subtle)
+                    .horizontal_alignment(HorizontalAlignment::Stretch)
+                    .horizontal_content_alignment(HorizontalAlignment::Left)
+                    // Its text lines up with the card's edge.
+                    .margin(Thickness::new(-12.0, -4.0, 0.0, -4.0))
+                    .automation_name(name)
+                    .on_click(context.message(Message::OpenDevice(device.id)))
+                    .content(
+                        StackPanel::new()
+                            .spacing(2.0)
+                            .children((body(name), secondary(caption).font_size(12.0))),
+                    ),
                 Button::new()
                     .grid_column(1)
                     .style(ButtonStyle::Subtle)
@@ -155,7 +170,7 @@ pub fn view(weft: &Weft, context: &mut ViewContext<Weft>) -> View {
     } else {
         let rows = devices
             .iter()
-            .map(|device| KeyedView::new(hex(&device.id), device_row(device, context)));
+            .map(|device| KeyedView::new(hex(&device.id), device_row(weft, device, context)));
         let list = column(
             8.0,
             vec![

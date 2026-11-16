@@ -23,8 +23,8 @@ fn main() -> ExitCode {
 
     use weft_cli::{StateDir, default_state_dir};
     use weft_windows::tray::{self, Link};
-    use weft_windows::worker::{self, Command};
-    use weft_windows::{autostart, ui, window};
+    use weft_windows::worker::{self, Command, Hooks};
+    use weft_windows::{autostart, files, notify, ui, window};
     use windows_sys::Win32::UI::HiDpi::{
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
     };
@@ -65,11 +65,16 @@ fn main() -> ExitCode {
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
 
     let link = Arc::new(Link::default());
-    let on_text = {
-        let link = link.clone();
-        move |text| link.remote_text(text)
+    let hooks = {
+        let (text_link, notice_link) = (link.clone(), link.clone());
+        Hooks {
+            on_text: Box::new(move |text| text_link.remote_text(text)),
+            on_notice: Arc::new(move |notice| notify::handle(&notice_link, notice)),
+            // Without a known Downloads folder, files stay next to the state.
+            downloads: files::downloads_dir().unwrap_or_else(|| state_dir.join("Received")),
+        }
     };
-    let (worker, worker_thread) = match worker::spawn(StateDir::new(state_dir.clone()), on_text) {
+    let (worker, worker_thread) = match worker::spawn(StateDir::new(state_dir.clone()), hooks) {
         Ok(started) => started,
         Err(err) => {
             tracing::error!(error = %err, "could not start");

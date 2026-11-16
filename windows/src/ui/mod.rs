@@ -6,12 +6,14 @@
 //! and is tested; the other modules build views.
 
 mod app;
+mod detail;
 mod devices;
 mod pairing;
+mod picker;
 mod qr;
 mod settings;
 mod widgets;
-mod words;
+pub(crate) mod words;
 
 use std::sync::Arc;
 

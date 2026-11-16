@@ -7,6 +7,7 @@
 //! that window by its title and asks it to show the main window.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
@@ -21,8 +22,8 @@ use windows_sys::Win32::System::DataExchange::{
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFY_ICON_MESSAGE,
-    NOTIFYICONDATAW, Shell_NotifyIconW,
+    NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_USER, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NIN_BALLOONUSERCLICK, NOTIFY_ICON_MESSAGE, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
@@ -51,6 +52,8 @@ const WM_SNAPSHOT: u32 = WM_APP + 3;
 const WM_LOCAL_TEXT: u32 = WM_APP + 4;
 /// Another launch of the app asks for the main window.
 const WM_SHOW_MAIN: u32 = WM_APP + 5;
+/// A notice waits in the [`Link`].
+const WM_BALLOON: u32 = WM_APP + 6;
 
 const CLASS_NAME: &str = "WeftTray";
 const ICON_ID: u32 = 1;
@@ -77,6 +80,8 @@ pub struct Link {
     text: Mutex<Option<String>>,
     /// The text from the main window waiting to be written.
     local: Mutex<Option<String>>,
+    /// Notices waiting to be shown, as title and text.
+    balloons: Mutex<VecDeque<(String, String)>>,
 }
 
 impl Link {
@@ -92,6 +97,13 @@ impl Link {
     pub fn local_text(&self, text: String) {
         *self.local.lock().unwrap() = Some(text);
         self.post(WM_LOCAL_TEXT);
+    }
+
+    /// Shows a notice from the icon, which Windows turns into a
+    /// notification. Any thread; see [`crate::notify`].
+    pub fn balloon(&self, title: String, text: String) {
+        self.balloons.lock().unwrap().push_back((title, text));
+        self.post(WM_BALLOON);
     }
 
     /// Tells the tray that the worker's snapshot changed.
@@ -187,6 +199,15 @@ fn status_text(snapshot: &Snapshot) -> String {
     }
 }
 
+/// Copies `text` into a fixed buffer of the shell, cut to fit; the last
+/// slot stays 0, for the NUL.
+fn fill(buffer: &mut [u16], text: &str) {
+    let room = buffer.len() - 1;
+    for (slot, unit) in buffer[..room].iter_mut().zip(text.encode_utf16()) {
+        *slot = unit;
+    }
+}
+
 fn capitalised(text: &str) -> String {
     let mut chars = text.chars();
     match chars.next() {
@@ -228,11 +249,7 @@ impl Tray {
         data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         data.uCallbackMessage = WM_ICON;
         data.hIcon = self.icon;
-        // The last slot stays 0: the tooltip is cut to fit, with its NUL.
-        let room = data.szTip.len() - 1;
-        for (slot, unit) in data.szTip[..room].iter_mut().zip(self.tip.encode_utf16()) {
-            *slot = unit;
-        }
+        fill(&mut data.szTip, &self.tip);
         self.notify(message, &data);
     }
 
@@ -240,6 +257,24 @@ impl Tray {
         let tip = format!("Weft — {}", status_text(&self.worker.snapshot()));
         if tip != self.tip {
             self.show_icon(NIM_MODIFY);
+        }
+    }
+
+    /// Shows the notices waiting in the link, oldest first.
+    fn show_balloons(&self) {
+        loop {
+            let Some((title, text)) = self.link.balloons.lock().unwrap().pop_front() else {
+                return;
+            };
+            let mut data = self.icon_data();
+            data.uFlags = NIF_INFO;
+            // The app's icon, at the size the notification asks for.
+            data.dwInfoFlags = NIIF_USER;
+            data.hBalloonIcon = self.icon;
+            // The last slot of each stays 0: texts are cut to fit.
+            fill(&mut data.szInfoTitle, &title);
+            fill(&mut data.szInfo, &text);
+            self.notify(NIM_MODIFY, &data);
         }
     }
 
@@ -381,8 +416,11 @@ extern "system" fn window_proc(
             with_tray(Tray::apply_local_text);
         }
         WM_SHOW_MAIN => window::show(),
+        WM_BALLOON => {
+            with_tray(|tray| tray.show_balloons());
+        }
         WM_ICON => match (lparam as u32) & 0xffff {
-            WM_LBUTTONUP => window::show(),
+            WM_LBUTTONUP | NIN_BALLOONUSERCLICK => window::show(),
             WM_RBUTTONUP | WM_CONTEXTMENU => show_menu(window),
             _ => {}
         },
@@ -478,6 +516,7 @@ pub fn run(worker: Handle, link: Arc<Link>, state_dir: &Path) {
     link.post(WM_REMOTE_TEXT);
     link.post(WM_LOCAL_TEXT);
     link.post(WM_SNAPSHOT);
+    link.post(WM_BALLOON);
     tracing::info!("tray icon ready");
 
     // SAFETY: a standard message loop; `message` is written by GetMessageW
@@ -514,9 +553,13 @@ mod tests {
                     name: None,
                 })
                 .collect(),
+            peers: Default::default(),
             pause: Pause::default(),
+            features: Default::default(),
             pairing: PairingState::Idle,
             last_activity: None,
+            ringing: None,
+            transfers: Vec::new(),
         }
     }
 

@@ -9,7 +9,9 @@ use weft_cli::short_id;
 use weft_cli::state::sanitize_device_name;
 
 use crate::i18n::{is_french, t};
-use crate::worker::{Activity, Device, Direction, PairingFailure, Snapshot, Status};
+use crate::packets::{Battery, Connectivity, RejectReason};
+use crate::transfer::{Failure, Stage};
+use crate::worker::{Activity, Device, Direction, PairingFailure, Snapshot, Status, TransferView};
 
 const MINUTE: u64 = 60;
 const HOUR: u64 = 60 * MINUTE;
@@ -152,6 +154,122 @@ pub fn failure(failure: &PairingFailure) -> String {
     text.to_owned()
 }
 
+/// Why a transfer failed, as a short sentence.
+pub fn transfer_failure(failure: Failure) -> &'static str {
+    match failure {
+        Failure::Rejected(Some(RejectReason::Disabled)) => t(
+            "The other device does not accept files",
+            "L'autre appareil n'accepte pas les fichiers",
+        ),
+        Failure::Rejected(Some(RejectReason::TooLarge)) => t(
+            "Too large for the other device",
+            "Trop grand pour l'autre appareil",
+        ),
+        Failure::Rejected(Some(RejectReason::NoSpace)) => t(
+            "Not enough space on the other device",
+            "Pas assez de place sur l'autre appareil",
+        ),
+        Failure::Rejected(Some(RejectReason::Busy)) => t(
+            "The other device is busy with other files",
+            "L'autre appareil reçoit déjà d'autres fichiers",
+        ),
+        Failure::Rejected(None) => t("Refused by the other device", "Refusé par l'autre appareil"),
+        Failure::NoProgress => t(
+            "Stopped: nothing moved for 10 minutes",
+            "Arrêté : rien n'a avancé pendant 10 minutes",
+        ),
+        Failure::Disk => t(
+            "The file could not be read or written",
+            "Le fichier n'a pas pu être lu ou écrit",
+        ),
+        Failure::TooLarge => t(
+            "Over 4 GB, the most Weft sends",
+            "Plus de 4 Go, le maximum de Weft",
+        ),
+    }
+}
+
+/// A size in the units Explorer uses: 1 KB is 1024 bytes.
+pub fn size(bytes: u64) -> String {
+    const UNITS: [(&str, &str); 4] = [("KB", "Ko"), ("MB", "Mo"), ("GB", "Go"), ("TB", "To")];
+    if bytes < 1024 {
+        return if is_french() {
+            format!("{bytes} o")
+        } else {
+            format!("{bytes} B")
+        };
+    }
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    let (english, french) = UNITS[unit];
+    let number = if value < 10.0 {
+        format!("{value:.1}")
+    } else {
+        format!("{value:.0}")
+    };
+    if is_french() {
+        format!("{} {french}", number.replace('.', ","))
+    } else {
+        format!("{number} {english}")
+    }
+}
+
+/// The line under a transfer's name: how far it is, or how it ended.
+pub fn transfer_status(transfer: &TransferView) -> String {
+    match transfer.stage {
+        Stage::Waiting => t(
+            "Waiting for the other device",
+            "En attente de l'autre appareil",
+        )
+        .into(),
+        Stage::Running => {
+            let (done, total) = (size(transfer.done), size(transfer.size));
+            if is_french() {
+                format!("{done} sur {total}")
+            } else {
+                format!("{done} of {total}")
+            }
+        }
+        Stage::Done if transfer.outgoing => t("Sent", "Envoyé").into(),
+        Stage::Done => t("Saved in Downloads", "Enregistré dans Téléchargements").into(),
+        Stage::Cancelled => t("Cancelled", "Annulé").into(),
+        Stage::Failed(failure) => transfer_failure(failure).into(),
+    }
+}
+
+/// The battery level as a figure, and its state in words, if known.
+pub fn battery(battery: &Battery) -> Option<(String, Option<&'static str>)> {
+    let level = battery.level?;
+    let state = if battery.charging == Some(true) {
+        Some(t("Charging", "En charge"))
+    } else if battery.low == Some(true) {
+        Some(t("Low battery", "Batterie faible"))
+    } else {
+        None
+    };
+    // French puts a no-break space before the sign.
+    let figure = if is_french() {
+        format!("{level}\u{a0}%")
+    } else {
+        format!("{level}%")
+    };
+    Some((figure, state))
+}
+
+/// The network a device is on, in words, if known.
+pub fn network(connectivity: &Connectivity) -> Option<String> {
+    let network = connectivity.network.as_deref()?;
+    Some(match network {
+        "wifi" => "Wi-Fi".into(),
+        "none" => t("No network", "Pas de réseau").into(),
+        other => other.to_owned(),
+    })
+}
+
 /// Why a device name is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NameProblem {
@@ -202,9 +320,13 @@ mod tests {
             device_id: [1; 16],
             relay_url: "wss://relay.example/v1".into(),
             devices: Vec::new(),
+            peers: Default::default(),
             pause: Pause::default(),
+            features: Default::default(),
             pairing: PairingState::Idle,
             last_activity: None,
+            ringing: None,
+            transfers: Vec::new(),
         }
     }
 
@@ -349,5 +471,87 @@ mod tests {
         assert_eq!(check_name(&"a".repeat(65)), Err(NameProblem::TooLong));
         // 33 characters, but 66 bytes.
         assert_eq!(check_name(&"é".repeat(33)), Err(NameProblem::TooLong));
+    }
+
+    #[test]
+    fn sizes_read_as_explorer_shows_them() {
+        assert_eq!(size(0), t("0 B", "0 o"));
+        assert_eq!(size(1023), t("1023 B", "1023 o"));
+        assert_eq!(size(1536), t("1.5 KB", "1,5 Ko"));
+        assert_eq!(size(5 * 1024 * 1024), t("5.0 MB", "5,0 Mo"));
+        assert_eq!(size(250 * 1024 * 1024), t("250 MB", "250 Mo"));
+        assert_eq!(size(4 << 30), t("4.0 GB", "4,0 Go"));
+    }
+
+    #[test]
+    fn transfers_say_where_they_stand() {
+        let mut transfer = TransferView {
+            id: [1; 16],
+            device: [2; 16],
+            outgoing: true,
+            name: "photo.jpg".into(),
+            size: 2048,
+            done: 1024,
+            stage: Stage::Running,
+        };
+        assert_eq!(
+            transfer_status(&transfer),
+            t("1.0 KB of 2.0 KB", "1,0 Ko sur 2,0 Ko")
+        );
+        transfer.stage = Stage::Done;
+        assert_eq!(transfer_status(&transfer), t("Sent", "Envoyé"));
+        let busy = Failure::Rejected(Some(RejectReason::Busy));
+        transfer.stage = Stage::Failed(busy);
+        assert_eq!(transfer_status(&transfer), transfer_failure(busy));
+        // Every failure has its own sentence, without a final period.
+        let failures = [
+            Failure::Rejected(Some(RejectReason::Disabled)),
+            Failure::Rejected(Some(RejectReason::TooLarge)),
+            Failure::Rejected(Some(RejectReason::NoSpace)),
+            busy,
+            Failure::Rejected(None),
+            Failure::NoProgress,
+            Failure::Disk,
+            Failure::TooLarge,
+        ];
+        let sentences: Vec<&str> = failures.iter().map(|f| transfer_failure(*f)).collect();
+        for (index, sentence) in sentences.iter().enumerate() {
+            assert!(!sentence.ends_with('.'), "{sentence}");
+            assert!(!sentences[..index].contains(sentence), "{sentence}");
+        }
+    }
+
+    #[test]
+    fn battery_and_network_only_say_what_is_known() {
+        assert_eq!(battery(&Battery::default()), None);
+        let charging = Battery {
+            level: Some(82),
+            charging: Some(true),
+            low: Some(false),
+        };
+        let (figure, state) = battery(&charging).unwrap();
+        assert!(figure.starts_with("82"));
+        assert_eq!(state, Some(t("Charging", "En charge")));
+        let low = Battery {
+            level: Some(9),
+            charging: None,
+            low: Some(true),
+        };
+        assert_eq!(
+            battery(&low).unwrap().1,
+            Some(t("Low battery", "Batterie faible"))
+        );
+
+        assert_eq!(network(&Connectivity::default()), None);
+        let wifi = Connectivity {
+            network: Some("wifi".into()),
+            signal: Some(3),
+        };
+        assert_eq!(network(&wifi).as_deref(), Some("Wi-Fi"));
+        let lte = Connectivity {
+            network: Some("LTE".into()),
+            signal: None,
+        };
+        assert_eq!(network(&lte).as_deref(), Some("LTE"));
     }
 }
