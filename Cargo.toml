@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/weft-protocol"]
+members = ["crates/weft-protocol", "relay"]
 resolver = "2"
 
 [workspace.package]
