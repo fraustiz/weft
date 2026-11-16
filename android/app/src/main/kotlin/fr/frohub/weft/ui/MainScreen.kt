@@ -4,10 +4,11 @@ import android.text.format.DateUtils
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,26 +17,31 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -44,33 +50,39 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import fr.frohub.weft.LastSent
 import fr.frohub.weft.R
+import fr.frohub.weft.core.ConnectionProblem
 import fr.frohub.weft.core.ConnectionStatus
-import fr.frohub.weft.core.JoinResult
-import fr.frohub.weft.core.JoinState
+import fr.frohub.weft.core.Device
 import java.text.DateFormat
 
 /**
- * The only screen for now: connection state, the send action and the tile hint, plus a
- * temporary field to join with a pasted code until the QR scanner exists.
+ * The main screen. Not paired: what Weft does and how to pair. Paired: the connection, the
+ * send action, the devices of the group and the tile hint.
  *
- * [onAddTile] is null where the system cannot add the tile for us (below API 33).
+ * [devices] is null while the state loads. [onAddTile] is null where the system cannot add
+ * the tile for us (below API 33).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     status: ConnectionStatus,
-    deviceCount: Int,
+    devices: List<Device>?,
     lastSent: LastSent?,
-    joinState: JoinState,
-    onJoin: (String) -> Unit,
+    onPair: () -> Unit,
     onSendClipboard: () -> Unit,
+    onOpenDevice: (Device) -> Unit,
+    onLeave: () -> Unit,
     onAddTile: (() -> Unit)?,
 ) {
+    val paired = !devices.isNullOrEmpty()
     Scaffold(
         topBar = {
             TopAppBar(
@@ -82,10 +94,11 @@ fun MainScreen(
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(28.dp),
                         )
-                        Spacer(Modifier.size(8.dp))
+                        Spacer(Modifier.width(8.dp))
                         Text(stringResource(R.string.app_name))
                     }
                 },
+                actions = { if (paired) OverflowMenu(onLeave) },
             )
         },
     ) { innerPadding ->
@@ -96,93 +109,232 @@ fun MainScreen(
                 .padding(innerPadding)
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
-            StatusCard(status, deviceCount)
-            Spacer(Modifier.height(24.dp))
-            Button(
-                onClick = onSendClipboard,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 56.dp),
-            ) {
-                Text(stringResource(R.string.action_send_clipboard), style = MaterialTheme.typography.titleMedium)
+            when {
+                devices == null -> Unit
+                devices.isEmpty() -> NotPaired(onPair)
+                else -> Paired(status, devices, lastSent, onSendClipboard, onOpenDevice, onAddTile)
             }
-            Spacer(Modifier.height(12.dp))
-            LastSentLine(lastSent)
-            Spacer(Modifier.height(32.dp))
-            TileHintCard(onAddTile)
-            Spacer(Modifier.height(16.dp))
-            JoinWithCode(joinState, onJoin)
         }
     }
 }
 
-/** A small rounded square, the pixel from the mark, used as the connection indicator. */
 @Composable
-private fun StatusPixel(on: Boolean) {
-    val shape = RoundedCornerShape(3.dp)
-    Box(
-        if (on) {
-            Modifier.size(12.dp).background(MaterialTheme.colorScheme.primary, shape)
-        } else {
-            Modifier.size(12.dp).border(2.dp, MaterialTheme.colorScheme.outline, shape)
-        },
-    )
+private fun OverflowMenu(onLeave: () -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) {
+            Icon(painterResource(R.drawable.ic_more_vert), contentDescription = stringResource(R.string.more_options))
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.action_leave)) },
+                onClick = {
+                    open = false
+                    onLeave()
+                },
+            )
+        }
+    }
 }
 
+// region Not paired
+
 @Composable
-private fun StatusCard(status: ConnectionStatus, deviceCount: Int) {
-    val paired = deviceCount > 0
-    val title = when {
-        !paired -> stringResource(R.string.status_not_paired)
-        status == ConnectionStatus.Connected -> stringResource(R.string.status_connected)
-        status == ConnectionStatus.Disconnected -> stringResource(R.string.status_disconnected)
-        status == ConnectionStatus.Connecting -> stringResource(R.string.status_connecting)
-        else -> stringResource(R.string.status_reconnecting)
-    }
-    val detail = if (paired) {
-        pluralStringResource(R.plurals.paired_devices, deviceCount, deviceCount)
-    } else {
-        stringResource(R.string.status_not_paired_detail)
-    }
+private fun NotPaired(onPair: () -> Unit) {
+    Spacer(Modifier.height(16.dp))
+    Text(
+        stringResource(R.string.empty_title),
+        style = MaterialTheme.typography.headlineSmall,
+        modifier = Modifier.semantics { heading() },
+    )
+    Spacer(Modifier.height(12.dp))
+    Text(
+        stringResource(R.string.empty_body),
+        style = MaterialTheme.typography.bodyLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(32.dp))
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Row(Modifier.padding(20.dp)) {
-            Box(Modifier.height(24.dp), contentAlignment = Alignment.Center) {
-                StatusPixel(on = paired && status == ConnectionStatus.Connected)
-            }
-            Spacer(Modifier.size(12.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(title, style = MaterialTheme.typography.titleMedium)
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text(
+                stringResource(R.string.empty_steps_title),
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.semantics { heading() },
+            )
+            Step(1) { Text(commandText(R.string.empty_step_run), style = MaterialTheme.typography.bodyLarge) }
+            Step(2) { Text(stringResource(R.string.empty_step_scan), style = MaterialTheme.typography.bodyLarge) }
+        }
+    }
+    Spacer(Modifier.height(24.dp))
+    Button(
+        onClick = onPair,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .testTag(PAIR_BUTTON),
+    ) {
+        Text(stringResource(R.string.action_pair), style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+/** A numbered step: the number sits in a pixel of the mark's shape, quiet. */
+@Composable
+private fun Step(number: Int, content: @Composable () -> Unit) {
+    Row(verticalAlignment = Alignment.Top) {
+        FirstLine(MaterialTheme.typography.bodyLarge) {
+            Box(
+                Modifier
+                    .size(24.dp)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(6.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
                 Text(
-                    detail,
-                    style = MaterialTheme.typography.bodyMedium,
+                    number.toString(),
+                    style = MaterialTheme.typography.labelLarge.merge(MonoStyle),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
+        Spacer(Modifier.width(12.dp))
+        Box(Modifier.weight(1f)) { content() }
     }
+}
+
+// endregion
+
+// region Paired
+
+@Composable
+private fun Paired(
+    status: ConnectionStatus,
+    devices: List<Device>,
+    lastSent: LastSent?,
+    onSendClipboard: () -> Unit,
+    onOpenDevice: (Device) -> Unit,
+    onAddTile: (() -> Unit)?,
+) {
+    StatusCard(status, devices.size)
+    Spacer(Modifier.height(24.dp))
+    Button(
+        onClick = onSendClipboard,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp),
+    ) {
+        Text(stringResource(R.string.action_send_clipboard), style = MaterialTheme.typography.titleMedium)
+    }
+    Spacer(Modifier.height(12.dp))
+    LastSentLine(lastSent)
+    Spacer(Modifier.height(32.dp))
+    Text(
+        stringResource(R.string.devices_title),
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .padding(horizontal = 4.dp)
+            .semantics { heading() },
+    )
+    Spacer(Modifier.height(8.dp))
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        devices.forEachIndexed { index, device ->
+            if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            DeviceRow(device, onClick = { onOpenDevice(device) })
+        }
+    }
+    Spacer(Modifier.height(32.dp))
+    TileHintCard(onAddTile)
+    Spacer(Modifier.height(16.dp))
+}
+
+/**
+ * Connection state in words, with the pixel as a reminder. A failed attempt is followed by a
+ * new one after a backoff, so an error reads "Reconnecting…" with its reason until it connects.
+ */
+@Composable
+private fun StatusCard(status: ConnectionStatus, deviceCount: Int) {
+    // The last failure, kept while the next attempt is under way.
+    var lastProblem by remember { mutableStateOf<ConnectionProblem?>(null) }
+    when (status) {
+        is ConnectionStatus.Error -> lastProblem = status.problem
+        ConnectionStatus.Connected, ConnectionStatus.Disconnected -> lastProblem = null
+        ConnectionStatus.Connecting -> Unit
+    }
+    val problem = lastProblem
+    val (tone, title) = when {
+        status == ConnectionStatus.Connected -> StatusTone.GOOD to stringResource(R.string.status_connected)
+        status == ConnectionStatus.Disconnected -> StatusTone.OFF to stringResource(R.string.status_disconnected)
+        problem != null -> StatusTone.ERROR to stringResource(R.string.status_reconnecting)
+        else -> StatusTone.PENDING to stringResource(R.string.status_connecting)
+    }
+    val detail = if (problem != null && status != ConnectionStatus.Connected) {
+        stringResource(R.string.status_retrying, stringResource(problem.label))
+    } else {
+        pluralStringResource(R.plurals.paired_devices, deviceCount, deviceCount)
+    }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(STATUS_CARD),
+    ) {
+        Row(Modifier.padding(20.dp)) {
+            // Centred on the first line of the title.
+            FirstLine(MaterialTheme.typography.titleMedium) { StatusPixel(tone) }
+            Spacer(Modifier.width(12.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+val ConnectionProblem.label: Int
+    get() = when (this) {
+        ConnectionProblem.UNREACHABLE -> R.string.problem_unreachable
+        ConnectionProblem.TIMED_OUT -> R.string.problem_timed_out
+        ConnectionProblem.WRONG_RELAY_NAME -> R.string.problem_wrong_relay_name
+        ConnectionProblem.REJECTED -> R.string.problem_rejected
+        ConnectionProblem.INSECURE -> R.string.problem_insecure
+        ConnectionProblem.PROTOCOL -> R.string.problem_protocol
+        ConnectionProblem.LOST -> R.string.problem_lost
+    }
+
+@Composable
+private fun DeviceRow(device: Device, onClick: () -> Unit) {
+    val openLabel = stringResource(R.string.device_open)
+    ListItem(
+        headlineContent = {
+            Text(device.label, style = if (device.name == null) MaterialTheme.typography.bodyLarge.merge(MonoStyle) else TextStyle.Default)
+        },
+        supportingContent = device.name?.let { { Text(device.shortId, style = MonoStyle) } },
+        leadingContent = {
+            Icon(painterResource(R.drawable.ic_computer), contentDescription = null)
+        },
+        trailingContent = {
+            Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null)
+        },
+        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
+        modifier = Modifier
+            // One height for named and unnamed rows.
+            .heightIn(min = 72.dp)
+            .clickable(onClickLabel = openLabel, role = Role.Button, onClick = onClick)
+            .testTag(DEVICE_ROW_PREFIX + device.id),
+    )
 }
 
 @Composable
 private fun LastSentLine(lastSent: LastSent?) {
     val style = MaterialTheme.typography.bodyMedium.merge(TextStyle(fontFeatureSettings = "tnum"))
-    Crossfade(targetState = lastSent, animationSpec = tween(180), label = "lastSent") { sent ->
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+    Crossfade(targetState = lastSent, animationSpec = tween(MotionMedium), label = "lastSent") { sent ->
+        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
             if (sent == null) {
-                Text(
-                    stringResource(R.string.last_sent_none),
-                    style = style,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text(stringResource(R.string.last_sent_none), style = style, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
-                Text(
-                    stringResource(R.string.last_sent_label),
-                    style = style,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.size(8.dp))
+                Text(stringResource(R.string.last_sent_label), style = style, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 val time = DateUtils.formatSameDayTime(
                     sent.atMillis,
                     System.currentTimeMillis(),
@@ -216,8 +368,12 @@ private fun TileHintCard(onAddTile: (() -> Unit)?) {
                         modifier = Modifier.size(24.dp),
                     )
                 }
-                Spacer(Modifier.size(16.dp))
-                Text(stringResource(R.string.tile_hint_title), style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.width(16.dp))
+                Text(
+                    stringResource(R.string.tile_hint_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.semantics { heading() },
+                )
             }
             Spacer(Modifier.height(12.dp))
             Text(
@@ -242,85 +398,30 @@ private fun TileHintCard(onAddTile: (() -> Unit)?) {
     }
 }
 
-/** Temporary: joins with a pasted `WEFT1:` code until the QR scanner exists. */
-@Composable
-private fun JoinWithCode(joinState: JoinState, onJoin: (String) -> Unit) {
-    var code by rememberSaveable { mutableStateOf("") }
-    val joining = joinState == JoinState.Joining
-    LaunchedEffect(joinState) {
-        if (joinState is JoinState.Done && joinState.result is JoinResult.Joined) code = ""
-    }
-    Column(Modifier.fillMaxWidth()) {
-        OutlinedTextField(
-            value = code,
-            onValueChange = { code = it },
-            label = { Text(stringResource(R.string.join_code_label)) },
-            singleLine = true,
-            enabled = !joining,
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag(JOIN_CODE_FIELD),
-        )
-        Spacer(Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedButton(onClick = { onJoin(code) }, enabled = !joining && code.isNotBlank()) {
-                Text(stringResource(R.string.action_join))
-            }
-            Spacer(Modifier.size(12.dp))
-            joinMessage(joinState)?.let {
-                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-    }
-}
+// endregion
 
-@Composable
-private fun joinMessage(state: JoinState): String? = when (state) {
-    JoinState.Idle -> null
-    JoinState.Joining -> stringResource(R.string.join_in_progress)
-    is JoinState.Done -> when (val result = state.result) {
-        is JoinResult.Joined -> pluralStringResource(R.plurals.join_joined, result.devices.size, result.devices.size)
-        JoinResult.InvalidCode -> stringResource(R.string.join_invalid_code)
-        JoinResult.OwnCode -> stringResource(R.string.join_own_code)
-        JoinResult.InsecureRelay -> stringResource(R.string.join_insecure_relay)
-        is JoinResult.ConnectionFailed -> stringResource(R.string.join_connection_failed)
-        JoinResult.TimedOut -> stringResource(R.string.join_timed_out)
-        is JoinResult.Refused -> stringResource(R.string.join_refused)
-        JoinResult.Busy -> stringResource(R.string.join_busy)
-    }
-}
+/** Test tags. */
+const val PAIR_BUTTON = "pair_button"
+const val STATUS_CARD = "status_card"
+const val DEVICE_ROW_PREFIX = "device_"
 
-/** Test tag of the temporary join field. */
-const val JOIN_CODE_FIELD = "join_code"
+private val previewDevices = listOf(
+    Device("3f9a0c12d4e5f60718293a4b5c6d7e8f", "MacBook Air"),
+    Device("b7e14c09aa21f3d4e5f60718293a4b5c", null),
+)
 
 @Preview
 @Composable
-private fun MainScreenPreview() {
+private fun PairedPreview() {
     WeftTheme(darkTheme = false) {
-        MainScreen(
-            status = ConnectionStatus.Connected,
-            deviceCount = 2,
-            lastSent = LastSent(System.currentTimeMillis(), 42),
-            joinState = JoinState.Idle,
-            onJoin = {},
-            onSendClipboard = {},
-            onAddTile = {},
-        )
+        MainScreen(ConnectionStatus.Connected, previewDevices, LastSent(System.currentTimeMillis(), 42), {}, {}, {}, {}, {})
     }
 }
 
 @Preview
 @Composable
-private fun MainScreenDarkPreview() {
+private fun NotPairedDarkPreview() {
     WeftTheme(darkTheme = true) {
-        MainScreen(
-            status = ConnectionStatus.Disconnected,
-            deviceCount = 0,
-            lastSent = null,
-            joinState = JoinState.Idle,
-            onJoin = {},
-            onSendClipboard = {},
-            onAddTile = null,
-        )
+        MainScreen(ConnectionStatus.Disconnected, emptyList(), null, {}, {}, {}, {}, null)
     }
 }

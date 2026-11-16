@@ -30,9 +30,12 @@ data class DeviceState(
 
     fun withPeer(deviceIdHex: String, peer: PeerState): DeviceState = copy(peers = peers + (deviceIdHex to peer))
 
-    /** Adds [keys] to the trusted devices, or updates their kx key (and name, if given). */
-    fun trust(keys: PeerKeys, name: String? = null): DeviceState {
-        val device = TrustedDevice(keys.signPublicKey.toHex(), keys.kxPublicKey.toHex(), name)
+    /**
+     * Adds [keys] to the trusted devices, or updates their kx key (and name, if given).
+     * [addedAt] (epoch millis) is only recorded for a device that was not trusted yet.
+     */
+    fun trust(keys: PeerKeys, name: String? = null, addedAt: Long? = null): DeviceState {
+        val device = TrustedDevice(keys.signPublicKey.toHex(), keys.kxPublicKey.toHex(), name, addedAt)
         val existing = device(device.deviceIdHex)
             ?: return copy(devices = devices + device)
         val updated = existing.copy(kxPublicKeyHex = device.kxPublicKeyHex, name = name ?: existing.name)
@@ -84,6 +87,8 @@ data class TrustedDevice(
     val signPublicKeyHex: String,
     val kxPublicKeyHex: String,
     val name: String? = null,
+    /** When this device trusted it, in epoch millis; null for devices saved before it was kept. */
+    val addedAt: Long? = null,
 ) {
     init {
         require(signPublicKeyHex.hexToBytesOrNull(32) != null) { "invalid sign_pk" }
@@ -103,12 +108,14 @@ data class TrustedDevice(
         .put("sign_pk", signPublicKeyHex)
         .put("kx_pk", kxPublicKeyHex)
         .apply { if (name != null) put("name", name) }
+        .apply { if (addedAt != null) put("added_at", addedAt) }
 
     companion object {
         fun fromJson(json: JSONObject) = TrustedDevice(
             signPublicKeyHex = json.getString("sign_pk").lowercase(),
             kxPublicKeyHex = json.getString("kx_pk").lowercase(),
             name = if (json.has("name") && !json.isNull("name")) json.getString("name") else null,
+            addedAt = if (json.has("added_at") && !json.isNull("added_at")) json.getLong("added_at") else null,
         )
     }
 }

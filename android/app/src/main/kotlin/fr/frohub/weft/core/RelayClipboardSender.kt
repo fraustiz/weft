@@ -42,19 +42,36 @@ class RelayClipboardSender(
     override suspend fun send(text: String): SendResult = mutex.withLock {
         val plaintext = text.toByteArray(Charsets.UTF_8)
         if (plaintext.size > Weft.MAX_CLIPBOARD_TEXT_LENGTH) return SendResult.TooLarge
-        if (repository.load().devices.isEmpty()) return SendResult.NoPairedDevice
+        val devices = repository.load().devices
+        if (devices.isEmpty()) return SendResult.NoPairedDevice
         if (!sink.isConnected && !awaitConnected(CONNECT_WAIT)) return SendResult.NotConnected
 
+        val sent = sealAndSend(devices.map { it.deviceIdHex }, Kind.CLIPBOARD_TEXT, plaintext)
+        if (sent == 0) return SendResult.NotConnected
+        _lastSent.value = LastSent(clock(), text.codePointCount(0, text.length))
+        Log.i(TAG, "sent ${plaintext.size} bytes to $sent device(s)")
+        SendResult.Sent(sent)
+    }
+
+    /**
+     * Seals [plaintext] as a [kind] envelope for each of [deviceIds] that is still trusted, with
+     * the same counter rules as clipboard text. Returns how many envelopes the sink took.
+     */
+    suspend fun sendEnvelope(deviceIds: List<String>, kind: Kind, plaintext: ByteArray): Int =
+        mutex.withLock { sealAndSend(deviceIds, kind, plaintext) }
+
+    private suspend fun sealAndSend(deviceIds: List<String>, kind: Kind, plaintext: ByteArray): Int {
         val local = identity()
         val (devices, counters) = repository.update { state ->
-            val (next, counters) = state.nextCounters(state.devices.map { it.deviceIdHex })
-            next to (state.devices to counters)
+            val devices = deviceIds.mapNotNull { state.device(it) }
+            val (next, counters) = state.nextCounters(devices.map { it.deviceIdHex })
+            next to (devices to counters)
         }
         var sent = 0
         for (device in devices) {
             val keys = sessionKeys(local, device.deviceId, device.kxPublicKey)
             val header = Header(
-                kind = Kind.CLIPBOARD_TEXT,
+                kind = kind,
                 sender = local.deviceId,
                 recipient = device.deviceId,
                 messageId = randomMessageId(),
@@ -62,10 +79,7 @@ class RelayClipboardSender(
             )
             if (sink.send(seal(header, plaintext, keys.tx))) sent++
         }
-        if (sent == 0) return SendResult.NotConnected
-        _lastSent.value = LastSent(clock(), text.codePointCount(0, text.length))
-        Log.i(TAG, "sent ${plaintext.size} bytes to $sent device(s)")
-        SendResult.Sent(sent)
+        return sent
     }
 
     private companion object {

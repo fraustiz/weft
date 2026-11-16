@@ -13,9 +13,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
-import androidx.compose.runtime.getValue
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import fr.frohub.weft.ui.MainScreen
+import fr.frohub.weft.ui.CoreModel
+import fr.frohub.weft.ui.WeftApp
 import fr.frohub.weft.ui.WeftTheme
 
 class MainActivity : ComponentActivity() {
@@ -26,25 +25,18 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         val canAddTile = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-        val core = weft.core
+        val model = weft.model
         setContent {
             WeftTheme {
-                val status by core.status.collectAsStateWithLifecycle()
-                val devices by core.devices.collectAsStateWithLifecycle()
-                val lastSent by core.sender.lastSent.collectAsStateWithLifecycle()
-                val joinState by core.joinState.collectAsStateWithLifecycle()
-                MainScreen(
-                    status = status,
-                    deviceCount = devices.size,
-                    lastSent = lastSent,
-                    joinState = joinState,
-                    onJoin = { code -> core.startJoin(code) },
+                WeftApp(
+                    model = model,
                     onSendClipboard = { startActivity(ClipboardSendActivity.intent(this)) },
                     onAddTile = if (canAddTile) ::requestAddTile else null,
+                    // Asked once there is something to notify about, not on first launch.
+                    onPaired = ::requestNotificationPermission,
                 )
             }
         }
-        if (savedInstanceState == null) requestNotificationPermission()
     }
 
     override fun onStart() {

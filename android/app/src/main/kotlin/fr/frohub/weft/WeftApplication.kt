@@ -3,11 +3,15 @@ package fr.frohub.weft
 import android.app.Application
 import android.content.Context
 import fr.frohub.weft.core.WeftCore
+import fr.frohub.weft.ui.CoreModel
 import kotlinx.coroutines.launch
 
 class WeftApplication : Application() {
     /** Identity, state, relay connection and pairing, created on first use. */
     val core: WeftCore by lazy { WeftCore(this) }
+
+    /** What the screens use. */
+    val model: CoreModel by lazy { CoreModel(core) }
 
     private var senderOverride: ClipboardSender? = null
 

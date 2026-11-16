@@ -4,16 +4,23 @@
     <string name="share_label">Send with Weft</string>
     <string name="tile_label">Send clipboard</string>
 
-    <string name="status_not_paired">Not paired yet</string>
-    <string name="status_not_paired_detail">Join with the code shown by a computer</string>
     <string name="status_connected">Connected</string>
     <string name="status_connecting">Connecting…</string>
     <string name="status_reconnecting">Reconnecting…</string>
-    <string name="status_disconnected">Disconnected</string>
+    <string name="status_disconnected">Not connected</string>
     <plurals name="paired_devices">
         <item quantity="one">%d paired device</item>
         <item quantity="other">%d paired devices</item>
     </plurals>
+    <!-- %1$s: why the connection failed, from the problem_* strings. -->
+    <string name="status_retrying">%1$s · retrying</string>
+    <string name="problem_unreachable">Relay unreachable</string>
+    <string name="problem_timed_out">Relay not answering</string>
+    <string name="problem_wrong_relay_name">Relay name does not match</string>
+    <string name="problem_rejected">Relay refused this phone</string>
+    <string name="problem_insecure">Relay not encrypted</string>
+    <string name="problem_protocol">Unexpected answer from the relay</string>
+    <string name="problem_lost">Connection lost</string>
 
     <string name="action_send_clipboard">Send clipboard</string>
     <string name="last_sent_label">Last sent</string>
@@ -41,21 +48,100 @@
     <string name="toast_no_paired_device">No paired device</string>
     <string name="toast_too_large">Too long to send (256 KB at most)</string>
 
-    <!-- Temporary join field, until the QR scanner exists. -->
-    <string name="join_code_label">Pairing code (WEFT1:…)</string>
-    <string name="action_join">Join with a code…</string>
-    <string name="join_in_progress">Joining…</string>
-    <plurals name="join_joined">
-        <item quantity="one">Joined: %d device</item>
-        <item quantity="other">Joined: %d devices</item>
+    <!-- Main screen, not paired. -->
+    <string name="empty_title">Share your clipboard with your computers</string>
+    <string name="empty_body">Text you copy on this phone can be pasted on your computers, and the other way round. It is end-to-end encrypted: the relay in between never sees it.</string>
+    <string name="empty_steps_title">To pair</string>
+    <!-- %1$s: the command, set in monospace. -->
+    <string name="empty_step_run">On your computer, run %1$s</string>
+    <string name="empty_step_scan">Scan the code it shows with this phone</string>
+    <string name="command_weft_pair" translatable="false">weft pair</string>
+    <string name="action_pair">Pair with a computer</string>
+
+    <!-- Main screen, paired. -->
+    <string name="devices_title">Devices</string>
+    <string name="device_open">Show details</string>
+    <string name="more_options">More options</string>
+    <string name="action_leave">Unpair this phone</string>
+    <string name="leave_title">Unpair this phone?</string>
+    <plurals name="leave_body">
+        <item quantity="one">This phone leaves the group and forgets %d paired device. You can pair again at any time.</item>
+        <item quantity="other">This phone leaves the group and forgets %d paired devices. You can pair again at any time.</item>
     </plurals>
-    <string name="join_invalid_code">Not a valid pairing code</string>
-    <string name="join_own_code">This code comes from this device</string>
-    <string name="join_insecure_relay">This relay is not encrypted (ws://)</string>
-    <string name="join_connection_failed">Could not reach the relay</string>
-    <string name="join_timed_out">No answer from the other device</string>
-    <string name="join_refused">Refused by the relay: the code may have expired</string>
+    <string name="leave_offline_body">The relay can’t be reached, so the other devices can’t be told. Unpair anyway? They keep this phone in their list until you remove it there.</string>
+    <string name="leave_confirm">Unpair</string>
+    <string name="leave_confirm_offline">Unpair anyway</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="group_change_busy">A pairing is in progress. Try again when it is done.</string>
+
+    <!-- Device details. -->
+    <string name="device_name">Name</string>
+    <string name="device_no_name">No name</string>
+    <string name="device_id">Device ID</string>
+    <string name="device_added">Added</string>
+    <string name="device_remove_hint">Removing it stops it sending to or receiving from this phone and the rest of the group.</string>
+    <string name="action_remove">Remove from group</string>
+    <!-- %1$s: the device name or short id. -->
+    <string name="remove_title">Remove %1$s?</string>
+    <string name="remove_body">It stops receiving your clipboard. To use it with Weft again, pair it again.</string>
+    <string name="remove_offline_body">The relay can’t be reached, so nothing was removed. Check the connection and try again.</string>
+    <string name="remove_confirm">Remove</string>
+    <string name="action_try_again">Try again</string>
+    <string name="navigate_back">Back</string>
+    <string name="working">Working…</string>
+
+    <!-- Pairing. -->
+    <string name="pair_title">Pair with a computer</string>
+    <!-- %1$s: the command, set in monospace. -->
+    <string name="scan_hint">Point the camera at the code shown by %1$s</string>
+    <string name="scan_viewfinder">Camera viewfinder</string>
+    <string name="camera_rationale">Weft uses the camera only to read the pairing code. Nothing is recorded.</string>
+    <string name="action_allow_camera">Allow camera</string>
+    <string name="camera_denied">Camera access is off. Turn it on in Settings, or paste the code below.</string>
+    <string name="action_open_settings">Open Settings</string>
+    <string name="camera_unavailable">The camera can’t be used. Paste the code below instead.</string>
+    <string name="paste_title">Or paste the code</string>
+    <string name="code_label">Pairing code</string>
+    <string name="code_placeholder" translatable="false">WEFT1:…</string>
+    <string name="action_paste">Paste from clipboard</string>
+    <string name="paste_nothing">No text on the clipboard</string>
+    <string name="computer_name_label">Computer name (optional)</string>
+    <string name="computer_name_hint">Shown in your list of devices</string>
+    <string name="action_join">Pair</string>
+    <string name="joining_title">Pairing…</string>
+    <string name="joining_body">Waiting for your computer to confirm. Keep %1$s running.</string>
+
+    <!-- Pairing errors: a title, then what to do. -->
+    <string name="join_invalid_code">Not a Weft pairing code</string>
+    <string name="join_invalid_code_body">Check that the whole code was copied, starting with WEFT1:</string>
+    <string name="join_own_code">This code comes from this phone</string>
+    <string name="join_own_code_body">Scan the code shown on your computer.</string>
+    <string name="join_insecure_relay">This relay is not encrypted</string>
+    <string name="join_insecure_relay_body">The code points to a ws:// relay, which only debug builds accept. Use a wss:// relay.</string>
+    <string name="join_unreachable">Can’t reach the relay</string>
+    <string name="join_unreachable_body">Check this phone’s internet connection, then try again.</string>
+    <string name="join_relay_timed_out">The relay is not answering</string>
+    <string name="join_relay_timed_out_body">It may be down or slow. Try again in a moment.</string>
+    <string name="join_wrong_relay_name">Wrong relay name</string>
+    <string name="join_wrong_relay_name_body">The relay announced another name than the one in the code, so this phone did not trust it. Check the relay address weft pair uses.</string>
+    <string name="join_rejected">The relay refused this phone</string>
+    <string name="join_rejected_body">Try again. If it keeps happening, the relay may not accept new devices.</string>
+    <string name="join_protocol">Unexpected answer from the relay</string>
+    <string name="join_protocol_body">The relay may run another version of Weft.</string>
+    <string name="join_lost">The connection dropped</string>
+    <string name="join_lost_body">Check the connection, then try again.</string>
+    <string name="join_timed_out">No answer from the computer</string>
+    <string name="join_timed_out_body">Make sure weft pair is still running on the computer, then try again.</string>
+    <string name="join_expired">This code has expired</string>
+    <string name="join_expired_body">A code works once, for 5 minutes. Run weft pair again for a new one.</string>
+    <string name="join_not_allowed">Pairing not allowed</string>
+    <string name="join_not_allowed_body">The relay did not allow this pairing. Show a new code and try again.</string>
+    <string name="join_rate_limited">Too many attempts</string>
+    <string name="join_rate_limited_body">Wait a minute, then try again.</string>
+    <string name="join_group_full">This group is full</string>
+    <string name="join_group_full_body">A group holds 10 devices at most. Remove one from it first.</string>
     <string name="join_busy">A pairing is already running</string>
+    <string name="join_busy_body">Wait for it to finish, then try again.</string>
 
     <string name="notification_channel">Connection</string>
     <string name="notification_connected">Connected</string>

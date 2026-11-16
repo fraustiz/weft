@@ -7,6 +7,12 @@
     <!-- One of the prerequisites Android 14 requires for a connectedDevice service. -->
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Only to read the pairing QR code; pasting the code works without it. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <uses-feature
+        android:name="android.hardware.camera.any"
+        android:required="false" />
 
     <!-- No backups or device transfers: device keys will live in this app. -->
     <application
