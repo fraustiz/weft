@@ -1,11 +1,19 @@
-//! Weft relay, protocol v1 (`docs/protocol.md`, section 4).
+//! Weft relay, protocol v1 (`docs/protocol.md`, sections 4 and 5).
 //!
 //! The relay authenticates each device with a signed challenge, then forwards
-//! envelopes to their recipient when it is connected. It reads the clear
-//! envelope header to route messages and never decrypts anything.
+//! envelopes between devices of the same group when the recipient is
+//! connected. It reads the clear envelope header to route messages and never
+//! decrypts anything. Groups are built by pairing, through control frames.
+
+mod dispatch;
+mod groups;
+mod pairing;
+mod store;
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::io;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -19,9 +27,15 @@ use axum::routing::get;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use weft_protocol::{
-    AUTH_ACCEPTED, AuthResponse, Challenge, HEADER_LEN, Header, MAX_CLIPBOARD_TEXT_LEN, NONCE_LEN,
-    TAG_LEN, verify_auth,
+    AUTH_ACCEPTED, AuthResponse, Challenge, ControlFrame, HEADER_LEN, MAX_CLIPBOARD_TEXT_LEN,
+    NONCE_LEN, TAG_LEN, verify_auth,
 };
+
+use crate::dispatch::RateLimits;
+
+use crate::groups::Groups;
+use crate::pairing::Pairing;
+use crate::store::Store;
 
 /// Smallest valid envelope: header, nonce and tag (empty plaintext).
 pub const MIN_ENVELOPE_LEN: usize = HEADER_LEN + NONCE_LEN + TAG_LEN;
@@ -29,10 +43,44 @@ pub const MIN_ENVELOPE_LEN: usize = HEADER_LEN + NONCE_LEN + TAG_LEN;
 pub const MAX_ENVELOPE_LEN: usize = HEADER_LEN + NONCE_LEN + MAX_CLIPBOARD_TEXT_LEN + TAG_LEN;
 /// How long a device has to answer the challenge.
 pub const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
-/// Envelopes queued for one device before new ones are dropped.
+/// How long a pairing slot stays open, and how long the slot owner then has
+/// to confirm the device that asked to join.
+pub const PAIRING_TTL: Duration = Duration::from_secs(5 * 60);
+/// Pairing slots one connection may open per minute.
+pub const PAIR_OPEN_PER_MINUTE: usize = 10;
+/// Pair requests one connection may send per minute.
+pub const PAIR_REQUEST_PER_MINUTE: usize = 20;
+const RATE_WINDOW: Duration = Duration::from_secs(60);
+/// Frames queued for one device before new ones are dropped.
 const OUTBOX_CAPACITY: usize = 64;
 
-type DeviceId = [u8; 16];
+pub(crate) type DeviceId = [u8; 16];
+
+/// What the relay needs to start.
+#[derive(Debug, Clone)]
+pub struct Config {
+    /// The name devices sign in their authentication response; at most 255
+    /// bytes of UTF-8.
+    pub relay_name: String,
+    /// SQLite database holding the groups. `:memory:` keeps them in memory.
+    pub db_path: PathBuf,
+    /// How long a pairing slot stays open.
+    pub pairing_slot_ttl: Duration,
+    /// How long a slot owner has to confirm a device that asked to join.
+    pub pending_join_ttl: Duration,
+}
+
+impl Config {
+    /// A configuration with the durations of the protocol.
+    pub fn new(relay_name: impl Into<String>, db_path: impl Into<PathBuf>) -> Config {
+        Config {
+            relay_name: relay_name.into(),
+            db_path: db_path.into(),
+            pairing_slot_ttl: PAIRING_TTL,
+            pending_join_ttl: PAIRING_TTL,
+        }
+    }
+}
 
 /// A live, authenticated connection. Dropping `outbox` closes it.
 struct Peer {
@@ -40,29 +88,57 @@ struct Peer {
     outbox: mpsc::Sender<Bytes>,
 }
 
+/// Everything connections share. One lock keeps routing, groups and pairing
+/// consistent with each other; it is never held across an `await`.
+struct Shared {
+    peers: HashMap<DeviceId, Peer>,
+    groups: Groups,
+    pairing: Pairing,
+}
+
 struct Relay {
     name: String,
-    peers: Mutex<HashMap<DeviceId, Peer>>,
+    state: Mutex<Shared>,
     next_conn_id: AtomicU64,
 }
 
 /// Serves the relay on `listener` until the process stops.
-///
-/// `relay_name` is the name devices sign in their authentication response;
-/// it must be at most 255 bytes of UTF-8.
-pub async fn serve(listener: TcpListener, relay_name: String) -> io::Result<()> {
-    Challenge::new(relay_name.as_str(), [0; 32])
+pub async fn serve(listener: TcpListener, config: Config) -> io::Result<()> {
+    serve_with_shutdown(listener, config, std::future::pending()).await
+}
+
+/// Serves the relay on `listener` until `shutdown` completes, then closes
+/// the connections of the authenticated devices and returns.
+pub async fn serve_with_shutdown(
+    listener: TcpListener,
+    config: Config,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> io::Result<()> {
+    Challenge::new(config.relay_name.as_str(), [0; 32])
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let groups = Store::open(&config.db_path)
+        .and_then(Groups::load)
+        .map_err(io::Error::other)?;
     let relay = Arc::new(Relay {
-        name: relay_name,
-        peers: Mutex::new(HashMap::new()),
+        name: config.relay_name,
+        state: Mutex::new(Shared {
+            peers: HashMap::new(),
+            groups,
+            pairing: Pairing::new(config.pairing_slot_ttl, config.pending_join_ttl),
+        }),
         next_conn_id: AtomicU64::new(1),
     });
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/v1", get(upgrade))
-        .with_state(relay);
-    axum::serve(listener, app).await
+        .with_state(relay.clone());
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown.await;
+            // Dropping the senders closes every authenticated connection.
+            relay.state.lock().unwrap().peers.clear();
+        })
+        .await
 }
 
 async fn upgrade(ws: WebSocketUpgrade, State(relay): State<Arc<Relay>>) -> Response {
@@ -81,9 +157,10 @@ async fn handle(mut socket: WebSocket, relay: Arc<Relay>) {
     let (outbox, mut inbox) = mpsc::channel(OUTBOX_CAPACITY);
     // Replacing the entry drops the older connection's sender, which closes it.
     relay
-        .peers
+        .state
         .lock()
         .unwrap()
+        .peers
         .insert(device_id, Peer { conn_id, outbox });
     tracing::info!(device = %short_id(&device_id), "device connected");
     // Accept only once registered, so the device is reachable as soon as it
@@ -93,29 +170,38 @@ async fn handle(mut socket: WebSocket, relay: Arc<Relay>) {
         relay_frames(&mut socket, &relay, &device_id, &mut inbox).await;
     }
 
-    let mut peers = relay.peers.lock().unwrap();
-    if peers
+    let mut state = relay.state.lock().unwrap();
+    if state
+        .peers
         .get(&device_id)
         .is_some_and(|peer| peer.conn_id == conn_id)
     {
-        peers.remove(&device_id);
+        state.peers.remove(&device_id);
     }
-    drop(peers);
+    drop(state);
     tracing::info!(device = %short_id(&device_id), "device disconnected");
 }
 
-/// Forwards the device's envelopes and delivers the ones addressed to it,
-/// until either side closes or a newer connection replaces this one.
+/// Handles the device's frames and delivers the ones addressed to it, until
+/// either side closes or a newer connection replaces this one.
 async fn relay_frames(
     socket: &mut WebSocket,
     relay: &Relay,
     device_id: &DeviceId,
     inbox: &mut mpsc::Receiver<Bytes>,
 ) {
+    let mut limits = RateLimits::new();
     loop {
         tokio::select! {
             incoming = socket.recv() => match incoming {
-                Some(Ok(Message::Binary(frame))) => relay.forward(device_id, frame),
+                Some(Ok(Message::Binary(frame))) => {
+                    if let Some(error) = relay.dispatch(device_id, frame, &mut limits) {
+                        let reply = ControlFrame::Error(error).encode();
+                        if socket.send(Message::Binary(reply.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                }
                 Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
                 Some(Ok(Message::Text(_))) => {
                     let _ = socket.send(Message::Close(None)).await;
@@ -174,41 +260,7 @@ async fn authenticate(socket: &mut WebSocket, relay_name: &str) -> Option<Device
     Some(device_id)
 }
 
-impl Relay {
-    /// Routes one envelope from an authenticated device. Invalid frames and
-    /// frames for offline recipients are dropped.
-    fn forward(&self, sender: &DeviceId, frame: Bytes) {
-        let from = short_id(sender);
-        if frame.len() < MIN_ENVELOPE_LEN {
-            tracing::debug!(%from, len = frame.len(), "dropped frame: too short");
-            return;
-        }
-        let header = match Header::decode(&frame[..HEADER_LEN]) {
-            Ok(header) => header,
-            Err(err) => {
-                tracing::debug!(%from, %err, "dropped frame: invalid header");
-                return;
-            }
-        };
-        if header.sender != *sender {
-            tracing::debug!(%from, "dropped frame: sender is not the authenticated device");
-            return;
-        }
-        let to = short_id(&header.recipient);
-        let outbox = match self.peers.lock().unwrap().get(&header.recipient) {
-            Some(peer) => peer.outbox.clone(),
-            None => {
-                tracing::debug!(%from, %to, "dropped frame: recipient not connected");
-                return;
-            }
-        };
-        if outbox.try_send(frame).is_err() {
-            tracing::debug!(%from, %to, "dropped frame: recipient queue full");
-        }
-    }
-}
-
 /// First 4 bytes of a device id in hex, for logs.
-fn short_id(device_id: &DeviceId) -> String {
+pub(crate) fn short_id(device_id: &DeviceId) -> String {
     device_id[..4].iter().map(|b| format!("{b:02x}")).collect()
 }

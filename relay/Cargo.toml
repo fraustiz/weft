@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 axum = { version = "0.8.9", features = ["ws"] }
 getrandom = "0.4.3"
+rusqlite = { version = "0.43.0", features = ["bundled"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

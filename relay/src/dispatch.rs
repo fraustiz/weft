@@ -1,0 +1,242 @@
+//! What the relay does with each frame of an authenticated device: forward
+//! an envelope, or act on a control frame.
+
+use std::collections::VecDeque;
+use std::time::Instant;
+
+use axum::body::Bytes;
+use weft_protocol::{
+    ControlError, ControlFrame, FrameType, HEADER_LEN, Header, PairRequest, classify,
+    device_id_from_sign_pk,
+};
+
+use crate::{
+    DeviceId, MIN_ENVELOPE_LEN, PAIR_OPEN_PER_MINUTE, PAIR_REQUEST_PER_MINUTE, RATE_WINDOW, Relay,
+    short_id,
+};
+
+/// Pairing quotas of one connection.
+pub(crate) struct RateLimits {
+    pair_open: RateLimit,
+    pair_request: RateLimit,
+}
+
+impl RateLimits {
+    pub(crate) fn new() -> RateLimits {
+        RateLimits {
+            pair_open: RateLimit::new(PAIR_OPEN_PER_MINUTE),
+            pair_request: RateLimit::new(PAIR_REQUEST_PER_MINUTE),
+        }
+    }
+}
+
+/// Allows `max` events per sliding [`RATE_WINDOW`].
+struct RateLimit {
+    max: usize,
+    allowed: VecDeque<Instant>,
+}
+
+impl RateLimit {
+    fn new(max: usize) -> RateLimit {
+        RateLimit {
+            max,
+            allowed: VecDeque::with_capacity(max),
+        }
+    }
+
+    fn allow(&mut self, now: Instant) -> bool {
+        while self
+            .allowed
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= RATE_WINDOW)
+        {
+            self.allowed.pop_front();
+        }
+        if self.allowed.len() >= self.max {
+            return false;
+        }
+        self.allowed.push_back(now);
+        true
+    }
+}
+
+impl Relay {
+    /// Handles one frame from an authenticated device. Returns the error to
+    /// answer with, if any. Frames that are neither an envelope nor a valid
+    /// control frame are dropped.
+    pub(crate) fn dispatch(
+        &self,
+        sender: &DeviceId,
+        frame: Bytes,
+        limits: &mut RateLimits,
+    ) -> Option<ControlError> {
+        let from = short_id(sender);
+        match classify(&frame) {
+            FrameType::Envelope => {
+                self.forward(sender, frame);
+                None
+            }
+            FrameType::Control => match ControlFrame::decode(&frame) {
+                Ok(control) => self.control(sender, control, frame, limits),
+                Err(err) => {
+                    tracing::debug!(%from, %err, "dropped frame: invalid control frame");
+                    None
+                }
+            },
+            FrameType::Unknown => {
+                tracing::debug!(%from, len = frame.len(), "dropped frame: unknown type");
+                None
+            }
+        }
+    }
+
+    /// Routes one envelope. Invalid frames, frames for a device outside the
+    /// sender's group and frames for offline recipients are dropped.
+    fn forward(&self, sender: &DeviceId, frame: Bytes) {
+        let from = short_id(sender);
+        if frame.len() < MIN_ENVELOPE_LEN {
+            tracing::debug!(%from, len = frame.len(), "dropped frame: too short");
+            return;
+        }
+        let header = match Header::decode(&frame[..HEADER_LEN]) {
+            Ok(header) => header,
+            Err(err) => {
+                tracing::debug!(%from, %err, "dropped frame: invalid header");
+                return;
+            }
+        };
+        if header.sender != *sender {
+            tracing::debug!(%from, "dropped frame: sender is not the authenticated device");
+            return;
+        }
+        let to = short_id(&header.recipient);
+        let outbox = {
+            let state = self.state.lock().unwrap();
+            if !state.groups.same_group(sender, &header.recipient) {
+                tracing::debug!(%from, %to, "dropped frame: not in the same group");
+                return;
+            }
+            match state.peers.get(&header.recipient) {
+                Some(peer) => peer.outbox.clone(),
+                None => {
+                    tracing::debug!(%from, %to, "dropped frame: recipient not connected");
+                    return;
+                }
+            }
+        };
+        if outbox.try_send(frame).is_err() {
+            tracing::debug!(%from, %to, "dropped frame: recipient queue full");
+        }
+    }
+
+    /// Acts on a control frame; `frame` is its encoded form, as received.
+    fn control(
+        &self,
+        sender: &DeviceId,
+        control: ControlFrame,
+        frame: Bytes,
+        limits: &mut RateLimits,
+    ) -> Option<ControlError> {
+        let now = Instant::now();
+        let result = match control {
+            ControlFrame::PairOpen { pairing_id } => {
+                if !limits.pair_open.allow(now) {
+                    return Some(ControlError::RateLimited);
+                }
+                self.pair_open(sender, pairing_id, now)
+            }
+            ControlFrame::PairRequest(request) => {
+                if !limits.pair_request.allow(now) {
+                    return Some(ControlError::RateLimited);
+                }
+                self.pair_request(sender, &request, frame, now)
+            }
+            ControlFrame::GroupAdd { device_id } => self.group_add(sender, &device_id, now),
+            ControlFrame::GroupRemove { device_id } => self.group_remove(sender, &device_id),
+            ControlFrame::Error(_) => {
+                tracing::debug!(from = %short_id(sender), "dropped frame: error frame from a device");
+                Ok(())
+            }
+        };
+        result.err()
+    }
+
+    fn pair_open(
+        &self,
+        owner: &DeviceId,
+        pairing_id: [u8; 16],
+        now: Instant,
+    ) -> Result<(), ControlError> {
+        let mut state = self.state.lock().unwrap();
+        if !state.pairing.open(owner, pairing_id, now) {
+            // The id is the open slot of another device: leave that slot alone.
+            return Err(ControlError::NotAllowed);
+        }
+        tracing::debug!(device = %short_id(owner), "pairing slot opened");
+        Ok(())
+    }
+
+    /// Forwards the request, unchanged, to the owner of the slot it names.
+    /// The relay cannot check the MAC: the slot owner does.
+    fn pair_request(
+        &self,
+        joiner: &DeviceId,
+        request: &PairRequest,
+        frame: Bytes,
+        now: Instant,
+    ) -> Result<(), ControlError> {
+        if device_id_from_sign_pk(&request.sign_pk) != *joiner {
+            return Err(ControlError::NotAllowed);
+        }
+        let mut state = self.state.lock().unwrap();
+        let owner = state
+            .pairing
+            .slot_owner(&request.pairing_id, now)
+            .ok_or(ControlError::UnknownPairing)?;
+        if owner == *joiner {
+            return Err(ControlError::NotAllowed);
+        }
+        // If the owner cannot be reached the slot stays open, so the request
+        // can be sent again once the owner is back.
+        let delivered = state
+            .peers
+            .get(&owner)
+            .is_some_and(|peer| peer.outbox.try_send(frame).is_ok());
+        if !delivered {
+            return Err(ControlError::UnknownPairing);
+        }
+        state.pairing.close(&request.pairing_id, joiner, now);
+        tracing::debug!(owner = %short_id(&owner), joiner = %short_id(joiner), "pair request forwarded");
+        Ok(())
+    }
+
+    fn group_add(
+        &self,
+        owner: &DeviceId,
+        joiner: &DeviceId,
+        now: Instant,
+    ) -> Result<(), ControlError> {
+        let mut state = self.state.lock().unwrap();
+        if !state.pairing.has_pending_join(owner, joiner, now) {
+            return Err(ControlError::NotAllowed);
+        }
+        match state.groups.add(owner, joiner) {
+            Ok(true) => state.pairing.consume_pending_join(owner, joiner),
+            // The pending join is kept: the owner may make room and retry.
+            Ok(false) => return Err(ControlError::GroupFull),
+            Err(err) => tracing::error!(%err, "group change not saved, ignored"),
+        }
+        Ok(())
+    }
+
+    fn group_remove(&self, sender: &DeviceId, target: &DeviceId) -> Result<(), ControlError> {
+        let mut state = self.state.lock().unwrap();
+        if target != sender && !state.groups.same_group(sender, target) {
+            return Err(ControlError::NotAllowed);
+        }
+        if let Err(err) = state.groups.remove(target) {
+            tracing::error!(%err, "group change not saved, ignored");
+        }
+        Ok(())
+    }
+}
