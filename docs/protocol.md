@@ -54,6 +54,7 @@ Header layout:
 | `0x03` | Welcome (section 5) | `count (1 byte, 0 to 8 inclusive) || count × (sign_pk 32 || kx_pk 32)`, exact length |
 | `0x04` | Device added (section 5) | `sign_pk (32) || kx_pk (32)` |
 | `0x05` | Device removed (section 5) | `device_id (16)` |
+| `0x06` | Device name (section 5) | the sender's own name, UTF-8, 1 to 64 bytes, without control characters (U+0000–U+001F, U+007F–U+009F) |
 
 Other values are reserved. A recipient drops a message with an unknown `version` or `kind`.
 
@@ -119,6 +120,7 @@ The relay accepts `0xB2` only for a device that sent a matching `0xB1` to this s
 3. A checks that the request's `pairing_id` is the one of the code it is showing, then checks the MAC (constant-time). If either is wrong, A ignores the request. Otherwise A adds B to its trusted list and sends `0xB2`.
 4. A sends B a **Welcome** envelope (`0x03`) listing the other members (not A, not B), and sends each other member a **Device added** envelope (`0x04`) with B's keys. Each recipient adds the keys to its trusted list.
 5. Removing a device: any member sends `0xB3` to the relay and a **Device removed** envelope (`0x05`) to the remaining members, which drop that device from their list.
+6. **Device names**: a device has a name its owner chose (for example « Pixel 8 », « MacBook Air »). Whenever a device starts trusting another one — it receives a Welcome, accepts a join, or receives a Device added — it sends that device a **Device name** envelope (`0x06`) with its own name. When its name changes, it sends the new name to every trusted device. A receiver stores the name next to the sender's keys and shows it; it never changes trust. The name travels end-to-end encrypted, so the relay never sees it.
 
 Offline delivery comes in a later revision of this document.
 
@@ -131,6 +133,7 @@ Offline delivery comes in a later revision of this document.
 - the authentication signature;
 - a pairing code, a pairing request MAC and the control frames;
 - a third device C and the three group envelopes (welcome, device added, device removed), in the `pairing` section.
+- a Device name envelope from B to A, in the `device_name` section.
 
 Keys are derived from fixed seeds:
 - signing pair: `crypto_sign_seed_keypair` (32-byte seed) ;
