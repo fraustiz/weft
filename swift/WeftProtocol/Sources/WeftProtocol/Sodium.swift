@@ -153,4 +153,69 @@ enum Sodium {
         guard rc == 0 else { return nil }
         return Array(plaintext.prefix(Int(plaintextLength)))
     }
+
+    /// `crypto_generichash` (BLAKE2b) with a 32-byte key, 32-byte output.
+    static func genericHash32Keyed(_ input: [UInt8], key: [UInt8]) -> [UInt8] {
+        ensureInitialised()
+        precondition(key.count == 32)
+        var out = [UInt8](repeating: 0, count: 32)
+        let rc = crypto_generichash(&out, 32, input, UInt64(input.count), key, 32)
+        precondition(rc == 0, "crypto_generichash failed")
+        return out
+    }
+
+    /// `sodium_memcmp`: constant-time equality of two buffers of the same
+    /// size. Buffers of different sizes are unequal (the size is not secret).
+    static func memcmp(_ a: [UInt8], _ b: [UInt8]) -> Bool {
+        ensureInitialised()
+        guard a.count == b.count else { return false }
+        guard !a.isEmpty else { return true }
+        return sodium_memcmp(a, b, a.count) == 0
+    }
+
+    private static let base64Variant = Int32(sodium_base64_VARIANT_URLSAFE_NO_PADDING)
+
+    /// `sodium_bin2base64`, URL-safe alphabet, no padding.
+    static func base64URLEncode(_ bin: [UInt8]) -> String {
+        ensureInitialised()
+        // libsodium encodes nothing as nothing; this also keeps the input
+        // pointer below non-null.
+        guard !bin.isEmpty else { return "" }
+        // The returned length includes the trailing NUL byte.
+        let maxLength = sodium_base64_encoded_len(bin.count, base64Variant)
+        var out = [CChar](repeating: 0, count: maxLength)
+        let result = sodium_bin2base64(&out, maxLength, bin, bin.count, base64Variant)
+        precondition(result != nil, "sodium_bin2base64 failed")
+        let ascii = out.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return String(decoding: ascii, as: UTF8.self)
+    }
+
+    /// `sodium_base642bin`, URL-safe alphabet, no padding. `nil` if the input
+    /// has any other byte (padding and whitespace included), a length that
+    /// cannot be produced by the encoder, or non-zero trailing bits.
+    static func base64URLDecode(_ b64: [UInt8]) -> [UInt8]? {
+        ensureInitialised()
+        // libsodium decodes nothing as nothing; this also keeps the input
+        // pointer below non-null.
+        guard !b64.isEmpty else { return [] }
+        // Larger than any decoding of b64.count characters, and never empty.
+        var out = [UInt8](repeating: 0, count: b64.count / 4 * 3 + 3)
+        var outLength = 0
+        let outCapacity = out.count
+        // With no `ignore` set and no `b64_end` pointer, libsodium fails
+        // unless the whole input is valid.
+        let rc = b64.withUnsafeBytes { raw -> Int32 in
+            let input = raw.bindMemory(to: CChar.self)
+            return sodium_base642bin(
+                &out, outCapacity, input.baseAddress, input.count,
+                nil, &outLength, nil, base64Variant)
+        }
+        guard rc == 0 else {
+            memzero(&out)
+            return nil
+        }
+        let decoded = Array(out.prefix(outLength))
+        memzero(&out)
+        return decoded
+    }
 }

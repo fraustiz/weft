@@ -1,8 +1,9 @@
 // Weft wire protocol, version 1.
 //
 // Implements docs/protocol.md: device identities, session keys between two
-// devices, the encrypted message envelope and the relay authentication
-// frames. Mirrors the Rust reference (crates/weft-protocol) and must produce
+// devices, the encrypted message envelope, the relay authentication
+// frames, the group change and device name plaintexts (Groups.swift) and
+// pairing (Pairing.swift). Mirrors the Rust reference (crates/weft-protocol) and must produce
 // byte-identical output (see crates/weft-protocol/vectors/v1.json).
 
 import Foundation
@@ -23,6 +24,15 @@ public enum Weft {
     public static let deviceIDLength = 16
     /// Size of a message id.
     public static let messageIDLength = 16
+    /// Largest number of devices in one group.
+    public static let maxGroupSize = 10
+    /// Largest number of devices a Welcome plaintext can list: the group
+    /// without its sender and its recipient.
+    public static let maxWelcomeDevices = maxGroupSize - 2
+    /// Size of one `sign_pk || kx_pk` entry in a group change plaintext.
+    public static let peerKeysLength = Sodium.signPublicKeyBytes + Sodium.kxPublicKeyBytes
+    /// Largest device name, in bytes of UTF-8.
+    public static let maxDeviceNameLength = 64
 
     /// First byte of the relay challenge frame.
     public static let authChallenge: UInt8 = 0xA0
@@ -54,12 +64,32 @@ public enum WeftError: Error, Equatable, Sendable {
     case malformedAuthFrame
     case relayNameTooLong
     case invalidSignature
+    /// The plaintext length is not valid for its kind (group change
+    /// plaintexts have exact lengths).
+    case invalidPlaintextLength(Int)
+    /// A Welcome plaintext lists more than `Weft.maxWelcomeDevices` devices.
+    case tooManyDevices(Int)
+    case malformedPairingCode
+    /// The relay url of a pairing code must be 1 to 255 bytes of UTF-8.
+    case relayURLLength(Int)
+    case malformedControlFrame
+    /// A reserved byte of the control range (`0xB4`–`0xBD`, `0xBF`).
+    case unknownControlFrame(UInt8)
+    case unknownControlError(UInt8)
+    /// The relay name in the challenge is not the host the client connected to.
+    case relayNameMismatch
+    /// A device name must be 1 to `Weft.maxDeviceNameLength` bytes of UTF-8;
+    /// the value is its size in bytes.
+    case deviceNameLength(Int)
+    /// A device name contains a control character (U+0000–U+001F,
+    /// U+007F–U+009F).
+    case deviceNameControlCharacter
 }
 
 // MARK: - Helpers
 
 /// Copies `data` into a zero-based byte array, checking its size.
-private func fixed(_ data: Data, _ count: Int, _ field: String) throws(WeftError) -> [UInt8] {
+func fixed(_ data: Data, _ count: Int, _ field: String) throws(WeftError) -> [UInt8] {
     guard data.count == count else {
         throw .invalidLength(field: field, expected: count, actual: data.count)
     }
@@ -68,7 +98,7 @@ private func fixed(_ data: Data, _ count: Int, _ field: String) throws(WeftError
 
 /// Strict UTF-8 validation: decoding with repair and re-encoding gives the
 /// same bytes back only when the input was well-formed UTF-8.
-private func isValidUTF8<C: Collection>(_ bytes: C) -> Bool where C.Element == UInt8 {
+func isValidUTF8<C: Collection>(_ bytes: C) -> Bool where C.Element == UInt8 {
     let decoded = String(decoding: bytes, as: UTF8.self)
     return decoded.utf8.elementsEqual(bytes)
 }
@@ -193,24 +223,61 @@ public enum Kind: UInt8, Sendable {
     case clipboardText = 0x01
     /// Empty plaintext.
     case ping = 0x02
+    /// The other members of the group a device just joined; see
+    /// `encodeWelcome(_:)`.
+    case welcome = 0x03
+    /// Keys of a device that joined the group; see `encodeDeviceAdded(_:)`.
+    case deviceAdded = 0x04
+    /// Id of a device that left the group; see `encodeDeviceRemoved(_:)`.
+    case deviceRemoved = 0x05
+    /// The sender's own name; see `encodeDeviceName(_:)`.
+    case deviceName = 0x06
 
     /// Largest plaintext allowed for this kind.
     var maxPlaintextLength: Int {
         switch self {
         case .clipboardText: Weft.maxClipboardTextLength
         case .ping: 0
+        case .welcome: 1 + Weft.maxWelcomeDevices * Weft.peerKeysLength
+        case .deviceAdded: Weft.peerKeysLength
+        case .deviceRemoved: Weft.deviceIDLength
+        case .deviceName: Weft.maxDeviceNameLength
         }
     }
 
+    /// Checks everything that can be known from the plaintext length alone,
+    /// so `open` can reject a frame before decrypting it.
+    func checkPlaintextLength(_ length: Int) throws(WeftError) {
+        if self == .deviceName {
+            try checkDeviceNameLength(length)
+            return
+        }
+        if length > maxPlaintextLength {
+            throw self == .ping ? .pingNotEmpty : .plaintextTooLarge(length)
+        }
+        let valid: Bool
+        switch self {
+        case .clipboardText, .ping: valid = true
+        case .welcome: valid = length % Weft.peerKeysLength == 1
+        case .deviceAdded: valid = length == Weft.peerKeysLength
+        case .deviceRemoved: valid = length == Weft.deviceIDLength
+        case .deviceName: valid = true  // Checked above.
+        }
+        guard valid else { throw .invalidPlaintextLength(length) }
+    }
+
     func checkPlaintext(_ plaintext: [UInt8]) throws(WeftError) {
+        try checkPlaintextLength(plaintext.count)
         switch self {
         case .clipboardText:
-            guard plaintext.count <= Weft.maxClipboardTextLength else {
-                throw .plaintextTooLarge(plaintext.count)
-            }
             guard isValidUTF8(plaintext) else { throw .invalidUTF8 }
-        case .ping:
-            guard plaintext.isEmpty else { throw .pingNotEmpty }
+        case .welcome:
+            _ = try decodeWelcome(bytes: plaintext)
+        case .deviceName:
+            _ = try decodeDeviceName(bytes: plaintext)
+        // Fully checked by their length.
+        case .ping, .deviceAdded, .deviceRemoved:
+            break
         }
     }
 }
@@ -311,13 +378,7 @@ public func open(frame: Data, rx: Data) throws(WeftError) -> (Header, Data) {
     let nonce = Array(bytes[Weft.headerLength..<(Weft.headerLength + Weft.nonceLength)])
     let ciphertext = Array(bytes[(Weft.headerLength + Weft.nonceLength)...])
     let header = try Header(bytes: headerBytes)
-    let plaintextLength = ciphertext.count - Weft.tagLength
-    if plaintextLength > header.kind.maxPlaintextLength {
-        switch header.kind {
-        case .ping: throw .pingNotEmpty
-        case .clipboardText: throw .plaintextTooLarge(plaintextLength)
-        }
-    }
+    try header.kind.checkPlaintextLength(ciphertext.count - Weft.tagLength)
     guard let plaintext = Sodium.aeadDecrypt(
         ciphertext: ciphertext, additionalData: headerBytes, nonce: nonce, key: key)
     else {
@@ -403,6 +464,17 @@ public struct AuthResponse: Equatable, Sendable {
     }
 }
 
+/// Client side: checks that the relay name in the challenge is exactly the
+/// host the client connected to, before signing anything. `expectedHost` is
+/// the lowercased host without its port; stripping the port is the caller's
+/// job. The comparison is on the UTF-8 bytes, not on Swift's canonical
+/// string equivalence.
+public func checkRelayName(challenge: Challenge, expectedHost: String) throws(WeftError) {
+    guard challenge.relayName.utf8.elementsEqual(expectedHost.utf8) else {
+        throw .relayNameMismatch
+    }
+}
+
 /// Signs a relay challenge with the device's signing key.
 public func signAuth(identity: Identity, challenge: Challenge) -> AuthResponse {
     let signature = identity.sign(challenge.signedMessage)
@@ -420,4 +492,26 @@ public func verifyAuth(challenge: Challenge, response: AuthResponse) throws(Weft
         throw .invalidSignature
     }
     return Data(Sodium.genericHash16(publicKey))
+}
+
+// MARK: - Frame dispatch
+
+/// What a frame received after authentication is, from its first byte.
+public enum FrameType: Sendable {
+    /// `0x01`: a message envelope, see `open(frame:rx:)`.
+    case envelope
+    /// `0xB0`–`0xBF`: a control frame, see `ControlFrame(decoding:)`.
+    case control
+    /// Anything else, including an empty frame. To be dropped.
+    case unknown
+}
+
+/// Tells an envelope from a control frame by the first byte. This only
+/// dispatches: the frame still has to be decoded and checked.
+public func classify(_ frame: Data) -> FrameType {
+    switch frame.first {
+    case Weft.version?: .envelope
+    case (0xB0...0xBF)?: .control
+    default: .unknown
+    }
 }
