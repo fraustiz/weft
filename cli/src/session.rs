@@ -21,10 +21,10 @@ use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 use weft_protocol::{
     AUTH_ACCEPTED, Challenge, ControlError, ControlFrame, FrameType, HEADER_LEN, Header, Identity,
     Kind, MAX_CLIPBOARD_TEXT_LEN, MAX_GROUP_SIZE, MAX_RELAY_URL_LEN, PairRequest, PairingCode,
-    PeerKeys, VERSION, check_relay_name, classify, decode_device_added, decode_device_removed,
-    decode_welcome, device_id_from_sign_pk, encode_device_added, encode_device_removed,
-    encode_welcome, open, random_message_id, random_pairing_id, random_pairing_secret, seal,
-    session_keys, sign_auth, verify_pair_request,
+    PeerKeys, VERSION, check_relay_name, classify, decode_device_added, decode_device_name,
+    decode_device_removed, decode_welcome, device_id_from_sign_pk, encode_device_added,
+    encode_device_name, encode_device_removed, encode_welcome, open, random_message_id,
+    random_pairing_id, random_pairing_secret, seal, session_keys, sign_auth, verify_pair_request,
 };
 
 use crate::state::{ReplayError, State, StateDir, TrustedDevice};
@@ -39,6 +39,9 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const PAIRING_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// How long a joining device waits for the Welcome envelope.
 pub const JOIN_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long `weft pair` and `weft join` wait for the names of the devices
+/// they just started trusting before exiting.
+pub const NAME_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the relay has to answer a WebSocket ping.
 pub const SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Idle time after which `listen` checks the connection is still alive.
@@ -112,6 +115,8 @@ pub enum Event {
     DeviceAdded { by: [u8; 16], device: [u8; 16] },
     /// A trusted device announced a member left; it is no longer trusted.
     DeviceRemoved { by: [u8; 16], device: [u8; 16] },
+    /// A trusted device announced its name, now saved as its name.
+    DeviceName { from: [u8; 16], name: String },
     /// An error frame from the relay.
     RelayError(ControlError),
     /// A frame that was dropped, and why.
@@ -349,14 +354,81 @@ impl Session {
         Ok(devices.len())
     }
 
+    /// Sends this device's name (Device name envelope) to each of `devices`
+    /// that is trusted; the others are skipped. Does not wait for the relay.
+    async fn send_name(&mut self, devices: &[[u8; 16]]) -> Result<()> {
+        let plaintext = encode_device_name(self.state.name())?;
+        for device_id in devices {
+            if *device_id == self.device_id() {
+                continue;
+            }
+            let Some(device) = self.state.device(device_id).cloned() else {
+                continue;
+            };
+            self.send_envelope(&device, Kind::DeviceName, &plaintext)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Changes this device's name, saves it, then sends it to every trusted
+    /// device and waits until the relay has handled it. Returns how many
+    /// devices it was sent to. The name is saved even if sending fails.
+    pub async fn rename(&mut self, name: &str) -> Result<usize> {
+        let (result, state) = self.dir.update(|state| state.set_name(name))?;
+        self.state = state;
+        result?;
+        let devices: Vec<[u8; 16]> = self.state.devices.iter().map(|d| d.device_id()).collect();
+        self.send_name(&devices).await?;
+        self.settle().await?;
+        Ok(devices.len())
+    }
+
     /// Waits for the next frame and handles it. Returns `None` if `timeout`
     /// passes first; `None` as the timeout waits forever.
+    ///
+    /// When the event makes this device trust another one (Welcome, Device
+    /// added), it sends that device its name before returning.
     pub async fn next_event(&mut self, timeout: Option<Duration>) -> Result<Option<Event>> {
         let deadline = timeout.map(|timeout| Instant::now() + timeout);
-        match self.next_frame(deadline).await? {
-            Some(frame) => self.handle_frame(&frame).map(Some),
-            None => Ok(None),
+        let Some(frame) = self.next_frame(deadline).await? else {
+            return Ok(None);
+        };
+        let event = self.handle_frame(&frame)?;
+        match &event {
+            Event::Welcome { from, added } => {
+                let mut devices = vec![*from];
+                devices.extend(added);
+                self.send_name(&devices).await?;
+            }
+            Event::DeviceAdded { device, .. } => self.send_name(&[*device]).await?,
+            _ => {}
         }
+        Ok(Some(event))
+    }
+
+    /// Handles events until a Device name envelope has arrived from each of
+    /// `devices`, or `timeout` passes. Every event is passed to `on_event`.
+    /// Returns whether all the names arrived.
+    pub async fn wait_names(
+        &mut self,
+        devices: &[[u8; 16]],
+        timeout: Duration,
+        mut on_event: impl FnMut(&Event),
+    ) -> Result<bool> {
+        let deadline = Instant::now() + timeout;
+        let mut missing: Vec<[u8; 16]> = devices.to_vec();
+        while !missing.is_empty() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let Some(event) = self.next_event(Some(left)).await? else {
+                return Ok(false);
+            };
+            if let Event::DeviceName { from, .. } = &event {
+                missing.retain(|device| device != from);
+            }
+            on_event(&event);
+        }
+        Ok(true)
     }
 
     fn handle_frame(&mut self, frame: &[u8]) -> Result<Event> {
@@ -437,14 +509,14 @@ impl Session {
     }
 
     /// Waits for a valid pair request for `code`, then adds the device to
-    /// the group: trust, `0xB2`, Welcome to it and Device added to the other
-    /// members. Requests with another pairing id or a wrong MAC are ignored
-    /// (with a warning) and the wait goes on. Returns the new device's id.
+    /// the group: trust, `0xB2`, Welcome to it, Device added to the other
+    /// members and this device's name to it. Requests with another pairing
+    /// id or a wrong MAC are ignored (with a warning) and the wait goes on.
+    /// Returns the new device's id.
     pub async fn wait_pair_request(
         &mut self,
         code: &PairingCode,
         timeout: Duration,
-        name: Option<String>,
     ) -> Result<[u8; 16]> {
         let deadline = Instant::now() + timeout;
         let mut deferred = Vec::new();
@@ -452,7 +524,7 @@ impl Session {
             .wait_pair_request_until(code, deadline, &mut deferred)
             .await;
         self.requeue(deferred);
-        self.accept_join(result?, name).await
+        self.accept_join(result?).await
     }
 
     async fn wait_pair_request_until(
@@ -495,11 +567,7 @@ impl Session {
         }
     }
 
-    async fn accept_join(
-        &mut self,
-        request: PairRequest,
-        name: Option<String>,
-    ) -> Result<[u8; 16]> {
+    async fn accept_join(&mut self, request: PairRequest) -> Result<[u8; 16]> {
         let keys = PeerKeys {
             sign_pk: request.sign_pk,
             kx_pk: request.kx_pk,
@@ -513,7 +581,7 @@ impl Session {
                 .filter(|device| device.device_id() != joiner)
                 .cloned()
                 .collect();
-            state.trust(keys, name);
+            state.trust(keys);
             (others, was_trusted)
         })?;
         self.state = state;
@@ -538,21 +606,18 @@ impl Session {
             self.send_envelope(other, Kind::DeviceAdded, &encode_device_added(&keys))
                 .await?;
         }
+        self.send_name(&[joiner]).await?;
         self.settle().await?;
         Ok(joiner)
     }
 
     /// Joins the group of the device that showed `code`: sends the pair
     /// request, waits for its Welcome, then trusts it and the members it
-    /// lists. Devices trusted before (a previous group) are dropped, since
-    /// the relay takes this device out of its previous group. Nothing is
-    /// saved unless the Welcome arrives. Returns the trusted devices.
-    pub async fn join(
-        &mut self,
-        code: &PairingCode,
-        timeout: Duration,
-        name: Option<String>,
-    ) -> Result<Vec<[u8; 16]>> {
+    /// lists, and sends each of them this device's name. Devices trusted
+    /// before (a previous group) are dropped, since the relay takes this
+    /// device out of its previous group. Nothing is saved unless the Welcome
+    /// arrives. Returns the trusted devices.
+    pub async fn join(&mut self, code: &PairingCode, timeout: Duration) -> Result<Vec<[u8; 16]>> {
         if code.sign_pk == self.identity.sign_pk() {
             return Err(Error::OwnCode);
         }
@@ -584,10 +649,10 @@ impl Session {
         let own_sign_pk = self.identity.sign_pk();
         let (dropped, state) = self.dir.update(|state| {
             let before: Vec<TrustedDevice> = std::mem::take(&mut state.devices);
-            state.trust(owner, name);
+            state.trust(owner);
             for member in members {
                 if member.sign_pk != own_sign_pk {
-                    state.trust(member, None);
+                    state.trust(member);
                 }
             }
             // Checked in `wait_welcome`, under the same keys.
@@ -604,7 +669,10 @@ impl Session {
         for device in dropped {
             tracing::warn!(device = %short_id(&device), "no longer trusted: it belongs to the previous group");
         }
-        Ok(self.state.devices.iter().map(|d| d.device_id()).collect())
+        let trusted: Vec<[u8; 16]> = self.state.devices.iter().map(|d| d.device_id()).collect();
+        self.send_name(&trusted).await?;
+        self.settle().await?;
+        Ok(trusted)
     }
 
     async fn wait_welcome(
@@ -714,7 +782,7 @@ fn apply(
             let added = members
                 .into_iter()
                 .filter(|member| member.sign_pk != own_sign_pk)
-                .filter(|member| state.trust(*member, None))
+                .filter(|member| state.trust(*member))
                 .map(|member| member.device_id())
                 .collect();
             Event::Welcome {
@@ -727,7 +795,7 @@ fn apply(
                 return malformed;
             };
             if device.sign_pk != own_sign_pk {
-                state.trust(device, None);
+                state.trust(device);
             }
             Event::DeviceAdded {
                 by: sender,
@@ -740,6 +808,14 @@ fn apply(
             };
             state.untrust(&device);
             Event::DeviceRemoved { by: sender, device }
+        }
+        Kind::DeviceName => {
+            let Ok(name) = decode_device_name(&plaintext) else {
+                return malformed;
+            };
+            // `handle_envelope` only gets here for a trusted sender.
+            state.set_device_name(&sender, name.clone());
+            Event::DeviceName { from: sender, name }
         }
     }
 }

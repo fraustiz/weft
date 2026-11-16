@@ -151,5 +151,24 @@
         "frame": "010540bca4eaf9d2b097ff8dbaa4d61767ed0e934e02183f97e0cd83ad10d6c4be5a8182838485868788898a8b8c8d8e8f9000000000000000034142434445464748494a4b4c4d4e4f505152535455565758c36bc8e7ba0fe2bfda8b8e050da49b47606161a0313c307791ca6f34442c126e"
       }
     ]
+  },
+  "device_name": {
+    "name": "Téléphone de test",
+    "max_len": 64,
+    "envelope": {
+      "name": "device_name_b_to_a",
+      "sender": "b",
+      "recipient": "a",
+      "version": 1,
+      "kind": 6,
+      "message_id": "9192939495969798999a9b9c9d9e9fa0",
+      "counter": 2,
+      "nonce": "6162636465666768696a6b6c6d6e6f707172737475767778",
+      "key": "24114c87b65082754b076b30cc7bf379b03854cc428b621750d11ba838884524",
+      "plaintext_utf8": "Téléphone de test",
+      "plaintext": "54c3a96cc3a970686f6e652064652074657374",
+      "header": "01060e934e02183f97e0cd83ad10d6c4be5a40bca4eaf9d2b097ff8dbaa4d61767ed9192939495969798999a9b9c9d9e9fa00000000000000002",
+      "frame": "01060e934e02183f97e0cd83ad10d6c4be5a40bca4eaf9d2b097ff8dbaa4d61767ed9192939495969798999a9b9c9d9e9fa000000000000000026162636465666768696a6b6c6d6e6f707172737475767778b85f4d4592eeeca8e9af0b96e2fcaee43ddffedba320dc49e326268146571cd2ea5ab2"
+    }
   }
 }

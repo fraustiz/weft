@@ -30,20 +30,21 @@ async fn paired_devices_exchange_text_and_persist_counters() {
         a.send_text("second").await.unwrap();
         expect_text(&mut b, &a, "second").await;
 
-        // The Welcome took counter 1 from A to B.
+        // The Welcome and A's name took counters 1 and 2 from A to B, B's
+        // name counter 1 from B to A.
         let a_state = a_dev.load();
         let b_state = b_dev.load();
-        assert_eq!(a_state.peer(&b.device_id()).unwrap().send_counter, 3);
-        assert_eq!(b_state.peer(&a.device_id()).unwrap().recv_highest, 3);
-        assert_eq!(b_state.peer(&a.device_id()).unwrap().send_counter, 1);
-        assert_eq!(a_state.peer(&b.device_id()).unwrap().recv_highest, 1);
+        assert_eq!(a_state.peer(&b.device_id()).unwrap().send_counter, 4);
+        assert_eq!(b_state.peer(&a.device_id()).unwrap().recv_highest, 4);
+        assert_eq!(b_state.peer(&a.device_id()).unwrap().send_counter, 2);
+        assert_eq!(a_state.peer(&b.device_id()).unwrap().recv_highest, 2);
 
         // A fresh process reads the counters back and carries on from there.
         a.close().await;
         let mut a = a_dev.connect().await;
         a.send_text("after reload").await.unwrap();
         expect_text(&mut b, &a, "after reload").await;
-        assert_eq!(a_dev.load().peer(&b.device_id()).unwrap().send_counter, 4);
+        assert_eq!(a_dev.load().peer(&b.device_id()).unwrap().send_counter, 5);
     })
     .await;
 }
@@ -66,6 +67,10 @@ async fn third_device_is_announced_to_the_group() {
                 device: c.device_id(),
             }
         );
+        // C sent its name to every member once welcomed; B sent its name to
+        // C once told about it.
+        expect_name(&mut b, &c).await;
+        expect_name(&mut c, &b).await;
         assert_eq!(trusted(&b), sorted(vec![a.device_id(), c.device_id()]));
         assert_eq!(trusted(&c), sorted(vec![a.device_id(), b.device_id()]));
 
@@ -164,7 +169,7 @@ async fn pair_request_with_a_wrong_mac_is_ignored() {
                 .await
                 .unwrap();
             mallory.settle().await.unwrap();
-            let waited = a.wait_pair_request(&code, QUIET, None).await;
+            let waited = a.wait_pair_request(&code, QUIET).await;
             assert!(matches!(waited, Err(Error::Timeout(_))), "{waited:?}");
             // A reopened the slot the relay closed when forwarding the request.
             a.settle().await.unwrap();
@@ -173,10 +178,7 @@ async fn pair_request_with_a_wrong_mac_is_ignored() {
         }
 
         // The code still works for the device that really scanned it.
-        let (added, joined) = tokio::join!(
-            a.wait_pair_request(&code, STEP, None),
-            b.join(&code, STEP, None),
-        );
+        let (added, joined) = tokio::join!(a.wait_pair_request(&code, STEP), b.join(&code, STEP),);
         assert_eq!(added.unwrap(), b.device_id());
         assert_eq!(joined.unwrap(), vec![a.device_id()]);
         assert_eq!(trusted(&a), vec![b.device_id()]);
@@ -200,7 +202,7 @@ async fn join_reports_relay_errors() {
             kx_pk: a.identity().kx_pk(),
             secret: random_pairing_secret(),
         };
-        let joined = b.join(&code, STEP, None).await;
+        let joined = b.join(&code, STEP).await;
         assert!(
             matches!(joined, Err(Error::Relay(ControlError::UnknownPairing))),
             "{joined:?}"
@@ -244,6 +246,8 @@ async fn removed_device_no_longer_receives() {
         pair(&mut a, &mut b).await;
         pair(&mut a, &mut c).await;
         next_event(&mut b).await; // C added
+        expect_name(&mut b, &c).await;
+        expect_name(&mut c, &b).await;
 
         let prefix = &hex(&c.device_id())[..6];
         let removed = a.remove(prefix).await.unwrap();
@@ -281,12 +285,11 @@ async fn state_file_is_private_and_never_holds_the_pairing_secret() {
         let mut b = b_dev.connect().await;
 
         let code = a.open_pairing().await.unwrap();
-        let (added, joined) = tokio::join!(
-            a.wait_pair_request(&code, STEP, None),
-            b.join(&code, STEP, None),
-        );
+        let (added, joined) = tokio::join!(a.wait_pair_request(&code, STEP), b.join(&code, STEP),);
         added.unwrap();
         joined.unwrap();
+        expect_name(&mut a, &b).await;
+        expect_name(&mut b, &a).await;
         a.send_text("x").await.unwrap();
         expect_text(&mut b, &a, "x").await;
 

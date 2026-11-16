@@ -2,8 +2,8 @@
 //!
 //! Implements `docs/protocol.md`: device identities, session keys between two
 //! devices, the encrypted message envelope, the relay authentication
-//! frames, and groups and pairing (pairing code, control frames, group
-//! change plaintexts). All cryptography goes through libsodium so the output
+//! frames, groups and pairing (pairing code, control frames, group change
+//! plaintexts) and device names. All cryptography goes through libsodium so the output
 //! is byte-identical with the Kotlin (lazysodium) and Swift (swift-sodium)
 //! clients.
 
@@ -37,6 +37,8 @@ pub const MAX_WELCOME_DEVICES: usize = MAX_GROUP_SIZE - 2;
 pub const PEER_KEYS_LEN: usize = sodium::SIGN_PK_BYTES + sodium::KX_PK_BYTES;
 /// Size of a device id.
 pub const DEVICE_ID_LEN: usize = 16;
+/// Largest device name, in bytes of UTF-8.
+pub const MAX_DEVICE_NAME_LEN: usize = 64;
 
 /// First byte of the relay challenge frame.
 pub const AUTH_CHALLENGE: u8 = 0xA0;
@@ -96,6 +98,10 @@ pub enum Error {
     UnknownControlError(u8),
     #[error("relay name in the challenge is not the host we connected to")]
     RelayNameMismatch,
+    #[error("device name must be 1 to {MAX_DEVICE_NAME_LEN} bytes, got {0}")]
+    DeviceNameLength(usize),
+    #[error("device name contains a control character")]
+    DeviceNameControlCharacter,
 }
 
 /// Derives a device id from a signing public key:
@@ -201,6 +207,8 @@ pub enum Kind {
     DeviceAdded = 0x04,
     /// Id of a device that left the group; see [`encode_device_removed`].
     DeviceRemoved = 0x05,
+    /// The sender's own name; see [`encode_device_name`].
+    DeviceName = 0x06,
 }
 
 impl Kind {
@@ -211,6 +219,7 @@ impl Kind {
             0x03 => Ok(Kind::Welcome),
             0x04 => Ok(Kind::DeviceAdded),
             0x05 => Ok(Kind::DeviceRemoved),
+            0x06 => Ok(Kind::DeviceName),
             other => Err(Error::UnknownKind(other)),
         }
     }
@@ -223,12 +232,16 @@ impl Kind {
             Kind::Welcome => 1 + MAX_WELCOME_DEVICES * PEER_KEYS_LEN,
             Kind::DeviceAdded => PEER_KEYS_LEN,
             Kind::DeviceRemoved => DEVICE_ID_LEN,
+            Kind::DeviceName => MAX_DEVICE_NAME_LEN,
         }
     }
 
     /// Checks everything that can be known from the plaintext length alone,
     /// so `open` can reject a frame before decrypting it.
     fn check_plaintext_len(self, len: usize) -> Result<(), Error> {
+        if self == Kind::DeviceName {
+            return check_device_name_len(len);
+        }
         if len > self.max_plaintext_len() {
             return Err(match self {
                 Kind::Ping => Error::PingNotEmpty,
@@ -240,6 +253,7 @@ impl Kind {
             Kind::Welcome => len % PEER_KEYS_LEN == 1,
             Kind::DeviceAdded => len == PEER_KEYS_LEN,
             Kind::DeviceRemoved => len == DEVICE_ID_LEN,
+            Kind::DeviceName => unreachable!("checked above"),
         };
         if !valid {
             return Err(Error::InvalidPlaintextLength(len));
@@ -255,6 +269,9 @@ impl Kind {
             }
             Kind::Welcome => {
                 decode_welcome(plaintext)?;
+            }
+            Kind::DeviceName => {
+                decode_device_name(plaintext)?;
             }
             // Fully checked by their length.
             Kind::Ping | Kind::DeviceAdded | Kind::DeviceRemoved => {}
@@ -347,6 +364,39 @@ pub fn decode_device_removed(plaintext: &[u8]) -> Result<[u8; 16], Error> {
     plaintext
         .try_into()
         .map_err(|_| Error::InvalidPlaintextLength(plaintext.len()))
+}
+
+/// Device name plaintext (kind `0x06`): the sender's own name in UTF-8,
+/// 1 to [`MAX_DEVICE_NAME_LEN`] bytes, without control characters
+/// (U+0000–U+001F, U+007F–U+009F).
+pub fn encode_device_name(name: &str) -> Result<Vec<u8>, Error> {
+    check_device_name(name)?;
+    Ok(name.as_bytes().to_vec())
+}
+
+/// Parses a Device name plaintext, with the same rules as
+/// [`encode_device_name`].
+pub fn decode_device_name(plaintext: &[u8]) -> Result<String, Error> {
+    check_device_name_len(plaintext.len())?;
+    let name = std::str::from_utf8(plaintext).map_err(|_| Error::InvalidUtf8)?;
+    check_device_name(name)?;
+    Ok(name.to_owned())
+}
+
+fn check_device_name_len(len: usize) -> Result<(), Error> {
+    if len == 0 || len > MAX_DEVICE_NAME_LEN {
+        return Err(Error::DeviceNameLength(len));
+    }
+    Ok(())
+}
+
+fn check_device_name(name: &str) -> Result<(), Error> {
+    check_device_name_len(name.len())?;
+    let is_control = |c: char| matches!(c, '\u{0}'..='\u{1f}' | '\u{7f}'..='\u{9f}');
+    if name.chars().any(is_control) {
+        return Err(Error::DeviceNameControlCharacter);
+    }
+    Ok(())
 }
 
 /// A random `message_id` for an envelope header.
@@ -593,5 +643,51 @@ pub fn classify(frame: &[u8]) -> FrameType {
         Some(&VERSION) => FrameType::Envelope,
         Some(0xB0..=0xBF) => FrameType::Control,
         _ => FrameType::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A Device name envelope whose plaintext is encrypted as is, bypassing
+    /// the checks in `seal`, so `open` has to catch it after decrypting.
+    fn raw_name_frame(plaintext: &[u8]) -> (Vec<u8>, [u8; 32]) {
+        let a = Identity::from_seeds([1; 32], [2; 32]);
+        let b = Identity::from_seeds([3; 32], [4; 32]);
+        let a_keys = session_keys(&a, &b.device_id(), &b.kx_pk()).unwrap();
+        let b_keys = session_keys(&b, &a.device_id(), &a.kx_pk()).unwrap();
+        let header = Header {
+            version: VERSION,
+            kind: Kind::DeviceName,
+            sender: a.device_id(),
+            recipient: b.device_id(),
+            message_id: [7; 16],
+            counter: 1,
+        }
+        .encode();
+        let nonce = [9; NONCE_LEN];
+        let mut frame = header.to_vec();
+        frame.extend_from_slice(&nonce);
+        frame.extend_from_slice(&sodium::aead_encrypt(
+            plaintext, &header, &nonce, &a_keys.tx,
+        ));
+        (frame, b_keys.rx)
+    }
+
+    #[test]
+    fn open_checks_the_decrypted_device_name() {
+        let (frame, rx) = raw_name_frame("Téléphone".as_bytes());
+        assert_eq!(open(&frame, &rx).unwrap().1, "Téléphone".as_bytes());
+
+        for (plaintext, expected) in [
+            (&b"tab\there"[..], Error::DeviceNameControlCharacter),
+            ("c1 \u{85}".as_bytes(), Error::DeviceNameControlCharacter),
+            (&b"\xff\xfe"[..], Error::InvalidUtf8),
+            (&b"cut \xc3"[..], Error::InvalidUtf8),
+        ] {
+            let (frame, rx) = raw_name_frame(plaintext);
+            assert_eq!(open(&frame, &rx), Err(expected), "{plaintext:?}");
+        }
     }
 }

@@ -124,3 +124,41 @@ fn committed_pairing_vectors_decode() {
         keys(c).device_id()
     );
 }
+
+/// A receives B's Device name envelope from the committed file.
+#[test]
+fn committed_device_name_vector_decodes() {
+    use weft_protocol::{
+        Kind, MAX_DEVICE_NAME_LEN, decode_device_name, device_id_from_sign_pk, encode_device_name,
+        open,
+    };
+
+    let doc: serde_json::Value = serde_json::from_str(include_str!("../vectors/v1.json")).unwrap();
+    let section = &doc["device_name"];
+    let envelope = &section["envelope"];
+    let name = section["name"].as_str().unwrap();
+    assert_eq!(name, "Téléphone de test");
+    assert_eq!(section["max_len"], MAX_DEVICE_NAME_LEN);
+    assert_eq!(envelope["name"], "device_name_b_to_a");
+    assert_eq!(envelope["kind"], Kind::DeviceName as u8);
+    assert_eq!(envelope["plaintext_utf8"], name);
+    assert_eq!(unhex_vec(&envelope["plaintext"]), name.as_bytes());
+    assert_eq!(encode_device_name(name).unwrap(), name.as_bytes());
+
+    let device_id =
+        |device: &str| device_id_from_sign_pk(&unhex(&doc["devices"][device]["sign_pk"]));
+    let a_rx: [u8; 32] = unhex(&doc["session"]["a"]["rx"]);
+    assert_eq!(
+        unhex::<32>(&envelope["key"]),
+        unhex::<32>(&doc["session"]["b"]["tx"])
+    );
+    let frame = unhex_vec(&envelope["frame"]);
+    assert_eq!(frame[..58], unhex_vec(&envelope["header"])[..]);
+    let (header, plaintext) = open(&frame, &a_rx).unwrap();
+    assert_eq!(header.kind, Kind::DeviceName);
+    assert_eq!(header.sender, device_id("b"));
+    assert_eq!(header.recipient, device_id("a"));
+    assert_eq!(header.counter, envelope["counter"].as_u64().unwrap());
+    assert_eq!(header.message_id, unhex::<16>(&envelope["message_id"]));
+    assert_eq!(decode_device_name(&plaintext).unwrap(), name);
+}

@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use qrcode::QrCode;
 use qrcode::render::unicode::Dense1x2;
-use weft_cli::session::{JOIN_TIMEOUT, PAIRING_TIMEOUT};
+use weft_cli::session::{JOIN_TIMEOUT, NAME_TIMEOUT, PAIRING_TIMEOUT};
 use weft_cli::{Error, Event, Result, Session, State, StateDir, default_state_dir, hex, short_id};
 use weft_protocol::PairingCode;
 
@@ -35,20 +35,22 @@ enum Command {
         /// Replace an existing identity (its trusted devices are lost).
         #[arg(long)]
         force: bool,
-    },
-    /// Show a pairing code and add the device that uses it.
-    Pair {
-        /// Name to remember the new device by.
+        /// This device's name, shown on the other devices (default: the
+        /// host name). 1 to 64 bytes, no control characters.
         #[arg(long)]
         name: Option<String>,
     },
+    /// Change this device's name and send it to every trusted device.
+    Rename {
+        /// The new name: 1 to 64 bytes, no control characters.
+        name: String,
+    },
+    /// Show a pairing code and add the device that uses it.
+    Pair,
     /// Join the group of the device showing a pairing code.
     Join {
         /// The WEFT1: code.
         code: String,
-        /// Name to remember the device that showed the code by.
-        #[arg(long)]
-        name: Option<String>,
     },
     /// Print received clipboard text as JSON lines.
     Listen {
@@ -102,14 +104,30 @@ async fn run(cli: Cli) -> Result<()> {
         None => return Err(Error::NoStateDir),
     };
     match cli.command {
-        Command::Init { relay, force } => {
-            let state = State::generate(&relay)?;
+        Command::Init { relay, force, name } => {
+            let mut state = State::generate(&relay)?;
+            if let Some(name) = name {
+                state.set_name(&name)?;
+            }
             dir.create(&state, force)?;
-            tracing::info!(state = %dir.file().display(), "identity created");
+            tracing::info!(state = %dir.file().display(), name = %state.name(), "identity created");
             println!("{}", hex(&state.identity().device_id()));
         }
-        Command::Pair { name } => pair(dir, name).await?,
-        Command::Join { code, name } => join(dir, &code, name).await?,
+        Command::Rename { name } => {
+            // Saved first: the name is kept even if the relay is unreachable.
+            let (result, state) = dir.update(|state| state.set_name(&name))?;
+            result?;
+            if state.devices.is_empty() {
+                tracing::info!(name = %state.name(), "device renamed");
+            } else {
+                let mut session = Session::connect(dir).await?;
+                let sent = session.rename(&name).await?;
+                session.close().await;
+                tracing::info!(name = %state.name(), "device renamed; sent to {sent} device(s)");
+            }
+        }
+        Command::Pair => pair(dir).await?,
+        Command::Join { code } => join(dir, &code).await?,
         Command::Listen { copy } => listen(dir, copy).await?,
         Command::Send { text, stdin } => {
             let text = match text {
@@ -142,7 +160,7 @@ async fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-async fn pair(dir: StateDir, name: Option<String>) -> Result<()> {
+async fn pair(dir: StateDir) -> Result<()> {
     let mut session = Session::connect(dir).await?;
     let code = session.open_pairing().await?;
     let encoded = code.encode()?;
@@ -161,20 +179,34 @@ async fn pair(dir: StateDir, name: Option<String>) -> Result<()> {
     tracing::info!(
         "scan the QR code, or run `weft join <code>` on the other device; waiting up to 5 minutes"
     );
-    let device = session
-        .wait_pair_request(&code, PAIRING_TIMEOUT, name)
-        .await?;
-    session.close().await;
+    let device = session.wait_pair_request(&code, PAIRING_TIMEOUT).await?;
     tracing::info!(device = %short_id(&device), "device added");
+    // The new device announces its name as soon as it has the Welcome.
+    if !session
+        .wait_names(&[device], NAME_TIMEOUT, log_event)
+        .await?
+    {
+        tracing::warn!(device = %short_id(&device), "the new device did not send its name");
+    }
+    session.close().await;
     println!("{}", short_id(&device));
     Ok(())
 }
 
-async fn join(dir: StateDir, code: &str, name: Option<String>) -> Result<()> {
+async fn join(dir: StateDir, code: &str) -> Result<()> {
     let code = PairingCode::decode(code.trim())?;
     dir.load_or_create(&code.relay_url)?;
     let mut session = Session::connect(dir).await?;
-    let devices = session.join(&code, JOIN_TIMEOUT, name).await?;
+    let devices = session.join(&code, JOIN_TIMEOUT).await?;
+    // The device that showed the code sends its name right after the
+    // Welcome. Other members only can if they are online: not waited for.
+    let owner = weft_protocol::device_id_from_sign_pk(&code.sign_pk);
+    if !session
+        .wait_names(&[owner], NAME_TIMEOUT, log_event)
+        .await?
+    {
+        tracing::warn!(device = %short_id(&owner), "the device did not send its name");
+    }
     session.close().await;
     tracing::info!("joined the group: {} trusted device(s)", devices.len());
     for device in devices {
@@ -195,6 +227,24 @@ async fn listen(dir: StateDir, copy: bool) -> Result<()> {
                 copy_to_clipboard(text);
             }
         }
+        event => log_event(event),
+    };
+    let shutdown = async {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("stopping");
+    };
+    weft_cli::session::listen(&dir, on_event, shutdown).await
+}
+
+/// Logs an event to stderr. Clipboard text is never logged.
+fn log_event(event: &Event) {
+    match event {
+        Event::Clipboard { from, .. } => {
+            tracing::debug!(from = %short_id(from), "clipboard text received (not shown)")
+        }
+        Event::DeviceName { from, name } => {
+            tracing::info!(device = %short_id(from), %name, "device name received")
+        }
         Event::Ping { from } => tracing::debug!(from = %short_id(from), "ping"),
         Event::Welcome { from, added } => {
             tracing::info!(from = %short_id(from), added = added.len(), "welcome received")
@@ -210,12 +260,7 @@ async fn listen(dir: StateDir, copy: bool) -> Result<()> {
             let from = from.as_ref().map(short_id).unwrap_or_else(|| "-".into());
             tracing::warn!(%from, "dropped a frame: {reason}")
         }
-    };
-    let shutdown = async {
-        let _ = tokio::signal::ctrl_c().await;
-        tracing::info!("stopping");
-    };
-    weft_cli::session::listen(&dir, on_event, shutdown).await
+    }
 }
 
 fn read_stdin() -> Result<String> {

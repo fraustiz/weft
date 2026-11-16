@@ -63,6 +63,18 @@ impl TestDevice {
         TestDevice { temp, dir }
     }
 
+    /// A device with its own name.
+    pub fn named(relay_url: &str, name: &str) -> TestDevice {
+        let device = TestDevice::new(relay_url);
+        device
+            .dir
+            .update(|state| state.set_name(name))
+            .unwrap()
+            .0
+            .unwrap();
+        device
+    }
+
     pub fn load(&self) -> State {
         self.dir.load().unwrap()
     }
@@ -75,18 +87,44 @@ impl TestDevice {
     }
 }
 
-/// Pairs `joiner` into the group of `owner`, through the library API.
-/// Returns the joiner's device id as seen by the owner.
+/// Pairs `joiner` into the group of `owner`, through the library API, and
+/// lets each of them receive the other's name. Returns the joiner's device
+/// id as seen by the owner.
 pub async fn pair(owner: &mut Session, joiner: &mut Session) -> [u8; 16] {
     let code = owner.open_pairing().await.expect("open pairing");
     let (added, joined) = tokio::join!(
-        owner.wait_pair_request(&code, STEP, None),
-        joiner.join(&code, STEP, None),
+        owner.wait_pair_request(&code, STEP),
+        joiner.join(&code, STEP),
     );
     let added = added.expect("owner side of the pairing");
     joined.expect("joiner side of the pairing");
     assert_eq!(added, joiner.device_id());
+    expect_name(owner, joiner).await;
+    expect_name(joiner, owner).await;
     added
+}
+
+/// Asserts that the next event is `from`'s name, and that it is saved.
+pub async fn expect_name(session: &mut Session, from: &Session) {
+    let name = from.state().name().to_owned();
+    assert_eq!(
+        next_event(session).await,
+        Event::DeviceName {
+            from: from.device_id(),
+            name: name.clone(),
+        }
+    );
+    assert_eq!(name_of(session, &from.device_id()).as_deref(), Some(&*name));
+}
+
+/// The name `session` saved for `device`, as on disk.
+pub fn name_of(session: &Session, device: &[u8; 16]) -> Option<String> {
+    session
+        .state_dir()
+        .load()
+        .unwrap()
+        .device(device)
+        .and_then(|device| device.name.clone())
 }
 
 /// The next event, which must arrive within [`STEP`].

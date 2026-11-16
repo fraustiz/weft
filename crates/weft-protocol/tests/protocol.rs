@@ -80,8 +80,8 @@ fn header_decode_rejects_bad_input() {
     );
 
     let mut bad_kind = bytes;
-    bad_kind[1] = 0x06;
-    assert_eq!(Header::decode(&bad_kind), Err(Error::UnknownKind(6)));
+    bad_kind[1] = 0x07;
+    assert_eq!(Header::decode(&bad_kind), Err(Error::UnknownKind(7)));
 }
 
 #[test]

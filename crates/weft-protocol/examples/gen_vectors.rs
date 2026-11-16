@@ -78,12 +78,24 @@
 //!                            key = `session_a_c.a.tx`
 //!     device_removed_a_to_b  kind 5, plaintext = device id of C,
 //!                            key = `session.a.tx`
+//!
+//! `device_name` (device B announces its name to A, as it does right after
+//! receiving A's Welcome):
+//!   name          the name, as a string (UTF-8, 1 to 64 bytes, no control
+//!                 characters; one non-ASCII character on purpose)
+//!   max_len       largest name in bytes (64)
+//!   envelope      same fields as the top-level `envelopes[]`:
+//!     device_name_b_to_a  kind 6, plaintext = the name in UTF-8,
+//!                         message_id = 91 92 … a0, counter = 2 (after the
+//!                         ping, which took counter 1 from B to A),
+//!                         nonce = 61 62 … 78, key = `session.b.tx`
 
 use serde_json::{Value, json};
 use weft_protocol::{
-    AUTH_ACCEPTED, Challenge, ControlError, ControlFrame, Header, Identity, Kind, PairRequest,
-    PairingCode, PeerKeys, SessionKeys, VERSION, encode_device_added, encode_device_removed,
-    encode_welcome, seal_with_nonce, session_keys, sign_auth,
+    AUTH_ACCEPTED, Challenge, ControlError, ControlFrame, Header, Identity, Kind,
+    MAX_DEVICE_NAME_LEN, PairRequest, PairingCode, PeerKeys, SessionKeys, VERSION,
+    encode_device_added, encode_device_name, encode_device_removed, encode_welcome,
+    seal_with_nonce, session_keys, sign_auth,
 };
 
 /// `N` consecutive bytes starting at `start`, e.g. `seq::<4>(0x10)` = 10 11 12 13.
@@ -267,6 +279,27 @@ fn pairing_json(a: &Identity, b: &Identity, a_b_keys: &SessionKeys) -> Value {
     })
 }
 
+/// The `device_name` section: B tells A its name.
+fn device_name_json(a: &Identity, b: &Identity, b_a_keys: &SessionKeys) -> Value {
+    let name = "Téléphone de test";
+    encode_device_name(name).expect("valid device name");
+    let envelope = envelope_json(Envelope {
+        name: "device_name_b_to_a",
+        sender: ("b", b, b_a_keys),
+        recipient: ("a", a),
+        kind: Kind::DeviceName,
+        message_id: seq::<16>(0x91),
+        counter: 2,
+        nonce: seq::<24>(0x61),
+        plaintext: Plaintext::Text(name),
+    });
+    json!({
+        "name": name,
+        "max_len": MAX_DEVICE_NAME_LEN,
+        "envelope": envelope,
+    })
+}
+
 /// Builds the full vectors document, ending with a newline.
 pub fn vectors_json() -> String {
     let (a_sign_seed, a_kx_seed) = (seq::<32>(0x00), seq::<32>(0x20));
@@ -332,6 +365,7 @@ pub fn vectors_json() -> String {
             "accepted_frame": hex(&[AUTH_ACCEPTED]),
         },
         "pairing": pairing_json(&a, &b, &a_keys),
+        "device_name": device_name_json(&a, &b, &b_keys),
     });
     let mut out = serde_json::to_string_pretty(&doc).expect("serialize vectors");
     out.push('\n');

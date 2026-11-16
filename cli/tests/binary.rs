@@ -1,5 +1,6 @@
 //! End to end with the compiled `weft` binary: two processes pair through a
-//! real relay, then one listens while the other sends.
+//! real relay and learn each other's names, then one listens while the
+//! other sends and renames itself.
 
 mod common;
 
@@ -36,6 +37,15 @@ async fn run(state: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+/// Runs `weft` to completion and asserts it failed.
+async fn fails(state: &Path, args: &[&str]) {
+    let output: Output = tokio::time::timeout(STEP, weft(state).args(args).output())
+        .await
+        .unwrap_or_else(|_| panic!("weft {args:?} timed out"))
+        .unwrap();
+    assert!(!output.status.success(), "weft {args:?} succeeded");
+}
+
 async fn next_line<R: tokio::io::AsyncBufRead + Unpin>(lines: &mut Lines<R>) -> String {
     tokio::time::timeout(STEP, lines.next_line())
         .await
@@ -61,9 +71,22 @@ async fn pair_listen_and_send_with_the_binary() {
             .tempdir()
             .unwrap();
         let (a, b) = (temp.path().join("a"), temp.path().join("b"));
-        let a_id = run(&a, &["init", "--relay", &url]).await.trim().to_owned();
-        let b_id = run(&b, &["init", "--relay", &url]).await.trim().to_owned();
+        let a_id = run(&a, &["init", "--relay", &url, "--name", "Laptop"])
+            .await
+            .trim()
+            .to_owned();
+        let b_id = run(&b, &["init", "--relay", &url, "--name", "Téléphone"])
+            .await
+            .trim()
+            .to_owned();
         assert_eq!(a_id.len(), 32);
+        // Invalid names are refused, and change nothing.
+        for name in ["", "line\nbreak", &"x".repeat(65)] {
+            fails(&a, &["rename", name]).await;
+        }
+        fails(&b, &["init", "--relay", &url, "--force", "--name", ""]).await;
+        // Without trusted devices, a rename is only saved.
+        run(&a, &["rename", "Laptop"]).await;
 
         // A shows a code; B joins with it.
         let mut pair = weft(&a)
@@ -84,8 +107,9 @@ async fn pair_listen_and_send_with_the_binary() {
         assert_eq!(next_line(&mut pair_out).await, &b_id[..8]);
         wait_success(&mut pair).await;
 
-        let devices = run(&a, &["devices"]).await;
-        assert!(devices.starts_with(&b_id), "{devices}");
+        // Each side waited for the other's name before exiting.
+        assert_eq!(run(&a, &["devices"]).await, format!("{b_id}  Téléphone\n"));
+        assert_eq!(run(&b, &["devices"]).await, format!("{a_id}  Laptop\n"));
 
         // B listens; A sends.
         let mut listen = weft(&b)
@@ -105,6 +129,19 @@ async fn pair_listen_and_send_with_the_binary() {
                 break;
             }
         }
+        // A renames itself while B listens.
+        run(&a, &["rename", "Laptop 2"]).await;
+        loop {
+            let line = next_line(&mut listen_err).await;
+            eprintln!("listen: {line}");
+            if line.contains("device name received") {
+                assert!(line.contains("Laptop 2"), "{line}");
+                assert!(line.contains(&a_id[..8]), "{line}");
+                break;
+            }
+        }
+        assert_eq!(run(&b, &["devices"]).await, format!("{a_id}  Laptop 2\n"));
+
         // Keep draining stderr so the child never blocks on a full pipe.
         let drain = tokio::spawn(async move {
             while let Ok(Some(line)) = listen_err.next_line().await {
