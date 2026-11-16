@@ -1,0 +1,15 @@
+{
+  "originHash" : "ca477f7e204de2ed8f774baedb41cdd231a2af23e559ba97736b6d4e191b2264",
+  "pins" : [
+    {
+      "identity" : "swift-sodium",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jedisct1/swift-sodium.git",
+      "state" : {
+        "revision" : "4f9164a0a2c9a6a7ff53a2833d54a5c79c957342",
+        "version" : "0.9.1"
+      }
+    }
+  ],
+  "version" : 3
+}
