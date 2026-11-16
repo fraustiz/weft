@@ -143,6 +143,12 @@ fn actions(
             button(t("Ring", "Faire sonner"), context.message(Message::Ring))
         });
     }
+    if features.sms && peer.handles("sms.conversations.request") {
+        buttons.push(button(
+            t("Messages", "Messages"),
+            context.message(Message::OpenMessages),
+        ));
+    }
     if buttons.is_empty() {
         let text = if is_french() {
             format!("Rien à faire avec {name} pour l'instant")
@@ -364,6 +370,87 @@ fn volume(
     ))
 }
 
+/// The device's hold on this computer, and typing on it from here: the
+/// permission when it can send input, the box when it can be typed on.
+/// `None` while Input is off.
+fn control(
+    weft: &Weft,
+    device: [u8; 16],
+    name: &str,
+    peer: &PeerInfo,
+    context: &ViewContext<Weft>,
+) -> Option<View> {
+    if !weft.snapshot.features.input {
+        return None;
+    }
+    let mut views = Vec::new();
+    let remote = ["input.pointer", "input.click", "input.key", "presenter"];
+    if remote.iter().any(|kind| peer.sends(kind)) {
+        let title = if is_french() {
+            format!("Laisser {name} contrôler cet ordinateur")
+        } else {
+            format!("Let {name} control this computer")
+        };
+        views.push(super::settings::switch(
+            &title,
+            t(
+                "Pointer, keyboard and slideshows. Windows run as administrator ignore it",
+                "Pointeur, clavier et diaporamas. Les fenêtres lancées en administrateur l'ignorent",
+            ),
+            weft.snapshot.control.contains(&device),
+            context.callback(Message::SetControl),
+        ));
+    }
+    if peer.handles("input.key") {
+        let placeholder = if is_french() {
+            format!("Ce que vous tapez s'écrit sur {name}")
+        } else {
+            format!("What you type here is typed on {name}")
+        };
+        views.push(card(column(
+            8.0,
+            vec![
+                Grid::new()
+                    .columns([GridLength::STAR, GridLength::Auto])
+                    .column_spacing(8.0)
+                    .children((
+                        TextBox::new()
+                            .grid_column(0)
+                            .text(weft.typed.clone())
+                            .placeholder_text(placeholder)
+                            .accepts_return(true)
+                            .text_wrapping(TextWrapping::Wrap)
+                            .automation_name(t("Type on phone", "Taper sur le téléphone"))
+                            .on_text_changed(context.callback(Message::TypedEdited)),
+                        Border::new()
+                            .grid_column(1)
+                            .vertical_alignment(VerticalAlignment::Bottom)
+                            .content(button(
+                                t("Clear", "Effacer"),
+                                context.message(Message::ClearTyped),
+                            )),
+                    )),
+                secondary(t(
+                    "Needs the Weft keyboard chosen on the phone. Clear empties this box only",
+                    "Le clavier Weft doit être choisi sur le téléphone. Effacer ne vide que ce champ",
+                ))
+                .font_size(12.0)
+                .into(),
+            ],
+        )));
+    }
+    if views.is_empty() {
+        return None;
+    }
+    Some(column(
+        8.0,
+        vec![
+            label(t("Remote control", "Contrôle à distance")).into(),
+            column(4.0, views),
+        ],
+    ))
+}
+
 fn transfer_row(transfer: &TransferView, context: &ViewContext<Weft>) -> View {
     let active = transfer.stage.is_active();
     let (icon, direction) = if transfer.outgoing {
@@ -474,6 +561,7 @@ pub fn view(weft: &Weft, device: [u8; 16], context: &mut ViewContext<Weft>) -> V
             vec![label(t("Media", "Média")).into(), column(4.0, media)],
         ));
     }
+    views.extend(control(weft, device, &name, &peer, context));
     let transfers: Vec<KeyedView> = snapshot
         .transfers
         .iter()

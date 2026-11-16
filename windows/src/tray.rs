@@ -556,6 +556,8 @@ mod tests {
             peers: Default::default(),
             pause: Pause::default(),
             features: Default::default(),
+            control: Default::default(),
+            commands: Vec::new(),
             pairing: PairingState::Idle,
             last_activity: None,
             ringing: None,

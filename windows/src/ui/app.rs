@@ -8,10 +8,11 @@ use std::time::{Duration, Instant, SystemTime};
 use windows_reactor::*;
 
 use super::words::{self, NameProblem};
-use super::{Shell, detail, devices, pairing, picker, qr, settings};
-use crate::features::Features;
+use super::{Shell, detail, devices, messages, pairing, picker, qr, settings};
+use crate::features::{Features, UserCommand};
 use crate::i18n::t;
 use crate::packets::{MediaAction, MediaCommand, Packet, VolumeSet};
+use crate::sms;
 use crate::worker::{Command, Handle, PairingState, Published, RING_DURATION, Snapshot};
 use crate::{autostart, window};
 
@@ -86,6 +87,59 @@ pub enum Message {
     /// The volume slider of the device shown moved, to 0 to 100.
     PhoneVolume(f64),
     PhoneMute(bool),
+    /// Shows the messages of the device shown, in place of its details.
+    OpenMessages,
+    CloseMessages,
+    OpenThread(i64),
+    /// Back from a thread or a new message to the conversations.
+    CloseThread,
+    LoadEarlier,
+    StartConversation,
+    RecipientEdited(String),
+    SmsDraftEdited(String),
+    SendSms,
+    /// The device shown may control this computer, or not.
+    SetControl(bool),
+    /// The "Type on phone" box changed to this text.
+    TypedEdited(String),
+    ClearTyped,
+    AddCommand,
+    EditCommand(String),
+    RemoveCommand(String),
+    CommandNameEdited(String),
+    CommandLineEdited(String),
+    SaveCommand,
+    CancelCommand,
+}
+
+/// The messages of one phone, as the window shows them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessagesView {
+    pub device: [u8; 16],
+    /// The thread shown, if one is.
+    pub open: Option<OpenThread>,
+    /// A new message is being written.
+    pub composing: bool,
+    pub recipient: String,
+    /// The text of the reply box.
+    pub draft: String,
+}
+
+/// A thread shown: its id once the phone has one (a new conversation has
+/// none until the phone lists it) and its people.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenThread {
+    pub thread: Option<i64>,
+    pub addresses: Vec<String>,
+}
+
+/// A command being added or changed in the settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandDraft {
+    /// `None` for a new one.
+    pub id: Option<String>,
+    pub name: String,
+    pub line: String,
 }
 
 /// How long a value the user just set is shown, while the device's own
@@ -142,6 +196,14 @@ pub struct Weft {
     pub seek_draft: Option<Draft<u64>>,
     /// The volume just asked of the device shown.
     pub volume_draft: Option<Draft<u8>>,
+    /// The messages shown in place of the device's details.
+    pub messages: Option<MessagesView>,
+    /// The reply box of a thread, focused when one opens so the view
+    /// scrolls down to the newest messages.
+    pub compose: ElementRef<TextBox>,
+    /// What the "Type on phone" box holds, as already sent.
+    pub typed: String,
+    pub command_draft: Option<CommandDraft>,
     /// A tick is on its way.
     ticking: bool,
 }
@@ -178,6 +240,83 @@ impl Weft {
             }
             _ => self.qr = None,
         }
+        // A conversation started here gets its thread once the phone
+        // lists it.
+        if let Some(view) = &mut self.messages
+            && let Some(open) = &mut view.open
+            && open.thread.is_none()
+            && let Some(found) = self
+                .snapshot
+                .peer(&view.device)
+                .sms
+                .conversation_with(&open.addresses)
+        {
+            open.thread = Some(found.thread);
+            self.shell.worker.send(Command::LoadMessages {
+                device: view.device,
+                thread: found.thread,
+                before: None,
+            });
+        }
+    }
+
+    /// Sends the reply box's text in the thread shown, or to the
+    /// recipient of a new message.
+    fn send_sms(&mut self) {
+        let Some(view) = &mut self.messages else {
+            return;
+        };
+        let text = view.draft.trim().to_owned();
+        if text.is_empty() {
+            return;
+        }
+        let peer = self.snapshot.peer(&view.device);
+        if view.composing {
+            let Some(number) = sms::recipient(&peer.sms.contacts, &view.recipient) else {
+                return;
+            };
+            let addresses = vec![number];
+            let thread = peer.sms.conversation_with(&addresses).map(|c| c.thread);
+            view.open = Some(OpenThread { thread, addresses });
+            view.composing = false;
+        }
+        let Some(open) = &view.open else {
+            return;
+        };
+        self.shell.worker.send(Command::SendSms {
+            device: view.device,
+            addresses: open.addresses.clone(),
+            text,
+            thread: open.thread,
+        });
+        view.draft.clear();
+    }
+
+    /// Adds the command being edited, or puts it in place of the one it
+    /// changes.
+    fn save_command(&mut self) {
+        let Some(draft) = &self.command_draft else {
+            return;
+        };
+        let (name, line) = (draft.name.trim(), draft.line.trim());
+        if name.is_empty() || line.is_empty() {
+            return;
+        }
+        let mut commands = self.snapshot.commands.clone();
+        let command = UserCommand {
+            id: draft
+                .id
+                .clone()
+                .unwrap_or_else(|| weft_cli::hex(&weft_protocol::random_message_id()[..8])),
+            name: name.to_owned(),
+            line: line.to_owned(),
+        };
+        match commands.iter_mut().find(|known| known.id == command.id) {
+            Some(known) => *known = command,
+            None => commands.push(command),
+        }
+        self.shell.worker.send(Command::SetCommands(commands));
+        self.command_draft = None;
     }
 
     /// How long until a text on screen changes with time, if one does.
@@ -286,6 +425,10 @@ impl Component for Weft {
             picking: false,
             seek_draft: None,
             volume_draft: None,
+            messages: None,
+            compose: ElementRef::new(),
+            typed: String::new(),
+            command_draft: None,
             ticking: false,
         };
         weft.absorb(published);
@@ -314,6 +457,7 @@ impl Component for Weft {
                 } else if tag.as_deref() == Some(Page::Devices.tag()) {
                     self.page = Page::Devices;
                     self.selected = None;
+                    self.messages = None;
                 }
             }
             Message::StartPairing => self.start_pairing(),
@@ -385,7 +529,12 @@ impl Component for Weft {
                 self.autostart = autostart::is_enabled();
             }
             Message::SetFeatures(features) => worker.send(Command::SetFeatures(features)),
-            Message::OpenDevice(device) => self.selected = Some(device),
+            Message::OpenDevice(device) => {
+                if self.selected != Some(device) {
+                    self.typed.clear();
+                }
+                self.selected = Some(device);
+            }
             Message::CloseDevice => self.selected = None,
             Message::Ring => {
                 if let Some(device) = self.selected {
@@ -470,6 +619,140 @@ impl Component for Weft {
                     worker.send(Command::SendPacket(device, Packet::VolumeSet(set)));
                 }
             }
+            Message::OpenMessages => {
+                if let Some(device) = self.selected {
+                    worker.send(Command::OpenMessages(device));
+                    self.messages = Some(MessagesView {
+                        device,
+                        open: None,
+                        composing: false,
+                        recipient: String::new(),
+                        draft: String::new(),
+                    });
+                }
+            }
+            Message::CloseMessages => self.messages = None,
+            Message::OpenThread(thread) => {
+                if let Some(view) = &mut self.messages {
+                    let sms = self.snapshot.peer(&view.device).sms;
+                    let addresses = sms
+                        .conversation(thread)
+                        .map(|conversation| conversation.addresses.clone())
+                        .unwrap_or_default();
+                    view.open = Some(OpenThread {
+                        thread: Some(thread),
+                        addresses,
+                    });
+                    view.composing = false;
+                    view.draft.clear();
+                    worker.send(Command::LoadMessages {
+                        device: view.device,
+                        thread,
+                        before: None,
+                    });
+                }
+            }
+            Message::CloseThread => {
+                if let Some(view) = &mut self.messages {
+                    view.open = None;
+                    view.composing = false;
+                    view.draft.clear();
+                    // The snippets and unread marks may have changed.
+                    worker.send(Command::OpenMessages(view.device));
+                }
+            }
+            Message::LoadEarlier => {
+                if let Some(view) = &self.messages
+                    && let Some(thread) = view.open.as_ref().and_then(|open| open.thread)
+                {
+                    let sms = self.snapshot.peer(&view.device).sms;
+                    let oldest = sms.threads.get(&thread).and_then(|list| list.first());
+                    worker.send(Command::LoadMessages {
+                        device: view.device,
+                        thread,
+                        before: oldest.map(|message| message.time),
+                    });
+                }
+            }
+            Message::StartConversation => {
+                if let Some(view) = &mut self.messages {
+                    view.open = None;
+                    view.composing = true;
+                    view.recipient.clear();
+                    view.draft.clear();
+                }
+            }
+            Message::RecipientEdited(text) => {
+                if let Some(view) = &mut self.messages {
+                    view.recipient = text;
+                }
+            }
+            Message::SmsDraftEdited(text) => {
+                if let Some(view) = &mut self.messages {
+                    view.draft = text;
+                }
+            }
+            Message::SendSms => self.send_sms(),
+            Message::SetControl(allowed) => {
+                if let Some(device) = self.selected {
+                    worker.send(Command::SetControl(device, allowed));
+                }
+            }
+            Message::TypedEdited(text) => {
+                // Setting the box's text reports it too: then nothing
+                // changed and nothing goes.
+                if let Some(device) = self.selected {
+                    for packet in crate::input::typed(&self.typed, &text) {
+                        worker.send(Command::SendPacket(device, packet));
+                    }
+                }
+                self.typed = text;
+            }
+            // Only here: the phone keeps what was typed.
+            Message::ClearTyped => self.typed.clear(),
+            Message::AddCommand => {
+                self.command_draft = Some(CommandDraft {
+                    id: None,
+                    name: String::new(),
+                    line: String::new(),
+                });
+            }
+            Message::EditCommand(id) => {
+                self.command_draft = self
+                    .snapshot
+                    .commands
+                    .iter()
+                    .find(|command| command.id == id)
+                    .map(|command| CommandDraft {
+                        id: Some(command.id.clone()),
+                        name: command.name.clone(),
+                        line: command.line.clone(),
+                    });
+            }
+            Message::RemoveCommand(id) => {
+                let mut commands = self.snapshot.commands.clone();
+                commands.retain(|command| command.id != id);
+                worker.send(Command::SetCommands(commands));
+                if self
+                    .command_draft
+                    .as_ref()
+                    .is_some_and(|draft| draft.id.as_deref() == Some(id.as_str()))
+                {
+                    self.command_draft = None;
+                }
+            }
+            Message::CommandNameEdited(name) => {
+                if let Some(draft) = &mut self.command_draft {
+                    draft.name = name;
+                }
+            }
+            Message::CommandLineEdited(line) => {
+                if let Some(draft) = &mut self.command_draft {
+                    draft.line = line;
+                }
+            }
+            Message::SaveCommand => self.save_command(),
+            Message::CancelCommand => self.command_draft = None,
         }
         self.schedule_tick(context);
     }
@@ -496,8 +779,16 @@ impl Component for Weft {
 
         let page = match self.page {
             Page::Devices if self.pairing => pairing::view(self, context),
-            Page::Devices => match self.selected {
-                Some(device) if self.snapshot.devices.iter().any(|known| known.id == device) => {
+            Page::Devices => match (self.selected, &self.messages) {
+                (Some(device), Some(view))
+                    if view.device == device
+                        && self.snapshot.devices.iter().any(|known| known.id == device) =>
+                {
+                    messages::view(self, view, context)
+                }
+                (Some(device), _)
+                    if self.snapshot.devices.iter().any(|known| known.id == device) =>
+                {
                     detail::view(self, device, context)
                 }
                 _ => devices::view(self, context),

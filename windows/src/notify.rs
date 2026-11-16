@@ -219,6 +219,45 @@ pub fn call_toast(from: [u8; 16], device: &str, call: &Call) -> Option<Toast> {
     })
 }
 
+/// The toast of a new SMS, with a reply box that answers in its thread.
+pub fn sms_toast(
+    from: [u8; 16],
+    device: &str,
+    thread: i64,
+    sender: &str,
+    text: String,
+    addresses: Vec<String>,
+) -> Toast {
+    let mut content = Content::new(vec![format!("{sender} · {device}"), text]);
+    content.reply = Some((
+        t("Reply", "Répondre").to_owned(),
+        t("Send", "Envoyer").to_owned(),
+    ));
+    let on_click = clicks(move |activation, worker| {
+        if activation.argument != "reply" {
+            return;
+        }
+        if let Some(text) = activation.reply.as_deref().map(str::trim)
+            && !text.is_empty()
+        {
+            worker.send(Command::SendSms {
+                device: from,
+                addresses: addresses.clone(),
+                text: text.to_owned(),
+                thread: Some(thread),
+            });
+        }
+    });
+    Toast {
+        group: group_of(&from),
+        // A newer message of the thread replaces the older one.
+        tag: format!("s{thread}"),
+        content,
+        suppress_popup: false,
+        on_click: Some(on_click),
+    }
+}
+
 impl Notifier {
     /// Shows a plain toast: a title and a line.
     fn show(&self, title: String, text: String) {
@@ -342,6 +381,26 @@ impl Notifier {
             }
             Notice::MediaCommand { player, action, .. } => self.system.media(player, action),
             Notice::SetVolume { set, .. } => self.system.volume(set),
+            Notice::SmsReceived {
+                from,
+                device,
+                thread,
+                sender,
+                text,
+                addresses,
+            } => {
+                let toast = sms_toast(from, &named(device), thread, &sender, text, addresses);
+                self.system.toast(toast);
+            }
+            Notice::CommandRan { device, name, .. } => {
+                let device = named(device);
+                let title = if french {
+                    format!("Commande « {name} » lancée pour {device}")
+                } else {
+                    format!("Ran {name} for {device}")
+                };
+                self.show(title, String::new());
+            }
         }
     }
 }

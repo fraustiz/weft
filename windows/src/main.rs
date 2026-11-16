@@ -27,7 +27,7 @@ fn main() -> ExitCode {
     use weft_windows::system::{self, System};
     use weft_windows::tray::{self, Link};
     use weft_windows::worker::{self, Command, Hooks};
-    use weft_windows::{autostart, files, toast, ui, window};
+    use weft_windows::{autostart, control, files, toast, ui, window};
     use windows_sys::Win32::UI::HiDpi::{
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
     };
@@ -84,6 +84,11 @@ fn main() -> ExitCode {
             on_notice: Arc::new(move |notice| notifier.handle(notice)),
             // Without a known Downloads folder, files stay next to the state.
             downloads: files::downloads_dir().unwrap_or_else(|| state_dir.join("Received")),
+            on_input: {
+                let mut injector = control::Injector::default();
+                Box::new(move |input| injector.apply(input))
+            },
+            run_command: Box::new(control::run_command),
         }
     };
     let (worker, worker_thread) = match worker::spawn(StateDir::new(state_dir.clone()), hooks) {

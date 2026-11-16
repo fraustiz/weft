@@ -1,4 +1,4 @@
-//! The JSON packets of `docs/features.md` this app knows, sections 2 to 6.
+//! The JSON packets of `docs/features.md` this app knows, sections 2 to 8.
 //!
 //! Parsing is tolerant, as the contract asks: members this app does not
 //! know are ignored, a packet of a type it does not know is
@@ -17,7 +17,8 @@ pub const MAX_FILE_SIZE: u64 = 4 << 30;
 /// The longest URL a `share.url` may carry, in bytes.
 pub const MAX_URL_LEN: usize = 2048;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Not `Eq`: pointer moves and the presenter spot carry fractions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Packet {
     #[serde(rename = "capabilities")]
@@ -78,6 +79,46 @@ pub enum Packet {
     Volume(Volume),
     #[serde(rename = "volume.set")]
     VolumeSet(VolumeSet),
+    #[serde(rename = "sms.conversations.request")]
+    SmsConversationsRequest {},
+    #[serde(rename = "sms.conversations")]
+    SmsConversations {
+        #[serde(default)]
+        conversations: Vec<Conversation>,
+    },
+    #[serde(rename = "sms.messages.request")]
+    SmsMessagesRequest(SmsMessagesRequest),
+    #[serde(rename = "sms.messages")]
+    SmsMessages {
+        thread: i64,
+        #[serde(default)]
+        messages: Vec<SmsMessage>,
+    },
+    #[serde(rename = "sms.send")]
+    SmsSend(SmsSend),
+    #[serde(rename = "sms.sent")]
+    SmsSent(SmsSent),
+    #[serde(rename = "sms.received")]
+    SmsReceived(SmsReceived),
+    #[serde(rename = "contacts.request")]
+    ContactsRequest {},
+    #[serde(rename = "contacts")]
+    Contacts(Contacts),
+    #[serde(rename = "input.pointer")]
+    InputPointer(InputPointer),
+    #[serde(rename = "input.click")]
+    InputClick(InputClick),
+    #[serde(rename = "input.key")]
+    InputKey(InputKey),
+    #[serde(rename = "presenter")]
+    Presenter(Presenter),
+    #[serde(rename = "command.list")]
+    CommandList {
+        #[serde(default)]
+        commands: Vec<CommandItem>,
+    },
+    #[serde(rename = "command.run")]
+    CommandRun { id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -293,6 +334,210 @@ pub struct VolumeSet {
     pub muted: Option<bool>,
 }
 
+/// An SMS thread of the phone. `names` follows `addresses`, `None` where
+/// no contact matches.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Conversation {
+    pub thread: i64,
+    #[serde(default)]
+    pub addresses: Vec<String>,
+    #[serde(default)]
+    pub names: Vec<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    #[serde(default)]
+    pub time: i64,
+    #[serde(default)]
+    pub unread: bool,
+}
+
+impl Conversation {
+    /// Who the thread is with: the contacts' names, else the numbers.
+    pub fn title(&self) -> String {
+        let people: Vec<&str> = self
+            .addresses
+            .iter()
+            .enumerate()
+            .map(|(index, address)| {
+                self.names
+                    .get(index)
+                    .and_then(|name| name.as_deref())
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or(address)
+            })
+            .collect();
+        people.join(", ")
+    }
+}
+
+/// One SMS. `status` is only set on an outgoing one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SmsMessage {
+    pub id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub time: i64,
+    #[serde(default)]
+    pub outgoing: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SmsMessagesRequest {
+    pub thread: i64,
+    /// Only messages older than this time, in ms since the epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SmsSend {
+    pub addresses: Vec<String>,
+    pub text: String,
+    pub request_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SmsSent {
+    pub request_id: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// A new SMS: its thread next to the members of the message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SmsReceived {
+    pub thread: i64,
+    #[serde(flatten)]
+    pub message: SmsMessage,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Contact {
+    pub name: String,
+    #[serde(default)]
+    pub numbers: Vec<String>,
+}
+
+/// One part of the address book: `part` of `parts`, from 1.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Contacts {
+    #[serde(default)]
+    pub contacts: Vec<Contact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<u32>,
+}
+
+/// A pointer move in pixels, or a scroll in wheel notches.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputPointer {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dx: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dy: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_x: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_y: Option<f64>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputClick {
+    pub button: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub double: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub down: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub up: bool,
+}
+
+/// Text to type, or a named key, with the modifiers held around it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputKey {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ctrl: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub alt: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub shift: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub meta: bool,
+}
+
+impl InputKey {
+    pub fn text(text: impl Into<String>) -> InputKey {
+        InputKey {
+            text: Some(text.into()),
+            ..InputKey::default()
+        }
+    }
+
+    pub fn key(key: &str) -> InputKey {
+        InputKey {
+            key: Some(key.into()),
+            ..InputKey::default()
+        }
+    }
+}
+
+/// Where the presenter's spot is, from -1 to 1 on each axis, y downwards.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Spot {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// A slide action, or the spot: `pointer` is `Some(None)` for
+/// `"pointer": null`, which hides it, and `None` when absent.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Presenter {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pointer: Option<Option<Spot>>,
+}
+
+/// A member that is there, even as `null`.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// A command of this computer, as `command.list` shows it to the others.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandItem {
+    pub id: String,
+    pub name: String,
+}
+
 /// Why a receiver refuses a file, as `file.reject` puts it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RejectReason {
@@ -326,7 +571,7 @@ impl RejectReason {
 }
 
 /// What a received packet turned out to be.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Parsed {
     Known(Packet),
     /// A well-formed packet of a type this app does not know, ignored.
@@ -365,6 +610,21 @@ const KNOWN: &[&str] = &[
     "media.command",
     "volume",
     "volume.set",
+    "sms.conversations.request",
+    "sms.conversations",
+    "sms.messages.request",
+    "sms.messages",
+    "sms.send",
+    "sms.sent",
+    "sms.received",
+    "contacts.request",
+    "contacts",
+    "input.pointer",
+    "input.click",
+    "input.key",
+    "presenter",
+    "command.list",
+    "command.run",
 ];
 
 pub fn parse(json: &str) -> Parsed {
@@ -491,8 +751,8 @@ mod tests {
     #[test]
     fn unknown_and_invalid_packets() {
         assert_eq!(
-            parse(r#"{"type":"sms.send","text":"hi"}"#),
-            Parsed::Unknown("sms.send".into())
+            parse(r#"{"type":"sftp.list","path":"/"}"#),
+            Parsed::Unknown("sftp.list".into())
         );
         for invalid in [
             "",
@@ -686,6 +946,131 @@ mod tests {
         assert_eq!(parse_transfer_id("ab"), None);
         assert_eq!(parse_transfer_id(&"zz".repeat(16)), None);
         assert_eq!(parse_transfer_id(&"é".repeat(16)), None);
+    }
+
+    #[test]
+    fn sms_and_contacts_parse() {
+        let Parsed::Known(Packet::SmsConversations { conversations }) = parse(
+            r#"{"type":"sms.conversations","conversations":[{"thread":7,"addresses":["+33 6 00","+33 7 00"],"names":["Ann",null],"snippet":"See you","time":1700000000000,"unread":true}]}"#,
+        ) else {
+            panic!("not conversations");
+        };
+        assert_eq!(conversations[0].title(), "Ann, +33 7 00");
+        assert!(conversations[0].unread);
+
+        // The thread sits next to the message's own members.
+        let received = parse(
+            r#"{"type":"sms.received","thread":7,"id":42,"address":"+33 6 00","body":"Hi","time":5,"outgoing":false}"#,
+        );
+        let expected = Packet::SmsReceived(SmsReceived {
+            thread: 7,
+            message: SmsMessage {
+                id: 42,
+                address: Some("+33 6 00".into()),
+                body: "Hi".into(),
+                time: 5,
+                outgoing: false,
+                status: None,
+            },
+        });
+        assert_eq!(received, Parsed::Known(expected.clone()));
+        assert_eq!(parse(&expected.to_json()), Parsed::Known(expected));
+
+        let send = Packet::SmsSend(SmsSend {
+            addresses: vec!["+33 6 00".into()],
+            text: "On my way".into(),
+            request_id: "r1".into(),
+        });
+        assert_eq!(
+            send.to_json(),
+            r#"{"type":"sms.send","addresses":["+33 6 00"],"text":"On my way","requestId":"r1"}"#
+        );
+        assert_eq!(
+            parse(r#"{"type":"sms.sent","requestId":"r1","ok":false,"error":"radio off"}"#),
+            Parsed::Known(Packet::SmsSent(SmsSent {
+                request_id: "r1".into(),
+                ok: false,
+                error: Some("radio off".into()),
+            }))
+        );
+        assert_eq!(
+            Packet::SmsMessagesRequest(SmsMessagesRequest {
+                thread: 7,
+                before: Some(100),
+                limit: Some(50)
+            })
+            .to_json(),
+            r#"{"type":"sms.messages.request","thread":7,"before":100,"limit":50}"#
+        );
+        assert_eq!(
+            parse(
+                r#"{"type":"contacts","contacts":[{"name":"Ann","numbers":["1"]}],"part":1,"parts":2}"#
+            ),
+            Parsed::Known(Packet::Contacts(Contacts {
+                contacts: vec![Contact {
+                    name: "Ann".into(),
+                    numbers: vec!["1".into()],
+                }],
+                part: Some(1),
+                parts: Some(2),
+            }))
+        );
+        assert_eq!(
+            parse(r#"{"type":"sms.messages","messages":[]}"#),
+            Parsed::Invalid
+        );
+    }
+
+    #[test]
+    fn input_presenter_and_commands_parse() {
+        assert_eq!(
+            parse(r#"{"type":"input.pointer","dx":1.5,"dy":-2}"#),
+            Parsed::Known(Packet::InputPointer(InputPointer {
+                dx: Some(1.5),
+                dy: Some(-2.0),
+                ..InputPointer::default()
+            }))
+        );
+        assert_eq!(
+            Packet::InputKey(InputKey::key("backspace")).to_json(),
+            r#"{"type":"input.key","key":"backspace"}"#
+        );
+        assert_eq!(
+            Packet::InputKey(InputKey::text("hé")).to_json(),
+            r#"{"type":"input.key","text":"hé"}"#
+        );
+        // Absent, null and a spot are three different things.
+        let presenter = |json| match parse(json) {
+            Parsed::Known(Packet::Presenter(presenter)) => presenter,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            presenter(r#"{"type":"presenter","action":"next"}"#).pointer,
+            None
+        );
+        assert_eq!(
+            presenter(r#"{"type":"presenter","pointer":null}"#).pointer,
+            Some(None)
+        );
+        assert_eq!(
+            presenter(r#"{"type":"presenter","pointer":{"x":0.5,"y":-1}}"#).pointer,
+            Some(Some(Spot { x: 0.5, y: -1.0 }))
+        );
+        assert_eq!(
+            Packet::CommandList {
+                commands: vec![CommandItem {
+                    id: "a1".into(),
+                    name: "Lock".into()
+                }]
+            }
+            .to_json(),
+            r#"{"type":"command.list","commands":[{"id":"a1","name":"Lock"}]}"#
+        );
+        assert_eq!(
+            parse(r#"{"type":"command.run","id":"a1"}"#),
+            Parsed::Known(Packet::CommandRun { id: "a1".into() })
+        );
+        assert_eq!(parse(r#"{"type":"input.click"}"#), Parsed::Invalid);
     }
 
     #[test]

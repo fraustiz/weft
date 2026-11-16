@@ -319,11 +319,147 @@ pub fn track_time(ms: u64) -> String {
     }
 }
 
+/// A date and time on this computer's clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalTime {
+    pub year: u16,
+    pub month: u16,
+    pub day: u16,
+    pub hour: u16,
+    pub minute: u16,
+}
+
+/// A time in ms since the epoch, as this computer's time zone has it.
+pub fn local_time(ms: i64) -> Option<LocalTime> {
+    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+
+    // A FILETIME counts 100 ns from 1601.
+    const EPOCH: u64 = 116_444_736_000_000_000;
+    let ticks = u64::try_from(ms)
+        .ok()?
+        .checked_mul(10_000)?
+        .checked_add(EPOCH)?;
+    let file = FILETIME {
+        dwLowDateTime: ticks as u32,
+        dwHighDateTime: (ticks >> 32) as u32,
+    };
+    // SAFETY: plain structures, valid for the calls; a null zone is the
+    // current one.
+    let local: SYSTEMTIME = unsafe {
+        let mut utc: SYSTEMTIME = std::mem::zeroed();
+        let mut local: SYSTEMTIME = std::mem::zeroed();
+        if FileTimeToSystemTime(&file, &mut utc) == 0
+            || SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) == 0
+        {
+            return None;
+        }
+        local
+    };
+    Some(LocalTime {
+        year: local.wYear,
+        month: local.wMonth,
+        day: local.wDay,
+        hour: local.wHour,
+        minute: local.wMinute,
+    })
+}
+
+/// When a message came: the time today, the day this year, the full date
+/// before; with the time on any day when `always_time`, as a thread shows
+/// it.
+pub fn message_time(then: LocalTime, now: LocalTime, always_time: bool) -> String {
+    const EN: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    const FR: [&str; 12] = [
+        "janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.",
+        "déc.",
+    ];
+    if (then.year, then.month, then.day) == (now.year, now.month, now.day) {
+        return format!("{:02}:{:02}", then.hour, then.minute);
+    }
+    let months = if is_french() { FR } else { EN };
+    let month = months[usize::from(then.month.clamp(1, 12) - 1)];
+    let date = if then.year == now.year {
+        format!("{} {month}", then.day)
+    } else {
+        format!("{} {month} {}", then.day, then.year)
+    };
+    if always_time {
+        format!("{date} {:02}:{:02}", then.hour, then.minute)
+    } else {
+        date
+    }
+}
+
+/// [`message_time`] of a time in ms since the epoch; empty if unknown.
+pub fn sms_time(ms: i64, always_time: bool) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0);
+    match (local_time(ms), local_time(now)) {
+        (Some(then), Some(now)) if ms > 0 => message_time(then, now, always_time),
+        _ => String::new(),
+    }
+}
+
+/// Why the phone could not send an SMS, from its reason.
+pub fn sms_failure(reason: Option<&str>) -> &'static str {
+    match reason {
+        Some("permission") => t(
+            "Weft may not send SMS on the phone",
+            "Weft n'a pas le droit d'envoyer des SMS sur le téléphone",
+        ),
+        Some("noSms") => t(
+            "This phone cannot send SMS",
+            "Ce téléphone ne peut pas envoyer de SMS",
+        ),
+        Some("noService") => t("No mobile service", "Pas de réseau mobile"),
+        Some("radioOff") => t(
+            "The phone's mobile network is off",
+            "Le réseau mobile du téléphone est coupé",
+        ),
+        _ => t(
+            "The phone could not send it",
+            "Le téléphone n'a pas pu l'envoyer",
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sync::Pause;
     use crate::worker::PairingState;
+
+    #[test]
+    fn message_times_shorten_with_age() {
+        let at = |year, month, day, hour, minute| LocalTime {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+        };
+        let now = at(2026, 11, 16, 18, 0);
+        assert_eq!(message_time(at(2026, 11, 16, 9, 5), now, false), "09:05");
+        let day = message_time(at(2026, 11, 2, 9, 5), now, false);
+        assert!(day == "2 Nov" || day == "2 nov.", "{day}");
+        let old = message_time(at(2025, 8, 30, 9, 5), now, false);
+        assert!(old == "30 Aug 2025" || old == "30 août 2025", "{old}");
+        // A thread keeps the time on other days.
+        let stamp = message_time(at(2026, 11, 15, 23, 2), now, true);
+        assert!(
+            stamp == "15 Nov 23:02" || stamp == "15 nov. 23:02",
+            "{stamp}"
+        );
+        assert_eq!(message_time(at(2026, 11, 16, 9, 5), now, true), "09:05");
+        // The epoch is a date like any other; before it there is none.
+        assert!(local_time(0).is_some());
+        assert_eq!(local_time(-1), None);
+    }
 
     fn snapshot(status: Status) -> Snapshot {
         Snapshot {
@@ -335,6 +471,8 @@ mod tests {
             peers: Default::default(),
             pause: Pause::default(),
             features: Default::default(),
+            control: Default::default(),
+            commands: Vec::new(),
             pairing: PairingState::Idle,
             last_activity: None,
             ringing: None,

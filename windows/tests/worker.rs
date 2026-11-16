@@ -15,11 +15,13 @@ use tokio::net::TcpListener;
 use weft_cli::{Error, Event, Session, State, StateDir};
 use weft_protocol::PairingCode;
 use weft_relay::Config;
-use weft_windows::features::Features;
+use weft_windows::features::{Features, Settings, UserCommand};
+use weft_windows::input::{Button, Input, Key, Modifiers, Press};
 use weft_windows::packets::{
     self, Battery, Call, Capabilities, Connectivity, FileOffer, MediaAction, MediaCommand,
     Notification, Packet, Parsed, Player, Volume, VolumeSet, transfer_id,
 };
+use weft_windows::sms::SendState;
 use weft_windows::transfer::{CHUNK, Stage, WINDOW};
 use weft_windows::worker::{
     Command, Device, Direction, Handle, Hooks, Notice, PairingFailure, PairingState, Snapshot,
@@ -183,6 +185,11 @@ struct Tested {
     clipboard: Arc<Mutex<Vec<String>>>,
     notices: Arc<Mutex<Vec<Notice>>>,
     downloads: PathBuf,
+    /// What reached this computer's pointer and keyboard, in place of
+    /// `SendInput`.
+    inputs: Arc<Mutex<Vec<Input>>>,
+    /// The command lines run, in place of `cmd`.
+    ran: Arc<Mutex<Vec<String>>>,
 }
 
 impl Tested {
@@ -192,12 +199,17 @@ impl Tested {
         let dir = StateDir::new(temp.path().join("state"));
         let clipboard = Arc::new(Mutex::new(Vec::new()));
         let notices = Arc::new(Mutex::new(Vec::new()));
+        let inputs = Arc::new(Mutex::new(Vec::new()));
+        let ran = Arc::new(Mutex::new(Vec::new()));
         let downloads = temp.path().join("Downloads");
         let (sink, notice_sink) = (clipboard.clone(), notices.clone());
+        let (input_sink, runner) = (inputs.clone(), ran.clone());
         let hooks = Hooks {
             on_text: Box::new(move |text| sink.lock().unwrap().push(text)),
             on_notice: Arc::new(move |notice| notice_sink.lock().unwrap().push(notice)),
             downloads: downloads.clone(),
+            on_input: Box::new(move |input| input_sink.lock().unwrap().push(input)),
+            run_command: Box::new(move |line| runner.lock().unwrap().push(line.to_owned())),
         };
         let (worker, thread) = spawn_on(dir.clone(), relay_url, hooks).unwrap();
         Tested {
@@ -208,6 +220,8 @@ impl Tested {
             clipboard,
             notices,
             downloads,
+            inputs,
+            ran,
         }
     }
 
@@ -1739,6 +1753,547 @@ async fn media_and_volume_go_both_ways() {
         tested.worker.send(Command::Ring(phone_id));
         let seen = packets_until(&mut phone, pc, |packet| *packet == Packet::Ring {}).await;
         assert!(!seen.iter().any(is_state), "{seen:?}");
+        tested.stop().await;
+    })
+    .await;
+}
+
+/// A phone with SMS, contacts, remote input and commands.
+fn phone_capabilities_full() -> Packet {
+    let list = |kinds: &[&str]| kinds.iter().map(|kind| kind.to_string()).collect();
+    Packet::Capabilities(Capabilities {
+        platform: "android".into(),
+        incoming: list(&[
+            "ring",
+            "sms.conversations.request",
+            "sms.messages.request",
+            "sms.send",
+            "contacts.request",
+            "input.key",
+            "command.list",
+        ]),
+        outgoing: list(&[
+            "sms.conversations",
+            "sms.messages",
+            "sms.sent",
+            "sms.received",
+            "contacts",
+            "input.pointer",
+            "input.click",
+            "input.key",
+            "presenter",
+            "command.run",
+        ]),
+    })
+}
+
+/// A paired phone that told its full capabilities.
+async fn paired_full(url: &str) -> (Tested, Peer) {
+    let (tested, mut phone) = paired(url).await;
+    let (pc, phone_id) = (tested.id(), phone.id());
+    phone.send(pc, &phone_capabilities_full()).await;
+    tested
+        .wait(|snapshot| snapshot.peer(&phone_id).handles("sms.send"))
+        .await;
+    (tested, phone)
+}
+
+fn sms(id: i64, time: i64, body: &str, outgoing: bool) -> packets::SmsMessage {
+    packets::SmsMessage {
+        id,
+        address: Some("+33 6 00 00 00 01".into()),
+        body: body.into(),
+        time,
+        outgoing,
+        status: None,
+    }
+}
+
+/// Every byte under `dir`, to look for what must not be on disk.
+fn all_bytes(dir: &Path) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            bytes.extend(all_bytes(&path));
+        } else {
+            bytes.extend(std::fs::read(&path).unwrap());
+        }
+    }
+    bytes
+}
+
+/// Lets the worker handle everything the phone sent before.
+async fn settle(phone: &mut Peer, pc: [u8; 16]) {
+    phone.send(pc, &Packet::StateRequest {}).await;
+    phone.expect_packet(pc, is_capabilities).await;
+}
+
+#[tokio::test]
+async fn sms_conversations_messages_and_sends_reach_the_snapshot() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut phone) = paired_full(&url).await;
+        let (pc, phone_id) = (tested.id(), phone.id());
+
+        // Opening the messages asks for the conversations and, once, the
+        // contacts.
+        tested.worker.send(Command::OpenMessages(phone_id));
+        phone
+            .expect_packet(pc, |packet| *packet == Packet::SmsConversationsRequest {})
+            .await;
+        phone
+            .expect_packet(pc, |packet| *packet == Packet::ContactsRequest {})
+            .await;
+        let conversations = vec![
+            packets::Conversation {
+                thread: 7,
+                addresses: vec!["+33 6 00 00 00 01".into()],
+                names: vec![Some("Ann".into())],
+                snippet: Some("See you".into()),
+                time: 3000,
+                unread: false,
+            },
+            packets::Conversation {
+                thread: 9,
+                addresses: vec!["36179".into()],
+                names: vec![None],
+                snippet: Some("Your code".into()),
+                time: 1000,
+                unread: true,
+            },
+        ];
+        phone
+            .send(
+                pc,
+                &Packet::SmsConversations {
+                    conversations: conversations.clone(),
+                },
+            )
+            .await;
+        for (part, name) in [(1, "Ann"), (2, "Bob")] {
+            let contacts = packets::Contacts {
+                contacts: vec![packets::Contact {
+                    name: name.into(),
+                    numbers: vec![format!("0{part}")],
+                }],
+                part: Some(part),
+                parts: Some(2),
+            };
+            phone.send(pc, &Packet::Contacts(contacts)).await;
+        }
+        let snapshot = tested
+            .wait(|snapshot| snapshot.peer(&phone_id).sms.contacts.len() == 2)
+            .await;
+        let sms_state = snapshot.peer(&phone_id).sms;
+        assert_eq!(sms_state.conversations.as_ref(), Some(&conversations));
+
+        tested.worker.send(Command::OpenMessages(phone_id));
+        tested.worker.send(Command::Ring(phone_id));
+        let seen = packets_until(&mut phone, pc, |packet| *packet == Packet::Ring {}).await;
+        assert!(!seen.contains(&Packet::ContactsRequest {}), "{seen:?}");
+
+        // A thread loads, oldest first; a short page is all there is.
+        tested.worker.send(Command::LoadMessages {
+            device: phone_id,
+            thread: 7,
+            before: None,
+        });
+        let asked = phone
+            .expect_packet(pc, |packet| matches!(packet, Packet::SmsMessagesRequest(_)))
+            .await;
+        assert_eq!(
+            asked,
+            Packet::SmsMessagesRequest(packets::SmsMessagesRequest {
+                thread: 7,
+                before: None,
+                limit: Some(50),
+            })
+        );
+        let messages = vec![
+            sms(1, 1000, "Hi", false),
+            sms(2, 2000, "Hello", true),
+            sms(3, 3000, "See you", false),
+        ];
+        phone
+            .send(
+                pc,
+                &Packet::SmsMessages {
+                    thread: 7,
+                    messages: messages.clone(),
+                },
+            )
+            .await;
+        let snapshot = tested
+            .wait(|snapshot| snapshot.peer(&phone_id).sms.threads.contains_key(&7))
+            .await;
+        let sms_state = snapshot.peer(&phone_id).sms;
+        assert_eq!(sms_state.threads[&7], messages);
+        assert!(sms_state.complete.contains(&7));
+
+        // A send is pending, then sent; the thread is asked for again,
+        // and once it has the message the outbox lets it go.
+        let addresses = vec!["+33 6 00 00 00 01".to_string()];
+        tested.worker.send(Command::SendSms {
+            device: phone_id,
+            addresses: addresses.clone(),
+            text: "On my way".into(),
+            thread: Some(7),
+        });
+        let Packet::SmsSend(send) = phone
+            .expect_packet(pc, |packet| matches!(packet, Packet::SmsSend(_)))
+            .await
+        else {
+            unreachable!();
+        };
+        assert_eq!(
+            (&send.addresses, send.text.as_str()),
+            (&addresses, "On my way")
+        );
+        let snapshot = tested
+            .wait(|snapshot| !snapshot.peer(&phone_id).sms.outbox.is_empty())
+            .await;
+        assert_eq!(
+            snapshot.peer(&phone_id).sms.outbox[0].state,
+            SendState::Pending
+        );
+        let sent = packets::SmsSent {
+            request_id: send.request_id.clone(),
+            ok: true,
+            error: None,
+        };
+        phone.send(pc, &Packet::SmsSent(sent)).await;
+        tested
+            .wait(|snapshot| snapshot.peer(&phone_id).sms.outbox[0].state == SendState::Sent)
+            .await;
+        phone
+            .expect_packet(pc, |packet| matches!(packet, Packet::SmsMessagesRequest(_)))
+            .await;
+        phone
+            .expect_packet(pc, |packet| *packet == Packet::SmsConversationsRequest {})
+            .await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        phone
+            .send(
+                pc,
+                &Packet::SmsMessages {
+                    thread: 7,
+                    messages: vec![sms(4, now, "On my way", true)],
+                },
+            )
+            .await;
+        tested
+            .wait(|snapshot| {
+                let sms = snapshot.peer(&phone_id).sms;
+                sms.outbox.is_empty() && sms.threads[&7].len() == 4
+            })
+            .await;
+
+        // A refused send says why.
+        tested.worker.send(Command::SendSms {
+            device: phone_id,
+            addresses: addresses.clone(),
+            text: "Again".into(),
+            thread: Some(7),
+        });
+        let Packet::SmsSend(send) = phone
+            .expect_packet(pc, |packet| matches!(packet, Packet::SmsSend(_)))
+            .await
+        else {
+            unreachable!();
+        };
+        let refused = packets::SmsSent {
+            request_id: send.request_id,
+            ok: false,
+            error: Some("radio off".into()),
+        };
+        phone.send(pc, &Packet::SmsSent(refused)).await;
+        tested
+            .wait(|snapshot| {
+                snapshot
+                    .peer(&phone_id)
+                    .sms
+                    .outbox
+                    .first()
+                    .map(|outgoing| outgoing.state.clone())
+                    == Some(SendState::Failed(Some("radio off".into())))
+            })
+            .await;
+
+        // A received message goes to the top and to a notice with the
+        // thread's people.
+        let received = packets::SmsReceived {
+            thread: 9,
+            message: packets::SmsMessage {
+                address: Some("36179".into()),
+                ..sms(5, 4000, "Your code is 1234", false)
+            },
+        };
+        phone.send(pc, &Packet::SmsReceived(received)).await;
+        let notice = tested
+            .expect_notice(|notice| matches!(notice, Notice::SmsReceived { .. }))
+            .await;
+        assert_eq!(
+            notice,
+            Notice::SmsReceived {
+                from: phone_id,
+                device: Some("Test phone".into()),
+                thread: 9,
+                sender: "36179".into(),
+                text: "Your code is 1234".into(),
+                addresses: vec!["36179".into()],
+            }
+        );
+        let snapshot = tested.worker.snapshot();
+        let sms_state = snapshot.peer(&phone_id).sms;
+        let top = &sms_state.conversations.as_ref().unwrap()[0];
+        assert_eq!(
+            (top.thread, top.snippet.as_deref(), top.unread),
+            (9, Some("Your code is 1234"), true)
+        );
+        // Thread 9 was never loaded: nothing is kept for it.
+        assert!(!sms_state.threads.contains_key(&9));
+
+        // Nothing of it is on disk.
+        let disk = all_bytes(tested.dir.path());
+        for text in ["On my way", "See you", "Your code", "Ann", "Bob"] {
+            assert!(
+                !disk
+                    .windows(text.len())
+                    .any(|bytes| bytes == text.as_bytes()),
+                "{text} is on disk"
+            );
+        }
+
+        // Switched off: forgotten, and ignored.
+        let off = Features {
+            sms: false,
+            ..Features::default()
+        };
+        tested.worker.send(Command::SetFeatures(off));
+        phone.expect_packet(pc, is_capabilities).await;
+        tested
+            .wait(|snapshot| snapshot.peer(&phone_id).sms.conversations.is_none())
+            .await;
+        let again = packets::SmsReceived {
+            thread: 9,
+            message: sms(6, 5000, "Ignored", false),
+        };
+        phone.send(pc, &Packet::SmsReceived(again)).await;
+        settle(&mut phone, pc).await;
+        let snapshot = tested.worker.snapshot();
+        assert!(snapshot.peer(&phone_id).sms.conversations.is_none());
+        let notices = tested.notices.lock().unwrap().clone();
+        assert!(
+            !notices
+                .iter()
+                .any(|notice| matches!(notice, Notice::SmsReceived { .. })),
+            "{notices:?}"
+        );
+        tested.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn input_reaches_the_sink_only_from_an_allowed_device() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut phone) = paired_full(&url).await;
+        let (pc, phone_id) = (tested.id(), phone.id());
+        let pointer = Packet::InputPointer(packets::InputPointer {
+            dx: Some(1.5),
+            dy: Some(-2.0),
+            ..packets::InputPointer::default()
+        });
+
+        // Off by default, and the phone cannot be typed on.
+        phone.send(pc, &pointer).await;
+        let typed = Packet::InputKey(packets::InputKey::text("hi"));
+        tested
+            .worker
+            .send(Command::SendPacket(phone_id, typed.clone()));
+        tested.worker.send(Command::Ring(phone_id));
+        let seen = packets_until(&mut phone, pc, |packet| *packet == Packet::Ring {}).await;
+        assert!(!seen.contains(&typed), "{seen:?}");
+
+        // On, but this phone is not allowed yet; typing on it works.
+        let on = Features {
+            input: true,
+            ..Features::default()
+        };
+        tested.worker.send(Command::SetFeatures(on));
+        phone.expect_packet(pc, is_capabilities).await;
+        phone.send(pc, &pointer).await;
+        settle(&mut phone, pc).await;
+        assert!(tested.inputs.lock().unwrap().is_empty());
+        tested
+            .worker
+            .send(Command::SendPacket(phone_id, typed.clone()));
+        phone.expect_packet(pc, |packet| *packet == typed).await;
+
+        // Allowed: saved, and everything goes through, mapped.
+        tested.worker.send(Command::SetControl(phone_id, true));
+        tested
+            .wait(|snapshot| snapshot.control.contains(&phone_id))
+            .await;
+        assert_eq!(
+            Settings::load(tested.dir.path()).controllers(),
+            [phone_id].into()
+        );
+        let asked = [
+            pointer.clone(),
+            Packet::InputPointer(packets::InputPointer {
+                scroll_y: Some(0.5),
+                ..packets::InputPointer::default()
+            }),
+            Packet::InputClick(packets::InputClick {
+                button: "left".into(),
+                double: true,
+                ..packets::InputClick::default()
+            }),
+            Packet::InputKey(packets::InputKey::text("é😀")),
+            Packet::InputKey(packets::InputKey {
+                key: Some("enter".into()),
+                ctrl: true,
+                ..packets::InputKey::default()
+            }),
+            Packet::Presenter(packets::Presenter {
+                action: Some("next".into()),
+                pointer: None,
+            }),
+            Packet::Presenter(packets::Presenter {
+                action: Some("start".into()),
+                pointer: None,
+            }),
+            Packet::Presenter(packets::Presenter {
+                action: None,
+                pointer: Some(Some(packets::Spot { x: 0.5, y: -3.0 })),
+            }),
+            Packet::Presenter(packets::Presenter {
+                action: None,
+                pointer: Some(None),
+            }),
+        ];
+        for packet in &asked {
+            phone.send(pc, packet).await;
+        }
+        settle(&mut phone, pc).await;
+        let plain = |key| Input::Key {
+            key,
+            modifiers: Modifiers::default(),
+        };
+        let expected = vec![
+            Input::Move { dx: 1.5, dy: -2.0 },
+            Input::Scroll { x: 0.0, y: 0.5 },
+            Input::Click {
+                button: Button::Left,
+                press: Press::Double,
+            },
+            Input::Text {
+                text: "é😀".into(),
+                modifiers: Modifiers::default(),
+            },
+            Input::Key {
+                key: Key::Enter,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    ..Modifiers::default()
+                },
+            },
+            plain(Key::Right),
+            plain(Key::F5),
+            Input::Spot(Some((0.5, -1.0))),
+            Input::Spot(None),
+        ];
+        assert_eq!(*tested.inputs.lock().unwrap(), expected);
+
+        // Forbidden again: the spot is hidden, and nothing more goes.
+        tested.inputs.lock().unwrap().clear();
+        tested.worker.send(Command::SetControl(phone_id, false));
+        tested.wait(|snapshot| snapshot.control.is_empty()).await;
+        phone.send(pc, &pointer).await;
+        settle(&mut phone, pc).await;
+        assert_eq!(*tested.inputs.lock().unwrap(), [Input::Spot(None)]);
+        tested.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn commands_are_listed_and_run_by_id_only() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut phone) = paired_full(&url).await;
+        let (pc, phone_id) = (tested.id(), phone.id());
+        let is_list = |packet: &Packet| matches!(packet, Packet::CommandList { .. });
+
+        let commands = vec![
+            UserCommand {
+                id: "c1".into(),
+                name: "Lock".into(),
+                line: "rundll32.exe user32.dll,LockWorkStation".into(),
+            },
+            UserCommand {
+                id: "c2".into(),
+                name: "Sleep".into(),
+                line: "echo sleep".into(),
+            },
+        ];
+        tested.worker.send(Command::SetCommands(commands.clone()));
+        let listed = phone
+            .expect_packet(
+                pc,
+                |packet| matches!(packet, Packet::CommandList { commands } if !commands.is_empty()),
+            )
+            .await;
+        assert_eq!(
+            listed,
+            Packet::CommandList {
+                commands: commands.iter().map(UserCommand::item).collect(),
+            }
+        );
+        assert_eq!(Settings::load(tested.dir.path()).commands, commands);
+
+        // Only a listed id runs, and only its own line.
+        for id in ["nope", "c1; del *", "c2"] {
+            phone.send(pc, &Packet::CommandRun { id: id.into() }).await;
+        }
+        let ran = tested
+            .expect_notice(|notice| matches!(notice, Notice::CommandRan { .. }))
+            .await;
+        assert_eq!(
+            ran,
+            Notice::CommandRan {
+                from: phone_id,
+                device: Some("Test phone".into()),
+                name: "Sleep".into(),
+            }
+        );
+        assert_eq!(*tested.ran.lock().unwrap(), ["echo sleep"]);
+
+        // A state request gets the list again.
+        phone.send(pc, &Packet::StateRequest {}).await;
+        let again = phone.expect_packet(pc, is_list).await;
+        assert_eq!(again, listed);
+
+        // Switched off, nothing runs and no list goes.
+        let off = Features {
+            commands: false,
+            ..Features::default()
+        };
+        tested.worker.send(Command::SetFeatures(off));
+        phone.expect_packet(pc, is_capabilities).await;
+        phone
+            .send(pc, &Packet::CommandRun { id: "c1".into() })
+            .await;
+        phone.send(pc, &Packet::StateRequest {}).await;
+        let seen = packets_until(&mut phone, pc, is_capabilities).await;
+        assert!(!seen.iter().any(is_list), "{seen:?}");
+        assert_eq!(*tested.ran.lock().unwrap(), ["echo sleep"]);
         tested.stop().await;
     })
     .await;

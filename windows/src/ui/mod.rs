@@ -8,6 +8,7 @@
 mod app;
 mod detail;
 mod devices;
+mod messages;
 mod pairing;
 mod picker;
 mod qr;

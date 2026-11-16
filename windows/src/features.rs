@@ -1,12 +1,14 @@
-//! The feature switches of `docs/features.md` section 9 this app has, kept
-//! in `features.json` in the state directory, and the capabilities they
-//! give (section 2).
+//! The feature switches of `docs/features.md` section 9 this app has, and
+//! the capabilities they give (section 2); with the devices allowed to
+//! control this computer and the commands they may run, they are the
+//! [`Settings`] kept in `features.json` in the state directory.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::packets::{Capabilities, PLATFORM};
+use crate::packets::{Capabilities, CommandItem, PLATFORM};
 
 const FILE_NAME: &str = "features.json";
 
@@ -28,8 +30,28 @@ const NOTIFICATION_ANSWERS: &[&str] = &[
     "notification.request",
 ];
 
-/// Every switch is on by default. A switch missing from the file keeps its
-/// default, so a later version can add one.
+/// What the phone answers about its messages and contacts.
+const SMS_ANSWERS: &[&str] = &[
+    "sms.conversations",
+    "sms.messages",
+    "sms.sent",
+    "sms.received",
+    "contacts",
+];
+
+/// What a computer asks of the phone's messages and contacts.
+const SMS_REQUESTS: &[&str] = &[
+    "sms.conversations.request",
+    "sms.messages.request",
+    "sms.send",
+    "contacts.request",
+];
+
+/// What another device may do to this computer's pointer and keyboard.
+const INPUT_PACKETS: &[&str] = &["input.pointer", "input.click", "input.key", "presenter"];
+
+/// Every switch is on by default but Input. A switch missing from the file
+/// keeps its default, so a later version can add one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Features {
@@ -49,6 +71,14 @@ pub struct Features {
     pub media: bool,
     /// Share this computer's volume, and control the other devices'.
     pub volume: bool,
+    /// Read and send the phone's SMS, with its contacts to pick from. The
+    /// phone has its own switch, off by default.
+    pub sms: bool,
+    /// Let the devices allowed in [`Settings::control`] move the pointer,
+    /// type and present; type on the phone. Off by default.
+    pub input: bool,
+    /// Run the commands of [`Settings::commands`] for the other devices.
+    pub commands: bool,
 }
 
 impl Default for Features {
@@ -62,6 +92,9 @@ impl Default for Features {
             calls: true,
             media: true,
             volume: true,
+            sms: true,
+            input: false,
+            commands: true,
         }
     }
 }
@@ -71,25 +104,9 @@ fn path(dir: &Path) -> PathBuf {
 }
 
 impl Features {
-    /// The switches saved in `dir`, or the defaults if there are none or
-    /// the file cannot be read.
+    /// The switches saved in `dir`, or the defaults.
     pub fn load(dir: &Path) -> Features {
-        let Ok(text) = std::fs::read_to_string(path(dir)) else {
-            return Features::default();
-        };
-        serde_json::from_str(&text).unwrap_or_else(|err| {
-            tracing::warn!(error = %err, "feature settings unreadable; using the defaults");
-            Features::default()
-        })
-    }
-
-    /// Saves the switches in `dir`, through a temporary file so a crash
-    /// leaves the old file whole.
-    pub fn save(&self, dir: &Path) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(self).expect("settings serialise");
-        let temp = dir.join(format!("{FILE_NAME}.tmp"));
-        std::fs::write(&temp, json)?;
-        std::fs::rename(&temp, path(dir))
+        Settings::load(dir).features
     }
 
     /// What this device announces: a switched-off feature is in neither
@@ -127,11 +144,89 @@ impl Features {
             incoming.extend(["volume", "volume.set"]);
             outgoing.extend(["volume", "volume.set"]);
         }
+        if self.sms {
+            incoming.extend(SMS_ANSWERS);
+            outgoing.extend(SMS_REQUESTS);
+        }
+        if self.input {
+            incoming.extend(INPUT_PACKETS);
+            outgoing.push("input.key");
+        }
+        if self.commands {
+            incoming.push("command.run");
+            outgoing.push("command.list");
+        }
         Capabilities {
             platform: PLATFORM.into(),
             incoming: incoming.into_iter().map(String::from).collect(),
             outgoing: outgoing.into_iter().map(String::from).collect(),
         }
+    }
+}
+
+/// A command the other devices may run on this computer: they only see
+/// its id and name, and only ever ask for it by id.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserCommand {
+    pub id: String,
+    pub name: String,
+    /// Run by `cmd /C`, as written here.
+    pub line: String,
+}
+
+impl UserCommand {
+    /// What `command.list` shows of it.
+    pub fn item(&self) -> CommandItem {
+        CommandItem {
+            id: self.id.clone(),
+            name: self.name.clone(),
+        }
+    }
+}
+
+/// Everything `features.json` holds. A member missing from the file keeps
+/// its default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    #[serde(flatten)]
+    pub features: Features,
+    /// The devices allowed to control this computer, by id in hex.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub control: BTreeSet<String>,
+    /// Named apart from the `commands` switch, which shares the object.
+    #[serde(rename = "commandList", skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<UserCommand>,
+}
+
+impl Settings {
+    /// The settings saved in `dir`, or the defaults if there are none or
+    /// the file cannot be read.
+    pub fn load(dir: &Path) -> Settings {
+        let Ok(text) = std::fs::read_to_string(path(dir)) else {
+            return Settings::default();
+        };
+        serde_json::from_str(&text).unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "feature settings unreadable; using the defaults");
+            Settings::default()
+        })
+    }
+
+    /// Saves the settings in `dir`, through a temporary file so a crash
+    /// leaves the old file whole.
+    pub fn save(&self, dir: &Path) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(self).expect("settings serialise");
+        let temp = dir.join(format!("{FILE_NAME}.tmp"));
+        std::fs::write(&temp, json)?;
+        std::fs::rename(&temp, path(dir))
+    }
+
+    /// The devices allowed to control this computer.
+    pub fn controllers(&self) -> BTreeSet<[u8; 16]> {
+        self.control
+            .iter()
+            .filter_map(|id| weft_cli::unhex(id))
+            .collect()
     }
 }
 
@@ -142,20 +237,31 @@ mod tests {
     #[test]
     fn saved_and_loaded() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(Features::load(dir.path()), Features::default());
-        let features = Features {
-            files: false,
-            ..Features::default()
+        assert_eq!(Settings::load(dir.path()), Settings::default());
+        let settings = Settings {
+            features: Features {
+                files: false,
+                ..Features::default()
+            },
+            control: BTreeSet::from([weft_cli::hex(&[0xab; 16])]),
+            commands: vec![UserCommand {
+                id: "c1".into(),
+                name: "Lock".into(),
+                line: "rundll32.exe user32.dll,LockWorkStation".into(),
+            }],
         };
-        features.save(dir.path()).unwrap();
-        assert_eq!(Features::load(dir.path()), features);
+        settings.save(dir.path()).unwrap();
+        assert_eq!(Settings::load(dir.path()), settings);
+        assert_eq!(Features::load(dir.path()), settings.features);
+        assert_eq!(settings.controllers(), BTreeSet::from([[0xab; 16]]));
 
         // A missing switch keeps its default; a broken file gives them all.
         std::fs::write(path(dir.path()), r#"{"ring":false}"#).unwrap();
-        let loaded = Features::load(dir.path());
-        assert!(!loaded.ring && loaded.files && loaded.links && loaded.battery);
+        let loaded = Settings::load(dir.path());
+        assert!(!loaded.features.ring && loaded.features.files && loaded.features.sms);
+        assert!(!loaded.features.input && loaded.control.is_empty());
         std::fs::write(path(dir.path()), "not json").unwrap();
-        assert_eq!(Features::load(dir.path()), Features::default());
+        assert_eq!(Settings::load(dir.path()), Settings::default());
     }
 
     #[test]
@@ -175,14 +281,35 @@ mod tests {
             "media.command",
             "volume",
             "volume.set",
+            "sms.conversations",
+            "sms.received",
+            "contacts",
+            "command.run",
         ] {
             assert!(all.handles(kind), "{kind}");
         }
         assert!(all.sends("file.offer") && all.sends("ring"));
         assert!(!all.sends("battery") && !all.sends("notification"));
-        for kind in ["notification.reply", "call.mute", "media", "volume.set"] {
+        for kind in [
+            "notification.reply",
+            "call.mute",
+            "media",
+            "volume.set",
+            "sms.send",
+            "contacts.request",
+            "command.list",
+        ] {
             assert!(all.sends(kind), "{kind}");
         }
+        // Input is off until the user turns it on.
+        assert!(!all.handles("input.pointer") && !all.sends("input.key"));
+        let input = Features {
+            input: true,
+            ..Features::default()
+        }
+        .capabilities();
+        assert!(input.handles("input.pointer") && input.handles("presenter"));
+        assert!(input.sends("input.key"));
 
         let none = Features {
             files: false,
@@ -193,6 +320,9 @@ mod tests {
             calls: false,
             media: false,
             volume: false,
+            sms: false,
+            input: false,
+            commands: false,
         }
         .capabilities();
         assert_eq!(none.incoming, ["state.request", "ping"]);

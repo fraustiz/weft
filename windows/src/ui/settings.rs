@@ -3,8 +3,8 @@
 
 use windows_reactor::*;
 
-use super::app::{Message, Weft};
-use super::widgets::{body, card, column, label, secondary};
+use super::app::{CommandDraft, Message, Weft};
+use super::widgets::{body, button, card, column, label, primary_button, row, secondary};
 use crate::features::Features;
 use crate::i18n::t;
 
@@ -14,7 +14,7 @@ const SOURCE: &str = "https://github.com/fraustiz/weft";
 /// A switch with its title and what it does, as Windows Settings shows
 /// them. The On and Off words are given, or they would follow the system
 /// language rather than the app's.
-fn switch(title: &str, caption: &str, on: bool, toggled: Callback<bool>) -> View {
+pub(super) fn switch(title: &str, caption: &str, on: bool, toggled: Callback<bool>) -> View {
     card(
         Grid::new()
             .columns([GridLength::STAR, GridLength::Auto])
@@ -73,6 +73,133 @@ fn device_name(weft: &Weft, context: &ViewContext<Weft>) -> View {
         );
     }
     card(column(8.0, views))
+}
+
+/// An icon button with its name as a tooltip, for a row's actions.
+fn icon_button(symbol: Symbol, name: &str, on_click: Callback<()>) -> View {
+    Button::new()
+        .style(ButtonStyle::Subtle)
+        .vertical_alignment(VerticalAlignment::Center)
+        .automation_name(name)
+        .on_click(on_click)
+        .content(SymbolIcon::new().symbol(symbol))
+        .tooltip(name)
+}
+
+/// The form of a command being added or changed.
+fn command_editor(draft: &CommandDraft, context: &ViewContext<Weft>) -> View {
+    let ready = !draft.name.trim().is_empty() && !draft.line.trim().is_empty();
+    let save = if draft.id.is_some() {
+        t("Save", "Enregistrer")
+    } else {
+        t("Add", "Ajouter")
+    };
+    let mut actions = vec![button(
+        t("Cancel", "Annuler"),
+        context.message(Message::CancelCommand),
+    )];
+    if ready {
+        actions.insert(
+            0,
+            primary_button(save, context.message(Message::SaveCommand)),
+        );
+    }
+    card(column(
+        8.0,
+        vec![
+            TextBox::new()
+                .text(draft.name.clone())
+                .placeholder_text(t(
+                    "Name, as your devices show it",
+                    "Nom, tel que vos appareils l'affichent",
+                ))
+                .automation_name(t("Command name", "Nom de la commande"))
+                .on_text_changed(context.callback(Message::CommandNameEdited))
+                .into(),
+            TextBox::new()
+                .text(draft.line.clone())
+                .placeholder_text(t(
+                    "Command line, run by cmd /C",
+                    "Ligne de commande, lancée par cmd /C",
+                ))
+                .automation_name(t("Command line", "Ligne de commande"))
+                .on_text_changed(context.callback(Message::CommandLineEdited))
+                .into(),
+            row(actions),
+        ],
+    ))
+}
+
+/// The commands the devices may run, each with Edit and Remove, then the
+/// form or the Add button.
+fn commands(weft: &Weft, context: &ViewContext<Weft>) -> View {
+    let editing = weft.command_draft.as_ref();
+    let mut views: Vec<View> = vec![
+        secondary(t(
+            "Only the name goes to your devices; they run a command by picking it, never by sending a line",
+            "Seul le nom part vers vos appareils : ils lancent une commande en la choisissant, jamais en envoyant une ligne",
+        ))
+        .font_size(12.0)
+        .into(),
+    ];
+    for command in &weft.snapshot.commands {
+        if editing.is_some_and(|draft| draft.id.as_deref() == Some(command.id.as_str())) {
+            views.push(command_editor(editing.unwrap(), context));
+            continue;
+        }
+        let (edit, remove) = if crate::i18n::is_french() {
+            (
+                format!("Modifier {}", command.name),
+                format!("Supprimer {}", command.name),
+            )
+        } else {
+            (
+                format!("Edit {}", command.name),
+                format!("Remove {}", command.name),
+            )
+        };
+        views.push(card(
+            Grid::new()
+                .columns([GridLength::STAR, GridLength::Auto, GridLength::Auto])
+                .column_spacing(4.0)
+                .children((
+                    StackPanel::new()
+                        .grid_column(0)
+                        .spacing(2.0)
+                        .vertical_alignment(VerticalAlignment::Center)
+                        .children((
+                            body(command.name.clone()),
+                            secondary(command.line.clone())
+                                .font_size(12.0)
+                                .max_lines(1)
+                                .text_trimming(TextTrimming::CharacterEllipsis),
+                        )),
+                    Border::new().grid_column(1).content(icon_button(
+                        Symbol::Edit,
+                        &edit,
+                        context.message(Message::EditCommand(command.id.clone())),
+                    )),
+                    Border::new().grid_column(2).content(icon_button(
+                        Symbol::Delete,
+                        &remove,
+                        context.message(Message::RemoveCommand(command.id.clone())),
+                    )),
+                )),
+        ));
+    }
+    match editing {
+        Some(draft) if draft.id.is_none() => views.push(command_editor(draft, context)),
+        Some(_) => {}
+        None => views.push(
+            Border::new()
+                .horizontal_alignment(HorizontalAlignment::Left)
+                .content(button(
+                    t("Add command", "Ajouter une commande"),
+                    context.message(Message::AddCommand),
+                )),
+        ),
+    }
+    column(4.0, views)
 }
 
 pub fn view(weft: &Weft, context: &mut ViewContext<Weft>) -> View {
@@ -188,6 +315,33 @@ pub fn view(weft: &Weft, context: &mut ViewContext<Weft>) -> View {
             current.volume,
             toggle(|features, on| features.volume = on),
         ),
+        switch(
+            t("Messages", "Messages"),
+            t(
+                "Read and send your phone's SMS here. The phone asks for its own permission first",
+                "Lire et envoyer ici les SMS de votre téléphone. Le téléphone demande d'abord sa propre autorisation",
+            ),
+            current.sms,
+            toggle(|features, on| features.sms = on),
+        ),
+        switch(
+            t("Remote input", "Contrôle à distance"),
+            t(
+                "Devices you allow on their page can move the pointer, type and run slideshows here, and you can type on them. Windows run as administrator ignore it",
+                "Les appareils autorisés sur leur page peuvent déplacer le pointeur, taper et mener un diaporama ici, et vous pouvez taper sur eux. Les fenêtres lancées en administrateur l'ignorent",
+            ),
+            current.input,
+            toggle(|features, on| features.input = on),
+        ),
+        switch(
+            t("Commands", "Commandes"),
+            t(
+                "Your devices can run the commands listed below",
+                "Vos appareils peuvent lancer les commandes ci-dessous",
+            ),
+            current.commands,
+            toggle(|features, on| features.commands = on),
+        ),
     ];
     let relay = card(column(
         2.0,
@@ -239,6 +393,13 @@ pub fn view(weft: &Weft, context: &mut ViewContext<Weft>) -> View {
                 vec![
                     label(t("With your devices", "Avec vos appareils")).into(),
                     column(4.0, features),
+                ],
+            ),
+            column(
+                8.0,
+                vec![
+                    label(t("Commands", "Commandes")).into(),
+                    commands(weft, context),
                 ],
             ),
             column(8.0, vec![label(t("Connection", "Connexion")).into(), relay]),

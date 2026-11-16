@@ -14,10 +14,16 @@
 //! opens, plays, shows or changes anything. This computer's own players and
 //! volume come in as [`Command::LocalMedia`] and [`Command::LocalVolume`].
 //!
-//! Clipboard text, pairing codes, links, file contents and notification
-//! texts are never logged.
+//! Section 7 and 8 too: the phone's SMS and contacts, kept in the snapshot
+//! (in memory only); remote input and the presenter, handed to the
+//! [`Hooks::on_input`] callback only from the devices the user allowed;
+//! the user's commands, run through [`Hooks::run_command`] by id only.
+//!
+//! Clipboard text, pairing codes, links, file contents, notification
+//! texts, messages, contacts, typed text and command lines are never
+//! logged.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -34,15 +40,17 @@ use weft_cli::session::{
 use weft_cli::{Error, Event, Next, Result, Session, State, StateDir, hex, short_id};
 use weft_protocol::{ControlError, PairingCode, device_id_from_sign_pk, random_message_id};
 
-use crate::features::Features;
+use crate::features::{Features, Settings, UserCommand};
+use crate::input::Input;
 use crate::packets::{
     self, Battery, Call, Capabilities, Connectivity, FileOffer, MediaAction, Notification, Packet,
-    Parsed, Player, RejectReason, Volume, VolumeSet, is_shareable_url, parse_transfer_id,
-    transfer_id,
+    Parsed, Player, RejectReason, SmsMessagesRequest, SmsSend, Volume, VolumeSet, is_shareable_url,
+    parse_transfer_id, transfer_id,
 };
+use crate::sms::{self, OutgoingSms, SendState, Sms};
 use crate::sync::Pause;
 use crate::transfer::{self, Failure, Incoming, Outgoing, Stage, Tick};
-use crate::{files, media};
+use crate::{files, input, media};
 
 /// The relay a new installation uses.
 pub const DEFAULT_RELAY_URL: &str = "wss://weft.frohub.eu/v1";
@@ -115,6 +123,27 @@ pub enum Command {
     LocalMedia(Vec<Player>),
     /// This computer's output volume changed.
     LocalVolume(Volume),
+    /// The messages of a phone are shown: ask for its conversations, and
+    /// for its contacts the first time.
+    OpenMessages([u8; 16]),
+    /// Ask a phone for the newest messages of a thread, or for those
+    /// older than `before`.
+    LoadMessages {
+        device: [u8; 16],
+        thread: i64,
+        before: Option<i64>,
+    },
+    /// Send an SMS from a phone, in `thread` or to start one.
+    SendSms {
+        device: [u8; 16],
+        addresses: Vec<String>,
+        text: String,
+        thread: Option<i64>,
+    },
+    /// Allow or forbid a device to control this computer, saved.
+    SetControl([u8; 16], bool),
+    /// Replace the commands the devices may run, saved and announced.
+    SetCommands(Vec<UserCommand>),
     /// Close the connection and end the thread.
     Shutdown,
 }
@@ -165,6 +194,8 @@ pub struct PeerInfo {
     pub connectivity: Option<Connectivity>,
     pub media: Option<PeerMedia>,
     pub volume: Option<Volume>,
+    /// Its SMS and contacts, shared between snapshots until they change.
+    pub sms: Arc<Sms>,
 }
 
 impl PeerInfo {
@@ -260,6 +291,22 @@ pub enum Notice {
     SetVolume {
         from: [u8; 16],
         set: VolumeSet,
+    },
+    /// An SMS came to the phone. `sender` is the contact's name or the
+    /// number; a reply goes to `addresses`, the people of the thread.
+    SmsReceived {
+        from: [u8; 16],
+        device: Option<String>,
+        thread: i64,
+        sender: String,
+        text: String,
+        addresses: Vec<String>,
+    },
+    /// A command ran for a device.
+    CommandRan {
+        from: [u8; 16],
+        device: Option<String>,
+        name: String,
     },
 }
 
@@ -363,6 +410,10 @@ pub struct Snapshot {
     pub peers: BTreeMap<[u8; 16], PeerInfo>,
     pub pause: Pause,
     pub features: Features,
+    /// The devices allowed to control this computer.
+    pub control: BTreeSet<[u8; 16]>,
+    /// The commands the devices may run.
+    pub commands: Vec<UserCommand>,
     pub pairing: PairingState,
     pub last_activity: Option<Activity>,
     /// The device ringing this computer, while it rings.
@@ -448,6 +499,11 @@ pub struct Hooks {
     pub on_notice: Arc<dyn Fn(Notice) + Send + Sync>,
     /// Where received files go once complete.
     pub downloads: PathBuf,
+    /// Called on the worker thread with what an allowed device asks of
+    /// this computer's pointer and keyboard, and the presenter's spot.
+    pub on_input: Box<dyn FnMut(Input) + Send>,
+    /// Called on the worker thread with the line of a command to run.
+    pub run_command: Box<dyn FnMut(&str) + Send>,
 }
 
 /// Loads the state in `dir`, creating an identity on [`DEFAULT_RELAY_URL`]
@@ -465,7 +521,7 @@ pub fn spawn_on(dir: StateDir, relay_url: &str, hooks: Hooks) -> Result<(Handle,
         Err(Error::NotInitialised(_)) => dir.load_or_create(relay_url)?,
         loaded => loaded?,
     };
-    let features = Features::load(dir.path());
+    let settings = Settings::load(dir.path());
     let partial_dir = files::partial_dir(dir.path());
     files::remove_stale(&partial_dir);
     let mut view = Snapshot {
@@ -476,7 +532,9 @@ pub fn spawn_on(dir: StateDir, relay_url: &str, hooks: Hooks) -> Result<(Handle,
         devices: Vec::new(),
         peers: BTreeMap::new(),
         pause: Pause::default(),
-        features,
+        features: settings.features,
+        control: settings.controllers(),
+        commands: settings.commands,
         pairing: PairingState::Idle,
         last_activity: None,
         ringing: None,
@@ -510,6 +568,8 @@ pub fn spawn_on(dir: StateDir, relay_url: &str, hooks: Hooks) -> Result<(Handle,
         local_media: None,
         local_volume: None,
         requested: BTreeMap::new(),
+        contacts_asked: BTreeSet::new(),
+        older_asked: BTreeSet::new(),
         traffic_at: now,
         progress_at: now,
     };
@@ -595,10 +655,28 @@ struct Worker {
     local_volume: Option<Volume>,
     /// When each device was last asked for its notifications.
     requested: BTreeMap<[u8; 16], Instant>,
+    /// The phones already asked for their contacts.
+    contacts_asked: BTreeSet<[u8; 16]>,
+    /// The threads asked for older messages, by phone.
+    older_asked: BTreeSet<([u8; 16], i64)>,
     /// The last frame from the relay, for the keepalive.
     traffic_at: Instant,
     /// The last snapshot that moved a progress bar.
     progress_at: Instant,
+}
+
+/// Whether a device shows this computer's commands: it said it takes
+/// their list or runs them, or it said nothing yet.
+fn wants_commands(peer: &PeerInfo) -> bool {
+    peer.capabilities.is_none() || peer.handles("command.list") || peer.sends("command.run")
+}
+
+/// Now, in ms since the epoch, as SMS times are.
+fn epoch_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Errors that say a request failed, not that the connection is lost.
@@ -795,6 +873,31 @@ impl Worker {
                 self.local_media = Some((players, Instant::now()));
             }
             Command::LocalVolume(volume) => self.local_volume = Some(volume),
+            Command::OpenMessages(device) | Command::LoadMessages { device, .. } => {
+                tracing::info!(device = %short_id(&device), "messages not asked for: {OFFLINE}");
+            }
+            // Shown as not sent: it is not kept for later.
+            Command::SendSms {
+                device,
+                addresses,
+                text,
+                thread,
+            } => {
+                let sent = self.outgoing_sms(addresses, text, thread);
+                let sms = self.sms_mut(device);
+                sms.outbox.push(OutgoingSms {
+                    state: SendState::Failed(None),
+                    ..sent
+                });
+                sms.trim_outbox();
+            }
+            // Saved now; the devices learn the commands at the next
+            // connection.
+            Command::SetControl(device, allowed) => self.set_control(device, allowed),
+            Command::SetCommands(commands) => {
+                self.view.commands = commands;
+                self.save_settings();
+            }
             Command::Shutdown => {}
         }
         self.show_transfers();
@@ -1082,7 +1185,16 @@ impl Worker {
         {
             packets.push(Packet::Volume(volume));
         }
+        if features.commands && wants_commands(&peer) {
+            packets.push(self.command_list());
+        }
         packets
+    }
+
+    fn command_list(&self) -> Packet {
+        Packet::CommandList {
+            commands: self.view.commands.iter().map(UserCommand::item).collect(),
+        }
     }
 
     async fn send_state(&mut self, session: &mut Session, to: [u8; 16]) -> Result<()> {
@@ -1315,8 +1427,214 @@ impl Worker {
                     self.notify(Notice::SetVolume { from, set });
                 }
             }
+            Packet::SmsConversations { mut conversations } if features.sms => {
+                tracing::debug!(from = %short_id(&from), "conversations received (not shown)");
+                conversations.truncate(sms::MAX_CONVERSATIONS);
+                self.sms_mut(from).conversations = Some(conversations);
+            }
+            Packet::SmsMessages { thread, messages } if features.sms => {
+                let count = messages.len();
+                let sms = self.sms_mut(from);
+                let added = sms.add_messages(thread, messages, true);
+                let asked_older = self.older_asked.remove(&(from, thread));
+                // A short page is the start of the thread; so is an older
+                // page with nothing new in it.
+                if count < sms::PAGE as usize || (asked_older && added == 0) {
+                    self.sms_mut(from).complete.insert(thread);
+                }
+            }
+            Packet::SmsReceived(received) if features.sms => {
+                self.sms_received(from, received.thread, received.message);
+            }
+            Packet::SmsSent(sent) if features.sms => {
+                let sms = self.sms_mut(from);
+                let Some(outgoing) = sms
+                    .outbox
+                    .iter_mut()
+                    .find(|outgoing| outgoing.request_id == sent.request_id)
+                else {
+                    return Ok(());
+                };
+                tracing::info!(from = %short_id(&from), ok = sent.ok, "SMS sent");
+                outgoing.state = if sent.ok {
+                    SendState::Sent
+                } else {
+                    SendState::Failed(sent.error)
+                };
+                let thread = outgoing.thread;
+                if sent.ok {
+                    // The thread and its snippet changed on the phone.
+                    if let Some(thread) = thread {
+                        self.request_messages(session, from, thread, None).await?;
+                    }
+                    self.send(session, from, &Packet::SmsConversationsRequest {})
+                        .await?;
+                }
+            }
+            Packet::Contacts(part) if features.sms => {
+                let sms = self.sms_mut(from);
+                if part.part.unwrap_or(1) <= 1 {
+                    sms.contacts.clear();
+                }
+                sms.contacts.extend(part.contacts);
+                sms.contacts.truncate(sms::MAX_CONTACTS);
+            }
+            ref asked @ (Packet::InputPointer(_)
+            | Packet::InputClick(_)
+            | Packet::InputKey(_)
+            | Packet::Presenter(_))
+                if features.input =>
+            {
+                if self.view.control.contains(&from) {
+                    for input in input::of_packet(asked) {
+                        (self.hooks.on_input)(input);
+                    }
+                } else {
+                    tracing::debug!(from = %short_id(&from), "input ignored: the device may not control this computer");
+                }
+            }
+            Packet::CommandRun { id } if features.commands => {
+                let command = self.view.commands.iter().find(|command| command.id == id);
+                match command.cloned() {
+                    Some(command) => {
+                        tracing::info!(from = %short_id(&from), %id, "running a command");
+                        (self.hooks.run_command)(&command.line);
+                        self.notify(Notice::CommandRan {
+                            from,
+                            device: self.device_name(&from),
+                            name: command.name,
+                        });
+                    }
+                    None => {
+                        tracing::warn!(from = %short_id(&from), "asked to run a command that is not listed")
+                    }
+                }
+            }
             // A switched-off feature.
             _ => tracing::debug!(from = %short_id(&from), "packet of a disabled feature ignored"),
+        }
+        Ok(())
+    }
+
+    /// The SMS of `device`, to change: copied first if a snapshot shares
+    /// them.
+    fn sms_mut(&mut self, device: [u8; 16]) -> &mut Sms {
+        Arc::make_mut(&mut self.view.peers.entry(device).or_default().sms)
+    }
+
+    /// A new SMS on the phone: into its thread if loaded, to the top of
+    /// the conversations, and a notice when it came in.
+    fn sms_received(&mut self, from: [u8; 16], thread: i64, message: packets::SmsMessage) {
+        tracing::debug!(from = %short_id(&from), "SMS received (not shown)");
+        let device = self.device_name(&from);
+        let sms = self.sms_mut(from);
+        sms.add_messages(thread, vec![message.clone()], false);
+        let address = message.address.clone().unwrap_or_default();
+        let conversations = sms.conversations.get_or_insert_with(Vec::new);
+        let mut conversation = match conversations.iter().position(|c| c.thread == thread) {
+            Some(index) => conversations.remove(index),
+            None => packets::Conversation {
+                thread,
+                addresses: message.address.iter().cloned().collect(),
+                names: vec![sms::contact_name(&sms.contacts, &address).map(str::to_owned)],
+                ..packets::Conversation::default()
+            },
+        };
+        conversation.snippet = Some(message.body.clone());
+        conversation.time = conversation.time.max(message.time);
+        conversation.unread = !message.outgoing;
+        let addresses = conversation.addresses.clone();
+        conversations.insert(0, conversation);
+        conversations.truncate(sms::MAX_CONVERSATIONS);
+        if message.outgoing {
+            return;
+        }
+        let sender = sms
+            .name_of(thread, &address)
+            .or(message.address)
+            .unwrap_or_else(|| "?".into());
+        self.notify(Notice::SmsReceived {
+            from,
+            device,
+            thread,
+            sender,
+            text: message.body,
+            addresses,
+        });
+    }
+
+    /// A message about to be sent, pending, with a fresh request id.
+    fn outgoing_sms(
+        &self,
+        addresses: Vec<String>,
+        text: String,
+        thread: Option<i64>,
+    ) -> OutgoingSms {
+        OutgoingSms {
+            request_id: hex(&random_message_id()),
+            addresses,
+            text,
+            thread,
+            state: SendState::Pending,
+            at: epoch_ms(),
+        }
+    }
+
+    async fn request_messages(
+        &mut self,
+        session: &mut Session,
+        to: [u8; 16],
+        thread: i64,
+        before: Option<i64>,
+    ) -> Result<()> {
+        if before.is_some() {
+            self.older_asked.insert((to, thread));
+        }
+        let request = SmsMessagesRequest {
+            thread,
+            before,
+            limit: Some(sms::PAGE),
+        };
+        self.send(session, to, &Packet::SmsMessagesRequest(request))
+            .await
+    }
+
+    fn set_control(&mut self, device: [u8; 16], allowed: bool) {
+        if allowed {
+            self.view.control.insert(device);
+        } else if self.view.control.remove(&device) {
+            // Its spot goes with it.
+            (self.hooks.on_input)(Input::Spot(None));
+        }
+        self.save_settings();
+    }
+
+    fn save_settings(&self) {
+        let settings = Settings {
+            features: self.view.features,
+            control: self.view.control.iter().map(|id| hex(id)).collect(),
+            commands: self.view.commands.clone(),
+        };
+        if let Err(err) = settings.save(self.dir.path()) {
+            tracing::warn!(error = %err, "could not save the feature settings");
+        }
+    }
+
+    /// Sends the commands to every device that shows them.
+    async fn send_command_list(&mut self, session: &mut Session) -> Result<()> {
+        if !self.view.features.commands {
+            return Ok(());
+        }
+        let packet = self.command_list();
+        let devices: Vec<[u8; 16]> = self
+            .view
+            .devices
+            .iter()
+            .map(|device| device.id)
+            .filter(|device| wants_commands(&self.view.peer(device)))
+            .collect();
+        for device in devices {
+            self.send(session, device, &packet).await?;
         }
         Ok(())
     }
@@ -1756,10 +2074,19 @@ impl Worker {
     }
 
     fn set_features(&mut self, features: Features) {
-        if let Err(err) = features.save(self.dir.path()) {
-            tracing::warn!(error = %err, "could not save the feature settings");
-        }
+        let input_was = self.view.features.input;
         self.view.features = features;
+        self.save_settings();
+        if !features.sms {
+            for peer in self.view.peers.values_mut() {
+                peer.sms = Arc::default();
+            }
+            self.contacts_asked.clear();
+            self.older_asked.clear();
+        }
+        if input_was && !features.input {
+            (self.hooks.on_input)(Input::Spot(None));
+        }
         if !features.battery {
             for peer in self.view.peers.values_mut() {
                 peer.battery = None;
@@ -1925,6 +2252,44 @@ impl Worker {
                     Ok(())
                 }
             }
+            Command::OpenMessages(device) => self.open_messages(session, device).await,
+            Command::LoadMessages {
+                device,
+                thread,
+                before,
+            } if self.view.features.sms => {
+                self.request_messages(session, device, thread, before).await
+            }
+            Command::LoadMessages { .. } => Ok(()),
+            Command::SendSms {
+                device,
+                addresses,
+                text,
+                thread,
+            } if self.view.features.sms => {
+                let text: String = text.chars().take(sms::MAX_TEXT).collect();
+                let outgoing = self.outgoing_sms(addresses, text, thread);
+                let packet = Packet::SmsSend(SmsSend {
+                    addresses: outgoing.addresses.clone(),
+                    text: outgoing.text.clone(),
+                    request_id: outgoing.request_id.clone(),
+                });
+                let sms = self.sms_mut(device);
+                sms.outbox.push(outgoing);
+                sms.trim_outbox();
+                tracing::info!(device = %short_id(&device), "sending an SMS");
+                self.send(session, device, &packet).await
+            }
+            Command::SendSms { .. } => Ok(()),
+            Command::SetControl(device, allowed) => {
+                self.set_control(device, allowed);
+                Ok(())
+            }
+            Command::SetCommands(commands) => {
+                self.view.commands = commands;
+                self.save_settings();
+                self.send_command_list(session).await
+            }
             Command::Shutdown => Ok(()),
         };
         describe(&mut self.view, session.state());
@@ -1954,6 +2319,24 @@ impl Worker {
             {
                 self.request_notifications(session, device).await?;
             }
+        }
+        if now.commands && !before.commands {
+            self.send_command_list(session).await?;
+        }
+        Ok(())
+    }
+
+    /// Asks a phone for its conversations, and for its contacts once.
+    async fn open_messages(&mut self, session: &mut Session, device: [u8; 16]) -> Result<()> {
+        let peer = self.view.peer(&device);
+        if !self.view.features.sms || !peer.handles("sms.conversations.request") {
+            return Ok(());
+        }
+        self.send(session, device, &Packet::SmsConversationsRequest {})
+            .await?;
+        if peer.handles("contacts.request") && self.contacts_asked.insert(device) {
+            self.send(session, device, &Packet::ContactsRequest {})
+                .await?;
         }
         Ok(())
     }

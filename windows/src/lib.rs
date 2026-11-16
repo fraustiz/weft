@@ -18,6 +18,9 @@
 //!   what other devices do into notifications, opened links and a ring;
 //!   [`system`] runs the toasts ([`toast`]), this computer's players and
 //!   its volume on a thread of its own.
+//! - [`sms`] keeps the phone's messages and contacts in memory; [`input`]
+//!   decides what remote input means, and [`control`] and [`spot`] make
+//!   it happen: key strokes, pointer moves, commands, the presenter's spot.
 //!
 //! The session logic itself is the one of the command-line client, used
 //! as a library.
@@ -25,11 +28,18 @@
 pub mod features;
 pub mod files;
 pub mod i18n;
+pub mod input;
 pub mod media;
 pub mod packets;
+pub mod sms;
 pub mod sync;
 pub mod transfer;
 pub mod worker;
+
+#[cfg(windows)]
+pub mod control;
+#[cfg(windows)]
+pub mod spot;
 
 #[cfg(windows)]
 pub mod autostart;
