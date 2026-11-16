@@ -18,6 +18,10 @@ coroutines = "1.11.0"
 camerax = "1.6.2"
 # ZXing core only (Apache-2.0): QR decoding without Google Play services.
 zxing = "3.5.4"
+# Already the version Compose and Activity pull in; declared for FileProvider, IntentCompat and KTX.
+androidx-core = "1.18.0"
+# JVM unit tests only: Android provides org.json at run time, the local JVM does not.
+json = "20260814"
 
 [libraries]
 lazysodium-android = { module = "com.goterl:lazysodium-android", version.ref = "lazysodium" }
@@ -39,6 +43,8 @@ camera-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "cam
 camera-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }
 camera-view = { module = "androidx.camera:camera-view", version.ref = "camerax" }
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidx-core" }
+json = { module = "org.json:json", version.ref = "json" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
 
 [plugins]

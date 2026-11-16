@@ -21,7 +21,8 @@ import kotlinx.coroutines.launch
 
 /**
  * Foreground service (type `connectedDevice`) that keeps the relay connection open while this
- * device is paired, so text from the other devices lands on the clipboard at any time.
+ * device is paired, so text from the other devices lands on the clipboard at any time. While it
+ * runs, the battery and the network are watched for the status packets (docs/features.md).
  *
  * Started by the app (launch, after a join), never at boot: Android 15 forbids starting a
  * `connectedDevice` service from BOOT_COMPLETED for apps targeting it, so after a reboot the
@@ -49,6 +50,7 @@ class WeftService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        weft.features.startMonitors()
         core.keepConnected(true)
         if (watcher == null) {
             watcher = core.scope.launch {
@@ -72,6 +74,7 @@ class WeftService : Service() {
     override fun onDestroy() {
         watcher?.cancel()
         watcher = null
+        weft.features.stopMonitors()
         weft.core.keepConnected(false)
         super.onDestroy()
     }

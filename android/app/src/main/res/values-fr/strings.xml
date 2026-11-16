@@ -144,4 +144,74 @@
     <string name="notification_channel">Connexion</string>
     <string name="notification_connected">Connecté</string>
     <string name="notification_reconnecting">Reconnexion…</string>
+
+    <!-- Fonctions (docs/features.md) : réglages. -->
+    <string name="settings_title">Réglages</string>
+    <string name="settings_body">Ce que ce téléphone partage avec vos autres appareils et accepte d’eux. Une fonction désactivée ici leur est aussi masquée.</string>
+    <string name="feature_battery">Batterie</string>
+    <string name="feature_battery_body">Afficher le niveau de batterie de ce téléphone sur vos ordinateurs</string>
+    <string name="feature_connectivity">Réseau</string>
+    <string name="feature_connectivity_body">Indiquer si ce téléphone est en Wi-Fi ou en données mobiles, et son signal</string>
+    <string name="feature_connectivity_permission">Android ne donne le type de réseau mobile (5G, LTE…) qu’aux applis autorisées à accéder au téléphone. Sans cela, seul le Wi-Fi est indiqué.</string>
+    <string name="action_allow">Autoriser</string>
+    <string name="feature_ring">Faire sonner</string>
+    <string name="feature_ring_body">Vos ordinateurs peuvent faire sonner ce téléphone, même en silencieux, et vous pouvez les faire sonner d’ici</string>
+    <string name="feature_ping">Ping</string>
+    <string name="feature_ping_body">Envoyer et recevoir une simple notification</string>
+    <string name="feature_links">Liens</string>
+    <string name="feature_links_body">Les liens partagés avec Weft s’ouvrent sur l’ordinateur ; les siens arrivent en notification</string>
+    <string name="feature_files">Fichiers</string>
+    <string name="feature_files_body">Envoyer des fichiers à vos ordinateurs et recevoir les leurs dans Téléchargements</string>
+
+    <string name="device_battery">Batterie</string>
+    <string name="device_network">Réseau</string>
+    <string name="battery_level">%1$d %%</string>
+    <string name="battery_charging">%1$s · en charge</string>
+    <string name="battery_low">%1$s · faible</string>
+    <string name="network_wifi">Wi-Fi</string>
+    <string name="network_none">Pas de réseau</string>
+    <string name="network_unknown">Connecté</string>
+    <string name="network_signal">%1$s · signal %2$d/4</string>
+    <string name="action_ring">Faire sonner</string>
+    <string name="action_stop_ring">Arrêter la sonnerie</string>
+    <string name="action_ping">Ping</string>
+    <string name="action_send_file">Envoyer un fichier</string>
+    <string name="ping_sent">Ping envoyé</string>
+    <string name="action_not_sent">Non envoyé : pas de connexion</string>
+
+    <string name="channel_ring">Sonnerie</string>
+    <string name="channel_messages">Pings et liens</string>
+    <string name="channel_transfers">Transferts de fichiers en cours</string>
+    <string name="channel_files">Fichiers reçus et envoyés</string>
+    <string name="ring_title">Votre téléphone sonne</string>
+    <string name="ring_body">Sonnerie lancée depuis %1$s</string>
+    <string name="ring_found">Trouvé</string>
+    <string name="ping_title">Ping de %1$s</string>
+    <string name="link_title">Lien de %1$s</string>
+    <string name="file_receiving">Réception de %1$s</string>
+    <string name="file_sending">Envoi de %1$s</string>
+    <string name="file_received">%1$s reçu</string>
+    <string name="file_received_body">De %1$s · dans Téléchargements</string>
+    <string name="file_sent">%1$s envoyé</string>
+    <string name="file_sent_body">À %1$s</string>
+    <string name="file_receive_failed">Impossible de recevoir %1$s</string>
+    <string name="file_failed_storage">Il n’a pas pu être enregistré sur ce téléphone. Vérifiez l’espace libre.</string>
+    <string name="file_send_failed">Impossible d’envoyer %1$s</string>
+    <string name="file_failed_read">Le fichier n’a pas pu être lu.</string>
+    <string name="file_failed_timeout">Aucun progrès depuis 10 minutes. Vérifiez que %1$s est en ligne, puis renvoyez-le.</string>
+    <string name="file_rejected">%1$s l’a refusé.</string>
+    <string name="file_rejected_disabled">%1$s n’accepte pas les fichiers. Activez-les dans ses réglages.</string>
+    <string name="file_rejected_too_large">Trop gros pour %1$s (4 Go au plus).</string>
+    <string name="file_rejected_no_space">Pas assez d’espace sur %1$s.</string>
+    <string name="file_rejected_busy">%1$s reçoit déjà 4 fichiers. Réessayez quand ils sont arrivés.</string>
+
+    <string name="share_file_label">Envoyer le fichier avec Weft</string>
+    <string name="pick_device_title">Envoyer à</string>
+    <string name="toast_link_sent">Lien envoyé</string>
+    <string name="toast_no_file">Aucun fichier à envoyer</string>
+    <string name="toast_files_off">Les fichiers sont désactivés dans les réglages de Weft</string>
+    <string name="toast_no_file_device">Aucun appareil appairé n’accepte les fichiers</string>
+    <string name="toast_file_unreadable">Le fichier ne peut pas être lu</string>
+    <string name="toast_files_some_unreadable">Envoi en cours ; certains fichiers ne peuvent pas être lus</string>
+    <string name="toast_files_sending">Envoi en cours…</string>
 </resources>

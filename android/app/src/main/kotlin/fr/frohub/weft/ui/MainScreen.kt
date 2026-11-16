@@ -83,6 +83,7 @@ fun MainScreen(
     onLeave: () -> Unit,
     onAddTile: (() -> Unit)?,
     onRename: () -> Unit = {},
+    onSettings: () -> Unit = {},
 ) {
     val paired = !devices.isNullOrEmpty()
     Scaffold(
@@ -100,7 +101,7 @@ fun MainScreen(
                         Text(stringResource(R.string.app_name))
                     }
                 },
-                actions = { if (paired) OverflowMenu(onRename, onLeave) },
+                actions = { if (paired) OverflowMenu(onRename, onSettings, onLeave) },
             )
         },
     ) { innerPadding ->
@@ -121,7 +122,7 @@ fun MainScreen(
 }
 
 @Composable
-private fun OverflowMenu(onRename: () -> Unit, onLeave: () -> Unit) {
+private fun OverflowMenu(onRename: () -> Unit, onSettings: () -> Unit, onLeave: () -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
         IconButton(onClick = { open = true }) {
@@ -135,6 +136,14 @@ private fun OverflowMenu(onRename: () -> Unit, onLeave: () -> Unit) {
                     onRename()
                 },
                 modifier = Modifier.testTag(RENAME_MENU_ITEM),
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.settings_title)) },
+                onClick = {
+                    open = false
+                    onSettings()
+                },
+                modifier = Modifier.testTag(SETTINGS_MENU_ITEM),
             )
             DropdownMenuItem(
                 text = { Text(stringResource(R.string.action_leave)) },
@@ -417,6 +426,7 @@ private fun TileHintCard(onAddTile: (() -> Unit)?) {
 const val PAIR_BUTTON = "pair_button"
 const val STATUS_CARD = "status_card"
 const val DEVICE_ROW_PREFIX = "device_"
+const val SETTINGS_MENU_ITEM = "settings_menu_item"
 
 private val previewDevices = listOf(
     Device("3f9a0c12d4e5f60718293a4b5c6d7e8f", "MacBook Air"),

@@ -155,4 +155,85 @@
     <string name="notification_channel">Connection</string>
     <string name="notification_connected">Connected</string>
     <string name="notification_reconnecting">Reconnecting…</string>
+
+    <!-- Features (docs/features.md): settings. -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_body">What this phone shares with your other devices and accepts from them. A feature turned off here is hidden from them too.</string>
+    <string name="feature_battery">Battery</string>
+    <string name="feature_battery_body">Show this phone’s battery level on your computers</string>
+    <string name="feature_connectivity">Network</string>
+    <string name="feature_connectivity_body">Show whether this phone is on Wi-Fi or mobile data, and its signal</string>
+    <string name="feature_connectivity_permission">Android only tells the mobile network type (5G, LTE…) to apps with phone access. Without it, only Wi-Fi is shown.</string>
+    <string name="action_allow">Allow</string>
+    <string name="feature_ring">Ring</string>
+    <string name="feature_ring_body">Let your computers ring this phone, even in silent mode, and ring them from here</string>
+    <string name="feature_ping">Ping</string>
+    <string name="feature_ping_body">Send and receive a simple notification</string>
+    <string name="feature_links">Links</string>
+    <string name="feature_links_body">Links shared with Weft open on the computer; links from it arrive as a notification</string>
+    <string name="feature_files">Files</string>
+    <string name="feature_files_body">Send files to your computers and receive theirs in Downloads</string>
+
+    <!-- Device details: what the other device tells, and its actions. -->
+    <string name="device_battery">Battery</string>
+    <string name="device_network">Network</string>
+    <!-- %1$d: battery level, 0 to 100. -->
+    <string name="battery_level">%1$d %%</string>
+    <!-- %1$s: the battery level, from battery_level. -->
+    <string name="battery_charging">%1$s · charging</string>
+    <string name="battery_low">%1$s · low</string>
+    <string name="network_wifi">Wi-Fi</string>
+    <string name="network_none">No network</string>
+    <string name="network_unknown">Connected</string>
+    <!-- %1$s: network type (Wi-Fi, 5G, LTE…), %2$d: signal level from 0 to 4. -->
+    <string name="network_signal">%1$s · signal %2$d/4</string>
+    <string name="action_ring">Ring</string>
+    <string name="action_stop_ring">Stop ringing</string>
+    <string name="action_ping">Ping</string>
+    <string name="action_send_file">Send a file</string>
+    <string name="ping_sent">Ping sent</string>
+    <string name="action_not_sent">Not sent: not connected</string>
+
+    <!-- Notifications. -->
+    <string name="channel_ring">Ring</string>
+    <string name="channel_messages">Pings and links</string>
+    <string name="channel_transfers">File transfers in progress</string>
+    <string name="channel_files">Files received and sent</string>
+    <string name="ring_title">Your phone is ringing</string>
+    <!-- %1$s: the device that rings this phone. -->
+    <string name="ring_body">Rung from %1$s</string>
+    <string name="ring_found">Found it</string>
+    <!-- %1$s: the device name. -->
+    <string name="ping_title">Ping from %1$s</string>
+    <string name="link_title">Link from %1$s</string>
+    <!-- %1$s: the file name. -->
+    <string name="file_receiving">Receiving %1$s</string>
+    <string name="file_sending">Sending %1$s</string>
+    <string name="file_received">Received %1$s</string>
+    <!-- %1$s: the device name. -->
+    <string name="file_received_body">From %1$s · in Downloads</string>
+    <string name="file_sent">Sent %1$s</string>
+    <string name="file_sent_body">To %1$s</string>
+    <string name="file_receive_failed">Couldn’t receive %1$s</string>
+    <string name="file_failed_storage">It couldn’t be saved on this phone. Check the free space.</string>
+    <string name="file_send_failed">Couldn’t send %1$s</string>
+    <string name="file_failed_read">The file couldn’t be read.</string>
+    <!-- %1$s: the device name, for the file_rejected_* and file_failed_timeout strings. -->
+    <string name="file_failed_timeout">No progress for 10 minutes. Check that %1$s is online, then send it again.</string>
+    <string name="file_rejected">%1$s refused it.</string>
+    <string name="file_rejected_disabled">%1$s doesn’t accept files. Turn them on in its settings.</string>
+    <string name="file_rejected_too_large">Too large for %1$s (4 GB at most).</string>
+    <string name="file_rejected_no_space">Not enough space on %1$s.</string>
+    <string name="file_rejected_busy">%1$s is already receiving 4 files. Try again when they are done.</string>
+
+    <!-- Sharing files and links. -->
+    <string name="share_file_label">Send file with Weft</string>
+    <string name="pick_device_title">Send to</string>
+    <string name="toast_link_sent">Link sent</string>
+    <string name="toast_no_file">No file to send</string>
+    <string name="toast_files_off">Files are turned off in Weft’s settings</string>
+    <string name="toast_no_file_device">No paired device accepts files</string>
+    <string name="toast_file_unreadable">The file can’t be read</string>
+    <string name="toast_files_some_unreadable">Sending; some files can’t be read</string>
+    <string name="toast_files_sending">Sending…</string>
 </resources>

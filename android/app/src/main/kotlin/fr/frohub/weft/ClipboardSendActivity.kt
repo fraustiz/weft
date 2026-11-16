@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.annotation.StringRes
+import fr.frohub.weft.features.isShareableUrl
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -20,7 +21,7 @@ import kotlinx.coroutines.withContext
  *
  * It also receives text shared with Weft (through the exported `.ShareTextActivity` alias); that
  * path sends the shared text and never touches the clipboard, so other apps cannot use the alias
- * to read it.
+ * to read it. A shared text that is a single web link goes as a link instead.
  */
 class ClipboardSendActivity : Activity() {
     private var done = false
@@ -59,7 +60,17 @@ class ClipboardSendActivity : Activity() {
     private fun sendShared() {
         val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
         if (text.isNullOrEmpty()) return toast(R.string.toast_no_text)
-        send(text, R.string.toast_text_sent)
+        // A single web link opens on the other side (docs/features.md, section 4).
+        val link = text.trim()
+        if (isShareableUrl(link)) sendLink(link) else send(text, R.string.toast_text_sent)
+    }
+
+    private fun sendLink(url: String) {
+        val app = weft
+        app.core.scope.launch {
+            val message = toastFor(app.features.shareUrl(url), R.string.toast_link_sent)
+            withContext(Dispatchers.Main) { Toast.makeText(app, message, Toast.LENGTH_SHORT).show() }
+        }
     }
 
     private fun sendClipboard() {
@@ -83,12 +94,7 @@ class ClipboardSendActivity : Activity() {
         val app = weft
         val sender = app.clipboardSender
         app.core.scope.launch {
-            val message = when (sender.send(text)) {
-                is SendResult.Sent -> sentMessage
-                SendResult.NotConnected -> R.string.toast_not_connected
-                SendResult.NoPairedDevice -> R.string.toast_no_paired_device
-                SendResult.TooLarge -> R.string.toast_too_large
-            }
+            val message = toastFor(sender.send(text), sentMessage)
             withContext(Dispatchers.Main) { Toast.makeText(app, message, Toast.LENGTH_SHORT).show() }
         }
     }
@@ -105,4 +111,13 @@ class ClipboardSendActivity : Activity() {
             Intent(context, ClipboardSendActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
     }
+}
+
+/** The toast that tells how a send ended. */
+@StringRes
+private fun toastFor(result: SendResult, @StringRes sentMessage: Int): Int = when (result) {
+    is SendResult.Sent -> sentMessage
+    SendResult.NotConnected -> R.string.toast_not_connected
+    SendResult.NoPairedDevice -> R.string.toast_no_paired_device
+    SendResult.TooLarge -> R.string.toast_too_large
 }

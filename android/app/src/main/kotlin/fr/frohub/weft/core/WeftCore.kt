@@ -126,6 +126,10 @@ class WeftCore internal constructor(
     @Volatile
     private var serviceWanted = false
 
+    /** Gets packets and file chunks (docs/features.md); set once by the application. */
+    @Volatile
+    var packetListener: PacketListener? = null
+
     init {
         scope.launch {
             try {
@@ -177,6 +181,9 @@ class WeftCore internal constructor(
 
     private suspend fun awaitConnected(timeout: Duration): Boolean =
         withTimeoutOrNull(timeout) { relay.status.first { it == ConnectionStatus.Connected } } != null
+
+    /** Waits up to 10 s for the relay connection, as a send does. True once connected. */
+    suspend fun awaitConnection(): Boolean = relay.isConnected || awaitConnected(CONNECT_WAIT)
 
     // endregion
 
@@ -425,7 +432,30 @@ class WeftCore internal constructor(
     private suspend fun sendName(deviceIds: List<String>): Int {
         if (deviceIds.isEmpty()) return 0
         val plaintext = encodeDeviceName(repository.load().name ?: defaultName)
-        return sender.sendEnvelope(deviceIds, Kind.DEVICE_NAME, plaintext)
+        val sent = sender.sendEnvelope(deviceIds, Kind.DEVICE_NAME, plaintext)
+        // docs/features.md, section 2: the capabilities go with the name.
+        packetListener?.onNameSent(deviceIds)
+        return sent
+    }
+
+    // endregion
+
+    // region Packets and file chunks (docs/features.md, section 1)
+
+    /**
+     * Seals a packet (a JSON object) for each of [deviceIds] that is trusted. Nothing is sealed
+     * while the relay is not connected (no counter is used up for nothing). Returns how many
+     * envelopes the relay connection took.
+     */
+    suspend fun sendPacket(deviceIds: List<String>, plaintext: ByteArray): Int {
+        if (deviceIds.isEmpty() || !relay.isConnected) return 0
+        return sender.sendEnvelope(deviceIds, Kind.PACKET, plaintext)
+    }
+
+    /** Seals one file chunk for [deviceIdHex], with the same rules as [sendPacket]. */
+    suspend fun sendFileChunk(deviceIdHex: String, plaintext: ByteArray): Boolean {
+        if (!relay.isConnected) return false
+        return sender.sendEnvelope(listOf(deviceIdHex), Kind.FILE_CHUNK, plaintext) == 1
     }
 
     // endregion
@@ -483,6 +513,8 @@ class WeftCore internal constructor(
                 sendName(event.newlyTrusted)
             }
             Received.Ping -> Unit
+            is Received.Packet -> packetListener?.onPacket(senderHex, event.plaintext)
+            is Received.FileChunk -> packetListener?.onFileChunk(senderHex, event.plaintext)
         }
     }
 
@@ -510,6 +542,8 @@ class WeftCore internal constructor(
     private sealed interface Received {
         class Clipboard(val text: String) : Received
         data object Ping : Received
+        class Packet(val plaintext: ByteArray) : Received
+        class FileChunk(val plaintext: ByteArray) : Received
         /** [newlyTrusted]: the devices to send this phone's name to. */
         class Changed(val what: String, val newlyTrusted: List<String> = emptyList()) : Received
         class Dropped(val reason: String) : Received
@@ -563,8 +597,9 @@ class WeftCore internal constructor(
             }
             // Only for a trusted sender (checked above); it never changes trust.
             Kind.DEVICE_NAME -> next.withDeviceName(senderHex, decodeDeviceName(plaintext)) to Received.Changed("device name")
-            // Packets and file chunks (docs/features.md) are not handled by this app yet.
-            Kind.PACKET, Kind.FILE_CHUNK -> next to Received.Dropped("${header.kind} not handled yet")
+            // Handled by the packet listener, outside the state change (docs/features.md).
+            Kind.PACKET -> next to Received.Packet(plaintext)
+            Kind.FILE_CHUNK -> next to Received.FileChunk(plaintext)
         }
     }
 
@@ -593,3 +628,15 @@ class WeftCore internal constructor(
 }
 
 private fun TrustedDevice.toDevice() = Device(deviceIdHex, name, addedAt)
+
+/** Where [WeftCore] hands the packets and file chunks of trusted devices. */
+interface PacketListener {
+    /** A packet plaintext (a UTF-8 JSON object, not parsed yet) from [senderHex]. */
+    suspend fun onPacket(senderHex: String, plaintext: ByteArray)
+
+    /** A file chunk plaintext from [senderHex]. */
+    suspend fun onFileChunk(senderHex: String, plaintext: ByteArray)
+
+    /** This phone's name was just sent to [deviceIds]. */
+    suspend fun onNameSent(deviceIds: List<String>)
+}

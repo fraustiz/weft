@@ -9,6 +9,23 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Only to read the pairing QR code; pasting the code works without it. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Connectivity packet: whether the phone is on Wi-Fi, mobile data or nothing. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!--
+        Connectivity packet: Android requires it to read the mobile network type (5G, LTE…).
+        Asked only from the settings; without it only Wi-Fi and "none" are sent.
+    -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- Ring: the "Found it" notice over the lock screen (Android 14+ lets the user refuse it). -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- Received files go to the public Downloads folder; from Android 10 MediaStore needs none. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
+    <uses-feature
+        android:name="android.hardware.telephony"
+        android:required="false" />
 
     <uses-feature
         android:name="android.hardware.camera.any"
@@ -59,6 +76,53 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity-alias>
+
+        <!--
+            Share target for files of any type. A share with text only is handed to the text
+            share target above.
+        -->
+        <activity
+            android:name=".ShareFileActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="@string/share_file_label"
+            android:taskAffinity="fr.frohub.weft.send"
+            android:theme="@style/Theme.Weft.Invisible">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- The "Find my phone" notice, shown over the lock screen. -->
+        <activity
+            android:name=".features.RingActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:taskAffinity="fr.frohub.weft.ring" />
+
+        <!-- Notification actions: "Found it", cancelling a transfer. -->
+        <receiver
+            android:name=".features.FeatureReceiver"
+            android:exported="false" />
+
+        <!-- Opens files received below Android 10 (from Android 10 they are MediaStore items). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <service
             android:name=".ClipboardTileService"

@@ -1,7 +1,9 @@
 package fr.frohub.weft.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -14,15 +16,19 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,17 +47,43 @@ import androidx.compose.ui.unit.dp
 import fr.frohub.weft.R
 import fr.frohub.weft.core.Device
 import fr.frohub.weft.core.GroupChangeResult
+import fr.frohub.weft.features.Packet
+import fr.frohub.weft.features.PeerInfo
 import java.text.DateFormat
 import java.util.Date
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** One trusted device: what is known about it, and removing it from the group. */
+/**
+ * What a trusted device can do from here, given what it handles ([PeerInfo.capabilities]) and
+ * the features switched on. A null action is not offered.
+ */
+class DeviceActions(
+    val ring: (suspend () -> Boolean)? = null,
+    val stopRing: (suspend () -> Boolean)? = null,
+    val ping: (suspend () -> Boolean)? = null,
+    val sendFile: (() -> Unit)? = null,
+) {
+    val isEmpty: Boolean get() = ring == null && ping == null && sendFile == null
+}
+
+/** One trusted device: what is known about it, its actions, and removing it from the group. */
 @Composable
-fun DeviceScreen(device: Device, onRemove: suspend () -> GroupChangeResult, onBack: () -> Unit) {
+fun DeviceScreen(
+    device: Device,
+    onRemove: suspend () -> GroupChangeResult,
+    onBack: () -> Unit,
+    peer: PeerInfo? = null,
+    actions: DeviceActions = DeviceActions(),
+) {
     var confirming by rememberSaveable { mutableStateOf(false) }
     val change = rememberGroupChange(onDone = onBack)
+    val snackbar = remember { SnackbarHostState() }
     BackHandler(enabled = change.working) {}
-    Scaffold(topBar = { BackTopBar(device.label, onBack = { if (!change.working) onBack() }) }) { innerPadding ->
+    Scaffold(
+        topBar = { BackTopBar(device.label, onBack = { if (!change.working) onBack() }) },
+        snackbarHost = { SnackbarHost(snackbar) },
+    ) { innerPadding ->
         // List items carry their own 16 dp inset; everything else lines up with it.
         Column(
             Modifier
@@ -66,6 +98,18 @@ fun DeviceScreen(device: Device, onRemove: suspend () -> GroupChangeResult, onBa
             device.addedAt?.let { addedAt ->
                 FactDivider()
                 Fact(stringResource(R.string.device_added), DateFormat.getDateInstance(DateFormat.LONG).format(Date(addedAt)))
+            }
+            peer?.battery?.let { battery ->
+                FactDivider()
+                Fact(stringResource(R.string.device_battery), batteryText(battery))
+            }
+            peer?.connectivity?.let { connectivity ->
+                FactDivider()
+                Fact(stringResource(R.string.device_network), networkText(connectivity))
+            }
+            if (!actions.isEmpty) {
+                Spacer(Modifier.height(24.dp))
+                Actions(actions, snackbar)
             }
             Column(Modifier.padding(horizontal = 16.dp)) {
                 Spacer(Modifier.height(32.dp))
@@ -105,6 +149,83 @@ fun DeviceScreen(device: Device, onRemove: suspend () -> GroupChangeResult, onBa
             },
         )
     }
+}
+
+/** The device's actions, side by side; each says in a snackbar if it could not be sent. */
+@Composable
+private fun Actions(actions: DeviceActions, snackbar: SnackbarHostState) {
+    val scope = rememberCoroutineScope()
+    val notSent = stringResource(R.string.action_not_sent)
+    val pingSent = stringResource(R.string.ping_sent)
+    // A ring stops by itself after 60 s on the other side; the button follows.
+    var ringing by remember { mutableStateOf(false) }
+    LaunchedEffect(ringing) {
+        if (ringing) {
+            delay(RING_SHOWN_MILLIS)
+            ringing = false
+        }
+    }
+    fun run(action: suspend () -> Boolean, sentMessage: String?, onSent: () -> Unit = {}) {
+        scope.launch {
+            if (action()) {
+                onSent()
+                if (sentMessage != null) snackbar.showSnackbar(sentMessage)
+            } else {
+                snackbar.showSnackbar(notSent)
+            }
+        }
+    }
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.padding(horizontal = 16.dp),
+    ) {
+        val ring = actions.ring
+        val stopRing = actions.stopRing
+        if (ring != null) {
+            if (ringing && stopRing != null) {
+                FilledTonalButton(onClick = { run(stopRing, null) { ringing = false } }, modifier = Modifier.testTag(RING_BUTTON)) {
+                    Text(stringResource(R.string.action_stop_ring))
+                }
+            } else {
+                FilledTonalButton(onClick = { run(ring, null) { ringing = true } }, modifier = Modifier.testTag(RING_BUTTON)) {
+                    Text(stringResource(R.string.action_ring))
+                }
+            }
+        }
+        actions.ping?.let { ping ->
+            FilledTonalButton(onClick = { run(ping, pingSent) }, modifier = Modifier.testTag(PING_BUTTON)) {
+                Text(stringResource(R.string.action_ping))
+            }
+        }
+        actions.sendFile?.let { sendFile ->
+            FilledTonalButton(onClick = sendFile, modifier = Modifier.testTag(SEND_FILE_BUTTON)) {
+                Text(stringResource(R.string.action_send_file))
+            }
+        }
+    }
+}
+
+@Composable
+private fun batteryText(battery: Packet.Battery): String {
+    val level = stringResource(R.string.battery_level, battery.level)
+    return when {
+        battery.charging -> stringResource(R.string.battery_charging, level)
+        battery.low == true -> stringResource(R.string.battery_low, level)
+        else -> level
+    }
+}
+
+@Composable
+private fun networkText(connectivity: Packet.Connectivity): String {
+    val network = when (val name = connectivity.network) {
+        Packet.NETWORK_WIFI -> stringResource(R.string.network_wifi)
+        Packet.NETWORK_NONE -> return stringResource(R.string.network_none)
+        null -> stringResource(R.string.network_unknown)
+        else -> name
+    }
+    val signal = connectivity.signal ?: return network
+    return stringResource(R.string.network_signal, network, signal)
 }
 
 @Composable
@@ -210,11 +331,23 @@ fun ConfirmDialog(
 const val REMOVE_BUTTON = "remove_button"
 const val CONFIRM_DIALOG = "confirm_dialog"
 const val CONFIRM_BUTTON = "confirm_button"
+const val RING_BUTTON = "ring_button"
+const val PING_BUTTON = "ping_button"
+const val SEND_FILE_BUTTON = "send_file_button"
+
+/** How long the Ring button reads "Stop ringing": as long as a ring lasts. */
+private const val RING_SHOWN_MILLIS = 60_000L
 
 @Preview
 @Composable
 private fun DevicePreview() {
     WeftTheme(darkTheme = false) {
-        DeviceScreen(Device("3f9a0c12d4e5f60718293a4b5c6d7e8f", "MacBook Air", 1_763_000_000_000), { GroupChangeResult.Done }, {})
+        DeviceScreen(
+            Device("3f9a0c12d4e5f60718293a4b5c6d7e8f", "MacBook Air", 1_763_000_000_000),
+            { GroupChangeResult.Done },
+            {},
+            PeerInfo(battery = Packet.Battery(72, charging = true, low = false), connectivity = Packet.Connectivity("wifi", 3)),
+            DeviceActions(ring = { true }, stopRing = { true }, ping = { true }, sendFile = {}),
+        )
     }
 }
