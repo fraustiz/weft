@@ -1,0 +1,30 @@
+--out src/bindings.rs
+--flat
+--filter
+    Windows.UI.Notifications.ToastNotificationManager
+    Windows.UI.Notifications.ToastNotifier
+    Windows.UI.Notifications.ToastNotification
+    Windows.UI.Notifications.ToastNotificationHistory
+    Windows.UI.Notifications.ToastActivatedEventArgs
+    Windows.UI.Notifications.ToastDismissedEventArgs
+    Windows.UI.Notifications.ToastFailedEventArgs
+    Windows.Data.Xml.Dom.XmlDocument
+    Windows.Foundation.Collections.ValueSet
+    Windows.Foundation.IPropertyValue
+    Windows.Media.Control
+    Windows.Media.MediaPlaybackType
+    Windows.Media.MediaPlaybackAutoRepeatMode
+    !Windows.UI.Notifications.ToastNotifier::GetScheduledToastNotifications
+    !Windows.UI.Notifications.IToastNotifier3::ScheduledToastNotificationShowing
+    IMMDeviceEnumerator
+    IMMDevice
+    EDataFlow
+    ERole
+    CLSCTX
+    COINIT
+    PROPVARIANT
+    Windows.Foundation.TypedEventHandler
+    MMDeviceEnumerator
+    IAudioEndpointVolume
+    CoCreateInstance
+    CoInitializeEx

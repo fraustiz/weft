@@ -1,4 +1,4 @@
-//! The JSON packets of `docs/features.md` this app knows, sections 2 to 4.
+//! The JSON packets of `docs/features.md` this app knows, sections 2 to 6.
 //!
 //! Parsing is tolerant, as the contract asks: members this app does not
 //! know are ignored, a packet of a type it does not know is
@@ -51,6 +51,33 @@ pub enum Packet {
     FileDone { id: String },
     #[serde(rename = "file.cancel")]
     FileCancel { id: String },
+    #[serde(rename = "notification")]
+    Notification(Notification),
+    #[serde(rename = "notification.removed")]
+    NotificationRemoved { id: String },
+    #[serde(rename = "notification.dismiss")]
+    NotificationDismiss { id: String },
+    #[serde(rename = "notification.action")]
+    NotificationAction { id: String, action: String },
+    #[serde(rename = "notification.reply")]
+    NotificationReply { id: String, text: String },
+    #[serde(rename = "notification.request")]
+    NotificationRequest {},
+    #[serde(rename = "call")]
+    Call(Call),
+    #[serde(rename = "call.mute")]
+    CallMute {},
+    #[serde(rename = "media")]
+    Media {
+        #[serde(default)]
+        players: Vec<Player>,
+    },
+    #[serde(rename = "media.command")]
+    MediaCommand(MediaCommand),
+    #[serde(rename = "volume")]
+    Volume(Volume),
+    #[serde(rename = "volume.set")]
+    VolumeSet(VolumeSet),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +127,170 @@ pub struct FileOffer {
     pub size: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime: Option<String>,
+}
+
+/// A notification of the phone. Missing texts are empty, missing flags off.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Notification {
+    pub id: String,
+    #[serde(default)]
+    pub app: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<u64>,
+    #[serde(default)]
+    pub dismissable: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<String>,
+    #[serde(default)]
+    pub reply: bool,
+    #[serde(default)]
+    pub silent: bool,
+}
+
+/// What a `call` says happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallEvent {
+    Ringing,
+    Talking,
+    Missed,
+    Ended,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Call {
+    pub event: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl Call {
+    /// `None` for an event this app does not know.
+    pub fn event(&self) -> Option<CallEvent> {
+        match self.event.as_str() {
+            "ringing" => Some(CallEvent::Ringing),
+            "talking" => Some(CallEvent::Talking),
+            "missed" => Some(CallEvent::Missed),
+            "ended" => Some(CallEvent::Ended),
+            _ => None,
+        }
+    }
+
+    /// Who calls: the contact's name, else the number.
+    pub fn caller(&self) -> Option<&str> {
+        fn present(text: &Option<String>) -> Option<&str> {
+            text.as_deref().filter(|text| !text.trim().is_empty())
+        }
+        present(&self.name).or_else(|| present(&self.number))
+    }
+}
+
+/// A media player, as `media` lists them. Times are in milliseconds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Player {
+    pub id: String,
+    pub app: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub playing: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub length: Option<u64>,
+    pub can_play: bool,
+    pub can_pause: bool,
+    pub can_next: bool,
+    pub can_previous: bool,
+    pub can_seek: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume: Option<u8>,
+}
+
+/// What a `media.command` asks a player to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaAction {
+    Play,
+    Pause,
+    PlayPause,
+    Next,
+    Previous,
+    /// To this position, in milliseconds.
+    Seek(u64),
+    /// To this volume, 0 to 100.
+    SetVolume(u8),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaCommand {
+    pub player: String,
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<u64>,
+}
+
+impl MediaCommand {
+    pub fn new(player: &str, action: MediaAction) -> MediaCommand {
+        let (action, value) = match action {
+            MediaAction::Play => ("play", None),
+            MediaAction::Pause => ("pause", None),
+            MediaAction::PlayPause => ("playPause", None),
+            MediaAction::Next => ("next", None),
+            MediaAction::Previous => ("previous", None),
+            MediaAction::Seek(position) => ("seek", Some(position)),
+            MediaAction::SetVolume(volume) => ("setVolume", Some(u64::from(volume))),
+        };
+        MediaCommand {
+            player: player.into(),
+            action: action.into(),
+            value,
+        }
+    }
+
+    /// `None` for an action this app does not know, or a seek or volume
+    /// without a value in range.
+    pub fn action(&self) -> Option<MediaAction> {
+        Some(match self.action.as_str() {
+            "play" => MediaAction::Play,
+            "pause" => MediaAction::Pause,
+            "playPause" => MediaAction::PlayPause,
+            "next" => MediaAction::Next,
+            "previous" => MediaAction::Previous,
+            "seek" => MediaAction::Seek(self.value?),
+            "setVolume" => {
+                let volume = u8::try_from(self.value?).ok().filter(|v| *v <= 100)?;
+                MediaAction::SetVolume(volume)
+            }
+            _ => return None,
+        })
+    }
+}
+
+/// An output volume. A missing member is unknown.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Volume {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub muted: Option<bool>,
+}
+
+/// A change of volume; a missing member stays as it is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeSet {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub muted: Option<bool>,
 }
 
 /// Why a receiver refuses a file, as `file.reject` puts it.
@@ -162,6 +353,18 @@ const KNOWN: &[&str] = &[
     "file.ack",
     "file.done",
     "file.cancel",
+    "notification",
+    "notification.removed",
+    "notification.dismiss",
+    "notification.action",
+    "notification.reply",
+    "notification.request",
+    "call",
+    "call.mute",
+    "media",
+    "media.command",
+    "volume",
+    "volume.set",
 ];
 
 pub fn parse(json: &str) -> Parsed {
@@ -184,6 +387,13 @@ impl Packet {
     pub fn to_json(&self) -> String {
         // A packet of strings, numbers and lists always serialises.
         serde_json::to_string(self).expect("a packet serialises")
+    }
+
+    /// The packet's `type`, as capabilities list it.
+    pub fn kind(&self) -> &'static str {
+        let value = serde_json::to_value(self).expect("a packet serialises");
+        let kind = value["type"].as_str().unwrap_or_default();
+        KNOWN.iter().find(|known| **known == kind).unwrap_or(&"")
     }
 }
 
@@ -281,8 +491,8 @@ mod tests {
     #[test]
     fn unknown_and_invalid_packets() {
         assert_eq!(
-            parse(r#"{"type":"media","players":[]}"#),
-            Parsed::Unknown("media".into())
+            parse(r#"{"type":"sms.send","text":"hi"}"#),
+            Parsed::Unknown("sms.send".into())
         );
         for invalid in [
             "",
@@ -332,6 +542,138 @@ mod tests {
             outgoing: vec![],
         });
         assert_eq!(parse(&capabilities.to_json()), Parsed::Known(capabilities));
+    }
+
+    #[test]
+    fn notifications_and_calls_parse() {
+        let parsed = parse(
+            r#"{"type":"notification","id":"0|app|1","app":"Chat","appId":"org.chat","title":"Ann","text":"Hi","time":1700000000000,"dismissable":true,"actions":["Mark read"],"reply":true,"silent":false,"icon":"x"}"#,
+        );
+        assert_eq!(
+            parsed,
+            Parsed::Known(Packet::Notification(Notification {
+                id: "0|app|1".into(),
+                app: "Chat".into(),
+                app_id: Some("org.chat".into()),
+                title: "Ann".into(),
+                text: "Hi".into(),
+                time: Some(1_700_000_000_000),
+                dismissable: true,
+                actions: vec!["Mark read".into()],
+                reply: true,
+                silent: false,
+            }))
+        );
+        // Only the id is needed.
+        assert_eq!(
+            parse(r#"{"type":"notification","id":"a"}"#),
+            Parsed::Known(Packet::Notification(Notification {
+                id: "a".into(),
+                ..Notification::default()
+            }))
+        );
+        assert_eq!(parse(r#"{"type":"notification"}"#), Parsed::Invalid);
+        assert_eq!(
+            Packet::NotificationReply {
+                id: "a".into(),
+                text: "ok".into()
+            }
+            .to_json(),
+            r#"{"type":"notification.reply","id":"a","text":"ok"}"#
+        );
+        assert_eq!(
+            Packet::NotificationRequest {}.to_json(),
+            r#"{"type":"notification.request"}"#
+        );
+        assert_eq!(Packet::CallMute {}.to_json(), r#"{"type":"call.mute"}"#);
+
+        let Parsed::Known(Packet::Call(call)) =
+            parse(r#"{"type":"call","event":"ringing","number":"+33 6","name":" "}"#)
+        else {
+            panic!("not a call");
+        };
+        assert_eq!(call.event(), Some(CallEvent::Ringing));
+        // A blank name gives way to the number.
+        assert_eq!(call.caller(), Some("+33 6"));
+        let Parsed::Known(Packet::Call(call)) = parse(r#"{"type":"call","event":"held"}"#) else {
+            panic!("not a call");
+        };
+        assert_eq!((call.event(), call.caller()), (None, None));
+    }
+
+    #[test]
+    fn media_and_volume_round_trip() {
+        let player = Player {
+            id: "spotify".into(),
+            app: "Spotify".into(),
+            title: "Song".into(),
+            playing: true,
+            position: Some(1000),
+            length: Some(180_000),
+            can_play: true,
+            can_pause: true,
+            can_seek: true,
+            ..Player::default()
+        };
+        let media = Packet::Media {
+            players: vec![player],
+        };
+        let json = media.to_json();
+        assert!(json.contains(r#""canSeek":true"#) && json.contains(r#""canNext":false"#));
+        assert_eq!(parse(&json), Parsed::Known(media));
+        // Missing members: unknown or off.
+        assert_eq!(
+            parse(r#"{"type":"media","players":[{"id":"a"}]}"#),
+            Parsed::Known(Packet::Media {
+                players: vec![Player {
+                    id: "a".into(),
+                    ..Player::default()
+                }]
+            })
+        );
+
+        for (action, json) in [
+            (
+                MediaAction::PlayPause,
+                r#"{"player":"a","action":"playPause"}"#,
+            ),
+            (
+                MediaAction::Seek(5000),
+                r#"{"player":"a","action":"seek","value":5000}"#,
+            ),
+            (
+                MediaAction::SetVolume(40),
+                r#"{"player":"a","action":"setVolume","value":40}"#,
+            ),
+        ] {
+            let command = MediaCommand::new("a", action);
+            assert_eq!(serde_json::to_string(&command).unwrap(), json);
+            assert_eq!(command.action(), Some(action));
+        }
+        let command = |action: &str, value| MediaCommand {
+            player: "a".into(),
+            action: action.into(),
+            value,
+        };
+        assert_eq!(command("seek", None).action(), None);
+        assert_eq!(command("setVolume", Some(101)).action(), None);
+        assert_eq!(command("shuffle", None).action(), None);
+
+        assert_eq!(
+            parse(r#"{"type":"volume","level":30,"muted":false}"#),
+            Parsed::Known(Packet::Volume(Volume {
+                level: Some(30),
+                muted: Some(false)
+            }))
+        );
+        assert_eq!(
+            Packet::VolumeSet(VolumeSet {
+                level: None,
+                muted: Some(true)
+            })
+            .to_json(),
+            r#"{"type":"volume.set","muted":true}"#
+        );
     }
 
     #[test]

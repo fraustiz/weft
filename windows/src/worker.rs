@@ -6,12 +6,16 @@
 //! knows is published as an immutable [`Snapshot`] that any thread can read
 //! and wait on.
 //!
-//! It also handles the packets of `docs/features.md` sections 2 to 4:
-//! capabilities and status of the other devices, ring, ping, links and
-//! files. What the user should see or hear of them goes to a [`Notice`]
-//! callback; the worker itself never opens, plays or shows anything.
+//! It also handles the packets of `docs/features.md` sections 2 to 6:
+//! capabilities and status of the other devices, ring, ping, links, files,
+//! the phone's notifications and calls, media and volume. What the user
+//! should see or hear of them, and what this computer's players and volume
+//! are asked to do, goes to a [`Notice`] callback; the worker itself never
+//! opens, plays, shows or changes anything. This computer's own players and
+//! volume come in as [`Command::LocalMedia`] and [`Command::LocalVolume`].
 //!
-//! Clipboard text, pairing codes, links and file contents are never logged.
+//! Clipboard text, pairing codes, links, file contents and notification
+//! texts are never logged.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -31,13 +35,14 @@ use weft_cli::{Error, Event, Next, Result, Session, State, StateDir, hex, short_
 use weft_protocol::{ControlError, PairingCode, device_id_from_sign_pk, random_message_id};
 
 use crate::features::Features;
-use crate::files;
 use crate::packets::{
-    self, Battery, Capabilities, Connectivity, FileOffer, Packet, Parsed, RejectReason,
-    is_shareable_url, parse_transfer_id, transfer_id,
+    self, Battery, Call, Capabilities, Connectivity, FileOffer, MediaAction, Notification, Packet,
+    Parsed, Player, RejectReason, Volume, VolumeSet, is_shareable_url, parse_transfer_id,
+    transfer_id,
 };
 use crate::sync::Pause;
 use crate::transfer::{self, Failure, Incoming, Outgoing, Stage, Tick};
+use crate::{files, media};
 
 /// The relay a new installation uses.
 pub const DEFAULT_RELAY_URL: &str = "wss://weft.frohub.eu/v1";
@@ -60,6 +65,18 @@ const FINISHED_SHOWN: usize = 8;
 
 /// Finished incoming transfers remembered, to answer a repeated offer.
 const COMPLETED_KEPT: usize = 64;
+
+/// Notifications that come this soon after a `notification.request` are
+/// the phone's current ones, not news: they go to the notification centre
+/// without popping up.
+const REQUEST_QUIET: Duration = Duration::from_secs(10);
+
+/// The longest notification text shown, in characters, as the contract
+/// caps it.
+const MAX_NOTIFICATION_TEXT: usize = 2000;
+
+/// The most players of another device kept.
+const MAX_PLAYERS: usize = 16;
 
 /// A request to the worker.
 pub enum Command {
@@ -89,6 +106,15 @@ pub enum Command {
     SendFiles([u8; 16], Vec<PathBuf>),
     /// Cancel a transfer, either way, by its id.
     CancelTransfer([u8; 16]),
+    /// Send a packet the user asked for to a device: an answer to one of
+    /// its notifications, a call mute, a media or volume control. Dropped
+    /// if the feature it belongs to is off.
+    SendPacket([u8; 16], Packet),
+    /// This computer's players changed; sent on to the devices that show
+    /// them, unless only the positions moved with time.
+    LocalMedia(Vec<Player>),
+    /// This computer's output volume changed.
+    LocalVolume(Volume),
     /// Close the connection and end the thread.
     Shutdown,
 }
@@ -114,12 +140,31 @@ pub struct Device {
     pub name: Option<String>,
 }
 
+/// The players of another device, and when they were received.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerMedia {
+    pub players: Vec<Player>,
+    pub at: Instant,
+}
+
+impl PeerMedia {
+    /// The player to show: the first one playing, else the first one.
+    pub fn current(&self) -> Option<&Player> {
+        self.players
+            .iter()
+            .find(|player| player.playing)
+            .or(self.players.first())
+    }
+}
+
 /// What a trusted device told about itself since this worker started.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PeerInfo {
     pub capabilities: Option<Capabilities>,
     pub battery: Option<Battery>,
     pub connectivity: Option<Connectivity>,
+    pub media: Option<PeerMedia>,
+    pub volume: Option<Volume>,
 }
 
 impl PeerInfo {
@@ -128,6 +173,13 @@ impl PeerInfo {
         self.capabilities
             .as_ref()
             .is_some_and(|capabilities| capabilities.handles(kind))
+    }
+
+    /// Whether the device may send `kind`, as far as this device knows.
+    pub fn sends(&self, kind: &str) -> bool {
+        self.capabilities
+            .as_ref()
+            .is_some_and(|capabilities| capabilities.sends(kind))
     }
 }
 
@@ -178,6 +230,36 @@ pub enum Notice {
         name: String,
         outgoing: bool,
         failure: Failure,
+    },
+    /// A notification of the phone, new or updated. Its text is cut to
+    /// the contract's length, and `silent` is set for an update or a
+    /// notification the phone already had.
+    Notification {
+        from: [u8; 16],
+        device: Option<String>,
+        notification: Notification,
+    },
+    /// The phone's notification `id` is gone.
+    NotificationRemoved {
+        from: [u8; 16],
+        id: String,
+    },
+    /// A call on the phone: ringing, answered, missed or ended.
+    Call {
+        from: [u8; 16],
+        device: Option<String>,
+        call: Call,
+    },
+    /// A device asks a player of this computer to act.
+    MediaCommand {
+        from: [u8; 16],
+        player: String,
+        action: MediaAction,
+    },
+    /// A device asks for another output volume, level in 0 to 100.
+    SetVolume {
+        from: [u8; 16],
+        set: VolumeSet,
     },
 }
 
@@ -425,6 +507,9 @@ pub fn spawn_on(dir: StateDir, relay_url: &str, hooks: Hooks) -> Result<(Handle,
         outgoing: Vec::new(),
         incoming: Vec::new(),
         completed: Vec::new(),
+        local_media: None,
+        local_volume: None,
+        requested: BTreeMap::new(),
         traffic_at: now,
         progress_at: now,
     };
@@ -504,6 +589,12 @@ struct Worker {
     incoming: Vec<Receiving>,
     /// Incoming transfers already complete, as (sender, id).
     completed: Vec<([u8; 16], [u8; 16])>,
+    /// This computer's players as last sent, and when they were read.
+    local_media: Option<(Vec<Player>, Instant)>,
+    /// This computer's volume as last sent.
+    local_volume: Option<Volume>,
+    /// When each device was last asked for its notifications.
+    requested: BTreeMap<[u8; 16], Instant>,
     /// The last frame from the relay, for the keepalive.
     traffic_at: Instant,
     /// The last snapshot that moved a progress bar.
@@ -696,6 +787,14 @@ impl Worker {
             Command::CancelTransfer(id) => {
                 self.cancel_locally(&id);
             }
+            Command::SendPacket(device, _) => {
+                tracing::info!(device = %short_id(&device), "packet not sent: {OFFLINE}");
+            }
+            // Kept, and sent with the state at the next connection.
+            Command::LocalMedia(players) => {
+                self.local_media = Some((players, Instant::now()));
+            }
+            Command::LocalVolume(volume) => self.local_volume = Some(volume),
             Command::Shutdown => {}
         }
         self.show_transfers();
@@ -717,6 +816,11 @@ impl Worker {
         for device in devices {
             self.send_capabilities(session, device).await?;
             self.send(session, device, &Packet::StateRequest {}).await?;
+            // A device not heard from yet is asked once its capabilities
+            // say it has notifications.
+            if self.view.peer(&device).sends("notification") {
+                self.request_notifications(session, device).await?;
+            }
             self.offer_again(session, device).await?;
         }
         self.start_queued(session).await?;
@@ -943,9 +1047,75 @@ impl Worker {
         only_connection_errors(done, "packet")
     }
 
+    /// Sends this device's capabilities, then its current state: what its
+    /// players and volume are, when it knows them and the feature is on.
     async fn send_capabilities(&mut self, session: &mut Session, to: [u8; 16]) -> Result<()> {
         let packet = Packet::Capabilities(self.view.features.capabilities());
-        self.send(session, to, &packet).await
+        self.send(session, to, &packet).await?;
+        self.send_state(session, to).await
+    }
+
+    /// The current `media` and `volume` packets, positions brought up to
+    /// now. A device that told its capabilities gets only what it handles.
+    fn state_packets(&self, to: &[u8; 16]) -> Vec<Packet> {
+        let peer = self.view.peer(to);
+        let wants = |kind| peer.capabilities.is_none() || peer.handles(kind);
+        let features = self.view.features;
+        let mut packets = Vec::new();
+        if features.media
+            && wants("media")
+            && let Some((players, at)) = &self.local_media
+        {
+            let elapsed = at.elapsed();
+            let players = players
+                .iter()
+                .map(|player| Player {
+                    position: media::position(player, elapsed),
+                    ..player.clone()
+                })
+                .collect();
+            packets.push(Packet::Media { players });
+        }
+        if features.volume
+            && wants("volume")
+            && let Some(volume) = self.local_volume
+        {
+            packets.push(Packet::Volume(volume));
+        }
+        packets
+    }
+
+    async fn send_state(&mut self, session: &mut Session, to: [u8; 16]) -> Result<()> {
+        for packet in self.state_packets(&to) {
+            self.send(session, to, &packet).await?;
+        }
+        Ok(())
+    }
+
+    /// Asks `to` for its current notifications, if they are shown here.
+    async fn request_notifications(&mut self, session: &mut Session, to: [u8; 16]) -> Result<()> {
+        if !self.view.features.notifications {
+            return Ok(());
+        }
+        self.requested.insert(to, Instant::now());
+        self.send(session, to, &Packet::NotificationRequest {})
+            .await
+    }
+
+    /// Sends `packet` to every device that handles it.
+    async fn send_to_handlers(&mut self, session: &mut Session, packet: &Packet) -> Result<()> {
+        let kind = packet.kind();
+        let devices: Vec<[u8; 16]> = self
+            .view
+            .devices
+            .iter()
+            .map(|device| device.id)
+            .filter(|device| self.view.peer(device).handles(kind))
+            .collect();
+        for device in devices {
+            self.send(session, device, packet).await?;
+        }
+        Ok(())
     }
 
     /// Acts on a packet from a trusted device. Packets of a switched-off
@@ -973,10 +1143,14 @@ impl Worker {
                 );
                 let peer = self.view.peers.entry(from).or_default();
                 let fresh = peer.capabilities.is_none();
+                let notifies = capabilities.sends("notification");
                 peer.capabilities = Some(capabilities);
                 // It may have restarted: it needs this device's too.
                 if fresh {
                     self.send_capabilities(session, from).await?;
+                    if notifies {
+                        self.request_notifications(session, from).await?;
+                    }
                     self.offer_again(session, from).await?;
                 }
             }
@@ -1074,6 +1248,71 @@ impl Worker {
                 if let Some(id) = parse_transfer_id(&id) {
                     tracing::info!(from = %short_id(&from), "transfer cancelled by the other device");
                     self.cancel_from(&from, &id);
+                }
+            }
+            Packet::Notification(mut notification) if features.notifications => {
+                tracing::debug!(from = %short_id(&from), "notification received (not shown)");
+                if let Some((cut, _)) = notification.text.char_indices().nth(MAX_NOTIFICATION_TEXT)
+                {
+                    notification.text.truncate(cut);
+                }
+                let requested = self.requested.get(&from).copied();
+                if requested.is_some_and(|at| now.duration_since(at) < REQUEST_QUIET) {
+                    notification.silent = true;
+                }
+                self.notify(Notice::Notification {
+                    from,
+                    device: self.device_name(&from),
+                    notification,
+                });
+            }
+            Packet::NotificationRemoved { id } if features.notifications => {
+                self.notify(Notice::NotificationRemoved { from, id });
+            }
+            Packet::Call(call) if features.calls => {
+                if call.event().is_some() {
+                    tracing::info!(from = %short_id(&from), event = %call.event, "call");
+                    self.notify(Notice::Call {
+                        from,
+                        device: self.device_name(&from),
+                        call,
+                    });
+                } else {
+                    tracing::debug!(from = %short_id(&from), "call event of an unknown kind ignored");
+                }
+            }
+            Packet::Media { mut players } if features.media => {
+                players.truncate(MAX_PLAYERS);
+                for player in &mut players {
+                    player.volume = player.volume.filter(|volume| *volume <= 100);
+                }
+                let peer = self.view.peers.entry(from).or_default();
+                peer.media = Some(PeerMedia { players, at: now });
+            }
+            Packet::Volume(volume) if features.volume => {
+                let volume = Volume {
+                    level: volume.level.filter(|level| *level <= 100),
+                    ..volume
+                };
+                self.view.peers.entry(from).or_default().volume = Some(volume);
+            }
+            Packet::MediaCommand(command) if features.media => match command.action() {
+                Some(action) => self.notify(Notice::MediaCommand {
+                    from,
+                    player: command.player,
+                    action,
+                }),
+                None => {
+                    tracing::debug!(from = %short_id(&from), "media command of an unknown kind ignored");
+                }
+            },
+            Packet::VolumeSet(set) if features.volume => {
+                let set = VolumeSet {
+                    level: set.level.filter(|level| *level <= 100),
+                    ..set
+                };
+                if set.level.is_some() || set.muted.is_some() {
+                    self.notify(Notice::SetVolume { from, set });
                 }
             }
             // A switched-off feature.
@@ -1530,6 +1769,14 @@ impl Worker {
         if !features.ring {
             self.stop_ring();
         }
+        for peer in self.view.peers.values_mut() {
+            if !features.media {
+                peer.media = None;
+            }
+            if !features.volume {
+                peer.volume = None;
+            }
+        }
     }
 
     /// Rebuilds the transfers of the view: at once when one starts or
@@ -1612,9 +1859,13 @@ impl Worker {
                 Ok(())
             }
             Command::SetFeatures(features) => {
+                let before = self.view.features;
                 self.set_features(features);
                 let packet = Packet::Capabilities(features.capabilities());
-                session.send_packet_all(&packet.to_json()).await.map(|_| ())
+                match session.send_packet_all(&packet.to_json()).await {
+                    Ok(_) => self.features_turned_on(session, before).await,
+                    Err(err) => Err(err),
+                }
             }
             Command::Ring(device) if self.view.features.ring => {
                 tracing::info!(device = %short_id(&device), "ringing a device");
@@ -1639,6 +1890,41 @@ impl Worker {
                 }
                 None => Ok(()),
             },
+            Command::SendPacket(device, packet) => {
+                if self.view.features.capabilities().sends(packet.kind()) {
+                    self.send(session, device, &packet).await
+                } else {
+                    tracing::debug!(
+                        kind = packet.kind(),
+                        "packet of a disabled feature not sent"
+                    );
+                    Ok(())
+                }
+            }
+            Command::LocalMedia(players) => {
+                let now = Instant::now();
+                let news = match &self.local_media {
+                    Some((old, at)) => media::differs(old, now.duration_since(*at), &players),
+                    None => true,
+                };
+                self.local_media = Some((players.clone(), now));
+                if news && self.view.features.media {
+                    self.send_to_handlers(session, &Packet::Media { players })
+                        .await
+                } else {
+                    Ok(())
+                }
+            }
+            Command::LocalVolume(volume) => {
+                let news = self.local_volume != Some(volume);
+                self.local_volume = Some(volume);
+                if news && self.view.features.volume {
+                    self.send_to_handlers(session, &Packet::Volume(volume))
+                        .await
+                } else {
+                    Ok(())
+                }
+            }
             Command::Shutdown => Ok(()),
         };
         describe(&mut self.view, session.state());
@@ -1651,6 +1937,25 @@ impl Worker {
             }
             done => done,
         }
+    }
+
+    /// What a feature just turned on needs: the state it shares, and the
+    /// notifications the devices have now.
+    async fn features_turned_on(&mut self, session: &mut Session, before: Features) -> Result<()> {
+        let now = self.view.features;
+        let devices: Vec<[u8; 16]> = self.view.devices.iter().map(|device| device.id).collect();
+        for device in devices {
+            if (now.media && !before.media) || (now.volume && !before.volume) {
+                self.send_state(session, device).await?;
+            }
+            if now.notifications
+                && !before.notifications
+                && self.view.peer(&device).sends("notification")
+            {
+                self.request_notifications(session, device).await?;
+            }
+        }
+        Ok(())
     }
 
     async fn start_pairing(&mut self, session: &mut Session) -> Result<()> {

@@ -17,7 +17,8 @@ use weft_protocol::PairingCode;
 use weft_relay::Config;
 use weft_windows::features::Features;
 use weft_windows::packets::{
-    self, Battery, Capabilities, Connectivity, FileOffer, Packet, Parsed, transfer_id,
+    self, Battery, Call, Capabilities, Connectivity, FileOffer, MediaAction, MediaCommand,
+    Notification, Packet, Parsed, Player, Volume, VolumeSet, transfer_id,
 };
 use weft_windows::transfer::{CHUNK, Stage, WINDOW};
 use weft_windows::worker::{
@@ -1330,6 +1331,414 @@ async fn a_file_resumes_after_the_phone_reconnects() {
                     .any(|transfer| transfer.outgoing && transfer.stage == Stage::Done)
             })
             .await;
+        tested.stop().await;
+    })
+    .await;
+}
+
+// Notifications, calls, media and volume (`docs/features.md` sections 5
+// and 6). The notice callback stands for the toasts and for this
+// computer's players and volume; commands stand for the clicks on toasts
+// and for the system thread's readings.
+
+/// A phone that shares its notifications, calls, players and volume.
+fn phone_capabilities_with_media() -> Packet {
+    let list = |kinds: &[&str]| kinds.iter().map(|kind| kind.to_string()).collect();
+    Packet::Capabilities(Capabilities {
+        platform: "android".into(),
+        incoming: list(&[
+            "ring",
+            "notification.dismiss",
+            "notification.action",
+            "notification.reply",
+            "notification.request",
+            "call.mute",
+            "media",
+            "media.command",
+            "volume",
+            "volume.set",
+        ]),
+        outgoing: list(&[
+            "notification",
+            "notification.removed",
+            "call",
+            "media",
+            "media.command",
+            "volume",
+            "volume.set",
+        ]),
+    })
+}
+
+/// A paired phone that told its capabilities, past the computer's answer
+/// and its request for the notifications.
+async fn paired_with_media(url: &str) -> (Tested, Peer) {
+    let (tested, mut phone) = paired(url).await;
+    let (pc, phone_id) = (tested.id(), phone.id());
+    phone.send(pc, &phone_capabilities_with_media()).await;
+    tested
+        .wait(|snapshot| snapshot.peer(&phone_id).handles("media"))
+        .await;
+    phone
+        .expect_packet(pc, |packet| *packet == Packet::NotificationRequest {})
+        .await;
+    (tested, phone)
+}
+
+fn song(title: &str, position: u64) -> Player {
+    Player {
+        id: "Spotify.exe".into(),
+        app: "Spotify".into(),
+        title: title.into(),
+        artist: "Artist".into(),
+        playing: true,
+        position: Some(position),
+        length: Some(200_000),
+        can_play: true,
+        can_pause: true,
+        can_seek: true,
+        ..Player::default()
+    }
+}
+
+/// The packets from `from` up to the first one `wanted` accepts, that one
+/// included.
+async fn packets_until(
+    peer: &mut Peer,
+    from: [u8; 16],
+    wanted: impl Fn(&Packet) -> bool,
+) -> Vec<Packet> {
+    let mut seen = Vec::new();
+    loop {
+        if let Event::Packet { from: sender, json } = peer.next_any().await
+            && sender == from
+            && let Parsed::Known(packet) = packets::parse(&json)
+        {
+            let done = wanted(&packet);
+            seen.push(packet);
+            if done {
+                return seen;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn phone_notifications_and_calls_reach_the_notices_and_answers_go_back() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut phone) = paired_with_media(&url).await;
+        let (pc, phone_id) = (tested.id(), phone.id());
+
+        // Right after the request, the phone's current notifications come
+        // without popping up; the text is cut to 2000 characters.
+        let notification = Notification {
+            id: "0|org.chat|7".into(),
+            app: "Chat".into(),
+            title: "Ann".into(),
+            text: "é".repeat(2500),
+            dismissable: true,
+            actions: vec!["Mark read".into()],
+            reply: true,
+            ..Notification::default()
+        };
+        phone
+            .send(pc, &Packet::Notification(notification.clone()))
+            .await;
+        let shown = tested
+            .expect_notice(|notice| matches!(notice, Notice::Notification { .. }))
+            .await;
+        let Notice::Notification {
+            from,
+            device,
+            notification: shown,
+        } = shown
+        else {
+            unreachable!();
+        };
+        assert_eq!((from, device.as_deref()), (phone_id, Some("Test phone")));
+        assert!(shown.silent);
+        assert_eq!(shown.text.chars().count(), 2000);
+        assert_eq!(
+            Notification {
+                text: notification.text.clone(),
+                silent: false,
+                ..shown
+            },
+            notification
+        );
+
+        phone
+            .send(
+                pc,
+                &Packet::NotificationRemoved {
+                    id: notification.id.clone(),
+                },
+            )
+            .await;
+        let removed = tested
+            .expect_notice(|notice| matches!(notice, Notice::NotificationRemoved { .. }))
+            .await;
+        assert_eq!(
+            removed,
+            Notice::NotificationRemoved {
+                from: phone_id,
+                id: notification.id.clone()
+            }
+        );
+
+        // The toast's buttons: an action, a reply, a dismiss.
+        let id = notification.id.clone();
+        for answer in [
+            Packet::NotificationAction {
+                id: id.clone(),
+                action: "Mark read".into(),
+            },
+            Packet::NotificationReply {
+                id: id.clone(),
+                text: "On my way".into(),
+            },
+            Packet::NotificationDismiss { id: id.clone() },
+        ] {
+            tested
+                .worker
+                .send(Command::SendPacket(phone_id, answer.clone()));
+            phone.expect_packet(pc, |packet| *packet == answer).await;
+        }
+
+        // A ringing call, an unknown event ignored, and the mute.
+        let call = Call {
+            event: "ringing".into(),
+            number: Some("+33 600 000 000".into()),
+            name: Some("Ann".into()),
+        };
+        let held = Call {
+            event: "held".into(),
+            ..call.clone()
+        };
+        phone.send(pc, &Packet::Call(held)).await;
+        phone.send(pc, &Packet::Call(call.clone())).await;
+        let rang = tested
+            .expect_notice(|notice| matches!(notice, Notice::Call { .. }))
+            .await;
+        assert_eq!(
+            rang,
+            Notice::Call {
+                from: phone_id,
+                device: Some("Test phone".into()),
+                call,
+            }
+        );
+        tested
+            .worker
+            .send(Command::SendPacket(phone_id, Packet::CallMute {}));
+        phone
+            .expect_packet(pc, |packet| *packet == Packet::CallMute {})
+            .await;
+        let calls = tested
+            .notices
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|notice| matches!(notice, Notice::Call { .. }))
+            .count();
+        assert_eq!(calls, 0, "the unknown event made a notice");
+
+        // Switched off: notifications and calls are ignored, and answers
+        // to them are not sent.
+        let off = Features {
+            notifications: false,
+            calls: false,
+            ..Features::default()
+        };
+        tested.worker.send(Command::SetFeatures(off));
+        phone.expect_packet(pc, is_capabilities).await;
+        phone
+            .send(pc, &Packet::Notification(notification.clone()))
+            .await;
+        let missed = Call {
+            event: "missed".into(),
+            ..Call::default()
+        };
+        phone.send(pc, &Packet::Call(missed)).await;
+        let dismiss = Packet::NotificationDismiss { id: id.clone() };
+        tested.worker.send(Command::SendPacket(phone_id, dismiss));
+        tested
+            .worker
+            .send(Command::SendPacket(phone_id, Packet::CallMute {}));
+        tested.worker.send(Command::Ring(phone_id));
+        let seen = packets_until(&mut phone, pc, |packet| *packet == Packet::Ring {}).await;
+        let answered = seen.iter().any(|packet| {
+            matches!(
+                packet,
+                Packet::NotificationDismiss { .. } | Packet::CallMute {}
+            )
+        });
+        assert!(!answered, "{seen:?}");
+        phone.send(pc, &Packet::StateRequest {}).await;
+        phone.expect_packet(pc, is_capabilities).await;
+        let notices = tested.notices.lock().unwrap().clone();
+        let shown = notices
+            .iter()
+            .any(|notice| matches!(notice, Notice::Notification { .. } | Notice::Call { .. }));
+        assert!(!shown, "{notices:?}");
+        tested.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn media_and_volume_go_both_ways() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut phone) = paired_with_media(&url).await;
+        let (pc, phone_id) = (tested.id(), phone.id());
+        let is_state = |packet: &Packet| matches!(packet, Packet::Media { .. } | Packet::Volume(_));
+
+        // This computer's players and volume go to the phone on change; a
+        // reading where only time moved, or the same volume, does not.
+        let players = vec![song("First", 10_000)];
+        tested.worker.send(Command::LocalMedia(players.clone()));
+        let sent = phone.expect_packet(pc, is_state).await;
+        assert_eq!(sent, Packet::Media { players });
+        tested
+            .worker
+            .send(Command::LocalMedia(vec![song("First", 10_100)]));
+        let volume = Volume {
+            level: Some(35),
+            muted: Some(false),
+        };
+        tested.worker.send(Command::LocalVolume(volume));
+        tested.worker.send(Command::LocalVolume(volume));
+        let sent = phone.expect_packet(pc, is_state).await;
+        assert_eq!(sent, Packet::Volume(volume));
+        let next = vec![song("Second", 0)];
+        tested.worker.send(Command::LocalMedia(next.clone()));
+        let sent = phone.expect_packet(pc, is_state).await;
+        assert_eq!(sent, Packet::Media { players: next });
+
+        // A state request gets them again, after the capabilities.
+        phone.send(pc, &Packet::StateRequest {}).await;
+        let seen =
+            packets_until(&mut phone, pc, |packet| matches!(packet, Packet::Volume(_))).await;
+        let kinds: Vec<&str> = seen.iter().map(Packet::kind).collect();
+        assert_eq!(kinds, ["capabilities", "media", "volume"]);
+        let Packet::Media { players } = &seen[1] else {
+            unreachable!();
+        };
+        assert_eq!(players[0].title, "Second");
+
+        // The phone's commands reach this computer's players and volume;
+        // ones that make no sense do not.
+        let without_value = MediaCommand {
+            player: "Spotify.exe".into(),
+            action: "seek".into(),
+            value: None,
+        };
+        let seek = MediaCommand::new("Spotify.exe", MediaAction::Seek(42_000));
+        for command in [without_value, seek] {
+            phone.send(pc, &Packet::MediaCommand(command)).await;
+        }
+        let asked = tested
+            .expect_notice(|notice| matches!(notice, Notice::MediaCommand { .. }))
+            .await;
+        assert_eq!(
+            asked,
+            Notice::MediaCommand {
+                from: phone_id,
+                player: "Spotify.exe".into(),
+                action: MediaAction::Seek(42_000),
+            }
+        );
+        let too_loud = VolumeSet {
+            level: Some(150),
+            muted: None,
+        };
+        let quiet = VolumeSet {
+            level: Some(20),
+            muted: Some(true),
+        };
+        for set in [too_loud, quiet] {
+            phone.send(pc, &Packet::VolumeSet(set)).await;
+        }
+        let set = tested
+            .expect_notice(|notice| matches!(notice, Notice::SetVolume { .. }))
+            .await;
+        assert_eq!(
+            set,
+            Notice::SetVolume {
+                from: phone_id,
+                set: quiet,
+            }
+        );
+        let extra = tested
+            .notices
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|notice| {
+                matches!(
+                    notice,
+                    Notice::MediaCommand { .. } | Notice::SetVolume { .. }
+                )
+            })
+            .count();
+        assert_eq!(extra, 0, "a command that makes no sense made a notice");
+
+        // The phone's players and volume reach the snapshot, and the
+        // computer controls them.
+        let theirs = vec![Player {
+            id: "org.podcasts".into(),
+            ..song("Episode", 5000)
+        }];
+        let media = Packet::Media {
+            players: theirs.clone(),
+        };
+        phone.send(pc, &media).await;
+        let level = Volume {
+            level: Some(60),
+            muted: Some(false),
+        };
+        phone.send(pc, &Packet::Volume(level)).await;
+        let snapshot = tested
+            .wait(|snapshot| snapshot.peer(&phone_id).volume.is_some())
+            .await;
+        let peer = snapshot.peer(&phone_id);
+        assert_eq!(peer.media.unwrap().players, theirs);
+        assert_eq!(peer.volume, Some(level));
+        let pause = Packet::MediaCommand(MediaCommand::new("org.podcasts", MediaAction::Pause));
+        let louder = Packet::VolumeSet(VolumeSet {
+            level: Some(80),
+            muted: None,
+        });
+        for packet in [pause, louder] {
+            tested
+                .worker
+                .send(Command::SendPacket(phone_id, packet.clone()));
+            phone.expect_packet(pc, |sent| *sent == packet).await;
+        }
+
+        // Switched off, the phone's state is forgotten and this
+        // computer's is no longer sent.
+        let off = Features {
+            media: false,
+            volume: false,
+            ..Features::default()
+        };
+        tested.worker.send(Command::SetFeatures(off));
+        phone.expect_packet(pc, is_capabilities).await;
+        tested
+            .wait(|snapshot| {
+                let peer = snapshot.peer(&phone_id);
+                peer.media.is_none() && peer.volume.is_none()
+            })
+            .await;
+        tested
+            .worker
+            .send(Command::LocalMedia(vec![song("Third", 0)]));
+        tested.worker.send(Command::Ring(phone_id));
+        let seen = packets_until(&mut phone, pc, |packet| *packet == Packet::Ring {}).await;
+        assert!(!seen.iter().any(is_state), "{seen:?}");
         tested.stop().await;
     })
     .await;

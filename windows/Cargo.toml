@@ -21,7 +21,16 @@ weft-protocol = { path = "../crates/weft-protocol" }
 
 [target.'cfg(windows)'.dependencies]
 qrcode = { version = "0.14.1", default-features = false }
+# The WinRT and COM calls (toasts, media sessions, the audio endpoint) go
+# through bindings generated from `bindings.txt` by windows-bindgen 0.100:
+# the `windows` crate stops at 0.62, on an older windows-core than the one
+# windows-reactor brings, and would build a second copy of it.
+windows-collections = { version = "0.100.0", default-features = false, features = ["std"] }
+windows-core = { version = "0.100.0", default-features = false, features = ["std"] }
+windows-future = { version = "0.100.0", default-features = false, features = ["std"] }
 windows-reactor = "0.100.0"
+windows-reference = { version = "0.100.0", default-features = false, features = ["std"] }
+windows-time = { version = "0.100.0", default-features = false, features = ["std"] }
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Globalization",

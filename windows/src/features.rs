@@ -20,6 +20,14 @@ const FILE_PACKETS: &[&str] = &[
     "file.cancel",
 ];
 
+/// What a computer sends about the phone's notifications.
+const NOTIFICATION_ANSWERS: &[&str] = &[
+    "notification.dismiss",
+    "notification.action",
+    "notification.reply",
+    "notification.request",
+];
+
 /// Every switch is on by default. A switch missing from the file keeps its
 /// default, so a later version can add one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +41,14 @@ pub struct Features {
     pub ring: bool,
     /// Show the battery and network of the other devices.
     pub battery: bool,
+    /// Show the phone's notifications as toasts, and act on them.
+    pub notifications: bool,
+    /// Show the phone's incoming and missed calls.
+    pub calls: bool,
+    /// Share this computer's players, and control the other devices'.
+    pub media: bool,
+    /// Share this computer's volume, and control the other devices'.
+    pub volume: bool,
 }
 
 impl Default for Features {
@@ -42,6 +58,10 @@ impl Default for Features {
             links: true,
             ring: true,
             battery: true,
+            notifications: true,
+            calls: true,
+            media: true,
+            volume: true,
         }
     }
 }
@@ -91,6 +111,22 @@ impl Features {
         if self.battery {
             incoming.extend(["battery", "connectivity"]);
         }
+        if self.notifications {
+            incoming.extend(["notification", "notification.removed"]);
+            outgoing.extend(NOTIFICATION_ANSWERS);
+        }
+        if self.calls {
+            incoming.push("call");
+            outgoing.push("call.mute");
+        }
+        if self.media {
+            incoming.extend(["media", "media.command"]);
+            outgoing.extend(["media", "media.command"]);
+        }
+        if self.volume {
+            incoming.extend(["volume", "volume.set"]);
+            outgoing.extend(["volume", "volume.set"]);
+        }
         Capabilities {
             platform: PLATFORM.into(),
             incoming: incoming.into_iter().map(String::from).collect(),
@@ -126,17 +162,37 @@ mod tests {
     fn switched_off_features_leave_the_capabilities() {
         let all = Features::default().capabilities();
         assert_eq!(all.platform, "windows");
-        for kind in ["ring", "ring.stop", "share.url", "file.offer", "battery"] {
+        for kind in [
+            "ring",
+            "ring.stop",
+            "share.url",
+            "file.offer",
+            "battery",
+            "notification",
+            "notification.removed",
+            "call",
+            "media",
+            "media.command",
+            "volume",
+            "volume.set",
+        ] {
             assert!(all.handles(kind), "{kind}");
         }
         assert!(all.sends("file.offer") && all.sends("ring"));
-        assert!(!all.sends("battery"));
+        assert!(!all.sends("battery") && !all.sends("notification"));
+        for kind in ["notification.reply", "call.mute", "media", "volume.set"] {
+            assert!(all.sends(kind), "{kind}");
+        }
 
         let none = Features {
             files: false,
             links: false,
             ring: false,
             battery: false,
+            notifications: false,
+            calls: false,
+            media: false,
+            volume: false,
         }
         .capabilities();
         assert_eq!(none.incoming, ["state.request", "ping"]);

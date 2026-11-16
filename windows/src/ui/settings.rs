@@ -152,6 +152,42 @@ pub fn view(weft: &Weft, context: &mut ViewContext<Weft>) -> View {
             current.battery,
             toggle(|features, on| features.battery = on),
         ),
+        switch(
+            t("Notifications", "Notifications"),
+            t(
+                "Your phone's notifications show here, and you can answer them",
+                "Les notifications de votre téléphone s'affichent ici, et vous pouvez y répondre",
+            ),
+            current.notifications,
+            toggle(|features, on| features.notifications = on),
+        ),
+        switch(
+            t("Calls", "Appels"),
+            t(
+                "Incoming and missed calls of your phone show here",
+                "Les appels entrants et manqués de votre téléphone s'affichent ici",
+            ),
+            current.calls,
+            toggle(|features, on| features.calls = on),
+        ),
+        switch(
+            t("Media", "Média"),
+            t(
+                "Control what plays on your devices, and let them control what plays here",
+                "Contrôler ce qui joue sur vos appareils, et les laisser contrôler ce qui joue ici",
+            ),
+            current.media,
+            toggle(|features, on| features.media = on),
+        ),
+        switch(
+            t("Volume", "Volume"),
+            t(
+                "Change the volume of your devices, and let them change this computer's",
+                "Régler le volume de vos appareils, et les laisser régler celui de cet ordinateur",
+            ),
+            current.volume,
+            toggle(|features, on| features.volume = on),
+        ),
     ];
     let relay = card(column(
         2.0,

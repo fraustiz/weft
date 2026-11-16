@@ -307,6 +307,18 @@ pub fn check_name(typed: &str) -> Result<String, NameProblem> {
     }
 }
 
+/// A position or length in a track, as players show them: `3:07`, or
+/// `1:02:45` past an hour.
+pub fn track_time(ms: u64) -> String {
+    let seconds = ms / 1000;
+    let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,5 +565,12 @@ mod tests {
             signal: None,
         };
         assert_eq!(network(&lte).as_deref(), Some("LTE"));
+    }
+
+    #[test]
+    fn track_times() {
+        assert_eq!(track_time(0), "0:00");
+        assert_eq!(track_time(187_400), "3:07");
+        assert_eq!(track_time(3_765_000), "1:02:45");
     }
 }

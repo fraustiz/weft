@@ -2068,8 +2068,13 @@ dependencies = [
  "weft-cli",
  "weft-protocol",
  "weft-relay",
+ "windows-collections",
+ "windows-core",
+ "windows-future",
  "windows-reactor",
+ "windows-reference",
  "windows-sys 0.61.2",
+ "windows-time",
 ]
 
 [[package]]

@@ -2,8 +2,9 @@
 //! by `WEFT_LOG`; release builds have no console, so they only show when
 //! stderr is redirected.
 //!
-//! Three threads: the main one runs the window, the tray thread owns the
-//! notification icon and the clipboard, and the worker talks to the relay.
+//! Four threads: the main one runs the window, the tray thread owns the
+//! notification icon and the clipboard, the worker talks to the relay, and
+//! the system thread runs the toasts, the players and the volume.
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
@@ -22,9 +23,11 @@ fn main() -> ExitCode {
     use std::time::{Duration, Instant};
 
     use weft_cli::{StateDir, default_state_dir};
+    use weft_windows::notify::Notifier;
+    use weft_windows::system::{self, System};
     use weft_windows::tray::{self, Link};
     use weft_windows::worker::{self, Command, Hooks};
-    use weft_windows::{autostart, files, notify, ui, window};
+    use weft_windows::{autostart, files, toast, ui, window};
     use windows_sys::Win32::UI::HiDpi::{
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
     };
@@ -64,12 +67,21 @@ fn main() -> ExitCode {
     // SAFETY: called before any window exists; a failure changes nothing.
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
 
+    // Before any window, so they all carry the app's identity.
+    if let Err(err) = toast::register(&state_dir) {
+        tracing::warn!(error = %err, "no app identity: notifications may not show");
+    }
+
     let link = Arc::new(Link::default());
+    let (system, system_inbox) = System::new();
     let hooks = {
-        let (text_link, notice_link) = (link.clone(), link.clone());
+        let text_link = link.clone();
+        let notifier = Notifier {
+            system: system.clone(),
+        };
         Hooks {
             on_text: Box::new(move |text| text_link.remote_text(text)),
-            on_notice: Arc::new(move |notice| notify::handle(&notice_link, notice)),
+            on_notice: Arc::new(move |notice| notifier.handle(notice)),
             // Without a known Downloads folder, files stay next to the state.
             downloads: files::downloads_dir().unwrap_or_else(|| state_dir.join("Received")),
         }
@@ -81,6 +93,8 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    system::start(&system, system_inbox, worker.clone(), link.clone());
 
     // The tray thread waits on window messages, not on the worker: this
     // thread turns each new snapshot into a message for it.

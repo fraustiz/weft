@@ -11,6 +11,7 @@ use super::words::{self, NameProblem};
 use super::{Shell, detail, devices, pairing, picker, qr, settings};
 use crate::features::Features;
 use crate::i18n::t;
+use crate::packets::{MediaAction, MediaCommand, Packet, VolumeSet};
 use crate::worker::{Command, Handle, PairingState, Published, RING_DURATION, Snapshot};
 use crate::{autostart, window};
 
@@ -78,6 +79,34 @@ pub enum Message {
     /// Files were dropped on the device shown.
     Dropped(DroppedData),
     CancelTransfer([u8; 16]),
+    /// Play, pause, next or previous on the player shown.
+    Media(MediaAction),
+    /// The seek bar of the player shown moved, to this many seconds.
+    Seek(f64),
+    /// The volume slider of the device shown moved, to 0 to 100.
+    PhoneVolume(f64),
+    PhoneMute(bool),
+}
+
+/// How long a value the user just set is shown, while the device's own
+/// report of it is on its way.
+pub const DRAFT_HOLD: Duration = Duration::from_secs(2);
+
+/// A value the user just set on a device, and when.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Draft<T> {
+    pub device: [u8; 16],
+    pub value: T,
+    pub at: Instant,
+}
+
+impl<T: Copy> Draft<T> {
+    /// The value, while it is fresh and for `device`.
+    pub fn for_device(draft: &Option<Draft<T>>, device: [u8; 16]) -> Option<(T, Instant)> {
+        draft
+            .filter(|draft| draft.device == device && draft.at.elapsed() < DRAFT_HOLD)
+            .map(|draft| (draft.value, draft.at))
+    }
 }
 
 pub struct Weft {
@@ -109,6 +138,10 @@ pub struct Weft {
     pub rang: Option<([u8; 16], Instant)>,
     /// The file picker is open.
     pub picking: bool,
+    /// The position just asked of the player shown, in milliseconds.
+    pub seek_draft: Option<Draft<u64>>,
+    /// The volume just asked of the device shown.
+    pub volume_draft: Option<Draft<u8>>,
     /// A tick is on its way.
     ticking: bool,
 }
@@ -159,11 +192,27 @@ impl Weft {
         let rang = self
             .rang
             .map(|(_, until)| until.saturating_duration_since(Instant::now()));
+        // The player shown moves on every second.
+        let playing = self
+            .selected
+            .and_then(|device| self.snapshot.peer(&device).media)
+            .is_some_and(|media| media.current().is_some_and(|player| player.playing))
+            .then_some(Duration::from_secs(1));
+        let drafts = [
+            self.seek_draft.map(|draft| draft.at),
+            self.volume_draft.map(|draft| draft.at),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|at| (at + DRAFT_HOLD).saturating_duration_since(Instant::now()))
+        .min();
         activity
             .map(|(_, next)| next)
             .into_iter()
             .chain(expiry)
             .chain(rang)
+            .chain(playing)
+            .chain(drafts)
             .min()
     }
 
@@ -190,6 +239,13 @@ impl Weft {
         {
             self.shell.worker.send(Command::SendFiles(device, paths));
         }
+    }
+
+    /// The device shown and the id of its player shown.
+    fn player_shown(&self) -> Option<([u8; 16], String)> {
+        let device = self.selected?;
+        let media = self.snapshot.peer(&device).media?;
+        Some((device, media.current()?.id.clone()))
     }
 
     fn start_pairing(&mut self) {
@@ -228,6 +284,8 @@ impl Component for Weft {
             selected: None,
             rang: None,
             picking: false,
+            seek_draft: None,
+            volume_draft: None,
             ticking: false,
         };
         weft.absorb(published);
@@ -362,6 +420,56 @@ impl Component for Weft {
             }
             Message::Dropped(_) => {}
             Message::CancelTransfer(id) => worker.send(Command::CancelTransfer(id)),
+            Message::Media(action) => {
+                if let Some((device, player)) = self.player_shown() {
+                    let command = MediaCommand::new(&player, action);
+                    worker.send(Command::SendPacket(device, Packet::MediaCommand(command)));
+                }
+            }
+            Message::Seek(seconds) => {
+                let position = (seconds.max(0.0) * 1000.0) as u64;
+                let shown = self
+                    .selected
+                    .and_then(|device| detail::position_shown(self, device));
+                // Setting the bar's value reports a move too: only one away
+                // from where it was put is the user's.
+                let moved = shown.is_none_or(|shown| shown.abs_diff(position) > 1500);
+                if moved && let Some((device, player)) = self.player_shown() {
+                    let command = MediaCommand::new(&player, MediaAction::Seek(position));
+                    worker.send(Command::SendPacket(device, Packet::MediaCommand(command)));
+                    self.seek_draft = Some(Draft {
+                        device,
+                        value: position,
+                        at: Instant::now(),
+                    });
+                }
+            }
+            Message::PhoneVolume(level) => {
+                if let Some(device) = self.selected {
+                    let level = level.round().clamp(0.0, 100.0) as u8;
+                    if detail::volume_shown(self, device) != Some(level) {
+                        let set = VolumeSet {
+                            level: Some(level),
+                            muted: None,
+                        };
+                        worker.send(Command::SendPacket(device, Packet::VolumeSet(set)));
+                        self.volume_draft = Some(Draft {
+                            device,
+                            value: level,
+                            at: Instant::now(),
+                        });
+                    }
+                }
+            }
+            Message::PhoneMute(muted) => {
+                if let Some(device) = self.selected {
+                    let set = VolumeSet {
+                        level: None,
+                        muted: Some(muted),
+                    };
+                    worker.send(Command::SendPacket(device, Packet::VolumeSet(set)));
+                }
+            }
         }
         self.schedule_tick(context);
     }

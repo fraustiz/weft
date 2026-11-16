@@ -1,18 +1,19 @@
 //! One device, in place of the list: its battery and network, what this
-//! computer can do with it, and the files on their way. Files dropped on
-//! the view are sent to it. Also the notice shown while a device rings
-//! this computer.
+//! computer can do with it, what it plays and its volume, and the files on
+//! their way. Files dropped on the view are sent to it. Also the notice
+//! shown while a device rings this computer.
 
 use weft_cli::hex;
 use windows_reactor::*;
 
-use super::app::{Message, Weft};
+use super::app::{Draft, Message, Weft};
 use super::widgets::{
     body, button, card, column, label, primary_button, row, secondary, status_mark, title,
 };
 use super::words;
 use crate::i18n::{is_french, t};
-use crate::packets::{Battery, Connectivity};
+use crate::media;
+use crate::packets::{Battery, Connectivity, MediaAction, Player};
 use crate::worker::{PeerInfo, TransferView};
 
 /// The bars icon for a signal of 0 to 4.
@@ -164,6 +165,205 @@ fn actions(
     column(8.0, views)
 }
 
+/// Where the player shown on `device` is: the position just asked for,
+/// else the one it reported, moved on with time.
+pub fn position_shown(weft: &Weft, device: [u8; 16]) -> Option<u64> {
+    let media = weft.snapshot.peer(&device).media?;
+    let player = media.current()?;
+    if let Some((position, at)) = Draft::for_device(&weft.seek_draft, device) {
+        let asked = Player {
+            position: Some(position),
+            ..player.clone()
+        };
+        return media::position(&asked, at.elapsed());
+    }
+    media::position(player, media.at.elapsed())
+}
+
+/// The volume shown for `device`: the one just asked for, else the one it
+/// reported.
+pub fn volume_shown(weft: &Weft, device: [u8; 16]) -> Option<u8> {
+    Draft::for_device(&weft.volume_draft, device)
+        .map(|(level, _)| level)
+        .or_else(|| weft.snapshot.peer(&device).volume?.level)
+}
+
+/// A player button: an icon, with its name for screen readers and as a
+/// tooltip.
+fn player_button(symbol: Symbol, name: &str, enabled: bool, on_click: Callback<()>) -> View {
+    Button::new()
+        .style(ButtonStyle::Subtle)
+        .is_enabled(enabled)
+        .automation_name(name)
+        .on_click(on_click)
+        .content(SymbolIcon::new().symbol(symbol))
+        .tooltip(name)
+}
+
+/// What the device plays: the first player playing, with its controls.
+/// `None` until the device has said, or when it does not share players.
+fn now_playing(
+    weft: &Weft,
+    device: [u8; 16],
+    name: &str,
+    peer: &PeerInfo,
+    context: &ViewContext<Weft>,
+) -> Option<View> {
+    if !weft.snapshot.features.media || !peer.sends("media") {
+        return None;
+    }
+    let media = peer.media.as_ref()?;
+    let Some(player) = media.current() else {
+        let text = if is_french() {
+            format!("Rien en lecture sur {name}")
+        } else {
+            format!("Nothing playing on {name}")
+        };
+        return Some(card(secondary(text)));
+    };
+    let one_line = |text: TextBlock| -> View {
+        text.max_lines(1)
+            .text_trimming(TextTrimming::CharacterEllipsis)
+            .into()
+    };
+    let title = if player.title.trim().is_empty() {
+        t("Untitled", "Sans titre").to_owned()
+    } else {
+        player.title.clone()
+    };
+    let mut lines = Vec::new();
+    if !player.app.trim().is_empty() {
+        lines.push(one_line(secondary(player.app.clone()).font_size(12.0)));
+    }
+    lines.push(one_line(body(title)));
+    if !player.artist.trim().is_empty() {
+        lines.push(one_line(secondary(player.artist.clone())));
+    }
+    let mut views = vec![column(2.0, lines)];
+    if player.can_seek
+        && let (Some(length), Some(position)) = (player.length, position_shown(weft, device))
+    {
+        let time = |ms| {
+            secondary(words::track_time(ms))
+                .font_size(12.0)
+                .vertical_alignment(VerticalAlignment::Center)
+        };
+        views.push(
+            Grid::new()
+                .columns([GridLength::Auto, GridLength::STAR, GridLength::Auto])
+                .column_spacing(12.0)
+                .children((
+                    time(position).grid_column(0),
+                    Slider::new()
+                        .grid_column(1)
+                        .minimum(0.0)
+                        .maximum((length / 1000) as f64)
+                        .value((position / 1000) as f64)
+                        .vertical_alignment(VerticalAlignment::Center)
+                        .automation_name(t("Position", "Position"))
+                        .on_value_changed(context.callback(Message::Seek)),
+                    time(length).grid_column(2),
+                )),
+        );
+    }
+    let (toggle, toggle_symbol, toggle_name, toggle_enabled) = if player.playing {
+        (
+            MediaAction::Pause,
+            Symbol::Pause,
+            t("Pause", "Pause"),
+            player.can_pause,
+        )
+    } else {
+        (
+            MediaAction::Play,
+            Symbol::Play,
+            t("Play", "Lecture"),
+            player.can_play,
+        )
+    };
+    views.push(
+        StackPanel::new()
+            .orientation(Orientation::Horizontal)
+            .spacing(4.0)
+            // The icons line up with the text above.
+            .margin(Thickness::new(-8.0, 0.0, 0.0, 0.0))
+            .keyed_children(super::widgets::keyed(vec![
+                player_button(
+                    Symbol::Previous,
+                    t("Previous", "Précédent"),
+                    player.can_previous,
+                    context.message(Message::Media(MediaAction::Previous)),
+                ),
+                player_button(
+                    toggle_symbol,
+                    toggle_name,
+                    toggle_enabled,
+                    context.message(Message::Media(toggle)),
+                ),
+                player_button(
+                    Symbol::Next,
+                    t("Next", "Suivant"),
+                    player.can_next,
+                    context.message(Message::Media(MediaAction::Next)),
+                ),
+            ])),
+    );
+    Some(card(column(8.0, views)))
+}
+
+/// The device's volume, with a slider and a mute button. `None` until the
+/// device has said, or when it cannot be changed from here.
+fn volume(
+    weft: &Weft,
+    device: [u8; 16],
+    peer: &PeerInfo,
+    context: &ViewContext<Weft>,
+) -> Option<View> {
+    if !weft.snapshot.features.volume || !peer.handles("volume.set") {
+        return None;
+    }
+    let muted = peer.volume?.muted.unwrap_or(false);
+    let level = volume_shown(weft, device)?;
+    let (symbol, mute_name) = if muted {
+        (Symbol::Mute, t("Unmute", "Réactiver le son"))
+    } else {
+        (Symbol::Volume, t("Mute", "Couper le son"))
+    };
+    Some(card(
+        Grid::new()
+            .columns([GridLength::Auto, GridLength::STAR, GridLength::Auto])
+            .column_spacing(12.0)
+            .children((
+                Button::new()
+                    .grid_column(0)
+                    .style(ButtonStyle::Subtle)
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .margin(Thickness::new(-8.0, 0.0, 0.0, 0.0))
+                    .automation_name(mute_name)
+                    .on_click(context.message(Message::PhoneMute(!muted)))
+                    .content(SymbolIcon::new().symbol(symbol))
+                    .tooltip(mute_name),
+                Slider::new()
+                    .grid_column(1)
+                    .minimum(0.0)
+                    .maximum(100.0)
+                    .value(f64::from(level))
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .automation_name(t("Volume", "Volume"))
+                    .on_value_changed(context.callback(Message::PhoneVolume)),
+                // A fixed width, so the slider keeps its length from 9 to 10.
+                Border::new()
+                    .grid_column(2)
+                    .width(28.0)
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .content(
+                        secondary(level.to_string())
+                            .horizontal_alignment(HorizontalAlignment::Right),
+                    ),
+            )),
+    ))
+}
+
 fn transfer_row(transfer: &TransferView, context: &ViewContext<Weft>) -> View {
     let active = transfer.stage.is_active();
     let (icon, direction) = if transfer.outgoing {
@@ -264,6 +464,16 @@ pub fn view(weft: &Weft, device: [u8; 16], context: &mut ViewContext<Weft>) -> V
     let mut views: Vec<View> = vec![header];
     views.extend(status(weft, &peer));
     views.push(actions(weft, device, &name, &peer, context));
+    let media: Vec<View> = now_playing(weft, device, &name, &peer, context)
+        .into_iter()
+        .chain(volume(weft, device, &peer, context))
+        .collect();
+    if !media.is_empty() {
+        views.push(column(
+            8.0,
+            vec![label(t("Media", "Média")).into(), column(4.0, media)],
+        ));
+    }
     let transfers: Vec<KeyedView> = snapshot
         .transfers
         .iter()
