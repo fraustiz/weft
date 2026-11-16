@@ -1,0 +1,43 @@
+[package]
+name = "weft-windows"
+version = "0.1.0"
+description = "Weft for Windows: shares the clipboard with your other devices from the notification area"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# A workspace of its own, with its own lock file: the root workspace (relay,
+# command-line client) builds without any of the dependencies below.
+[workspace]
+
+[dependencies]
+tokio = { version = "1.54.1", features = ["rt", "macros", "sync", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+weft-cli = { path = "../cli" }
+weft-protocol = { path = "../crates/weft-protocol" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+embed-resource = "3.0.12"
+ico = "0.6.0"
+resvg = { version = "0.50.0", default-features = false }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net"] }
+weft-relay = { path = "../relay" }
