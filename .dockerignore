@@ -1,0 +1,15 @@
+# Only Cargo.toml, Cargo.lock, crates/, cli/ and relay/ are needed to build
+# the relay image.
+.git
+.github
+**/target
+target/
+android/
+swift/
+brand/
+docs/
+**/.build
+**/build
+**/*.sqlite3
+**/*.sqlite3-*
+**/.DS_Store

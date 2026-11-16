@@ -1,0 +1,31 @@
+# Example deployment of a Weft relay. TLS is not handled by the relay: put it
+# behind a reverse proxy that terminates TLS and forwards WebSockets to port
+# 8080, and serve it at wss://<your host>/v1.
+services:
+  relay:
+    # Pin a released version (relay-vX.Y.Z publishes the tag X.Y.Z) or a
+    # commit tag (sha-xxxxxxx) rather than following a branch.
+    image: ghcr.io/fraustiz/weft/relay:main
+    restart: unless-stopped
+    environment:
+      # Must be the public host name clients connect to, without port:
+      # devices sign it when they authenticate.
+      WEFT_RELAY_NAME: relay.example.org
+      # Behind a reverse proxy that appends X-Forwarded-For, count clients by
+      # their real address. Only when the relay is reachable through the
+      # proxy alone (do not publish port 8080 then).
+      # WEFT_TRUST_PROXY: "1"
+      # WEFT_MAX_CONNECTIONS: "2000"
+      # WEFT_MAX_CONNECTIONS_PER_IP: "20"
+      # WEFT_IDLE_TIMEOUT_SECS: "120"
+      # RUST_LOG: info
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - weft-data:/data
+    mem_limit: 256m
+    cpus: 0.5
+    # The image's HEALTHCHECK (weft-relay --healthcheck) applies.
+
+volumes:
+  weft-data:
