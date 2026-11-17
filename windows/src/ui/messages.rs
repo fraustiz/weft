@@ -23,6 +23,9 @@ const SUGGESTIONS: usize = 8;
 const BUBBLE_WIDTH: f64 = 340.0;
 /// Messages closer than this, from the same side, share one time line.
 const RUN: i64 = 10 * 60 * 1000;
+/// The automation id of a thread's scrolled messages, by which
+/// [`crate::scroll`] finds them.
+pub const THREAD_LIST: &str = "sms-thread";
 
 /// A back arrow, a title and a line under it, as the device view has.
 fn header(heading: String, subtitle: String, back: Message, context: &ViewContext<Weft>) -> View {
@@ -216,8 +219,10 @@ fn compose(weft: &Weft, view: &MessagesView, context: &ViewContext<Weft>) -> Vie
         ))
 }
 
-/// A thread: "Load earlier", the messages oldest first, those sent from
-/// here with where they stand, and the reply box.
+/// A thread, filling the window: the header fixed at the top, the reply
+/// box fixed at the bottom, and between them only the messages scroll,
+/// oldest first under "Load earlier", those sent from here with where
+/// they stand. It opens on the newest, and goes back to it when one comes.
 fn thread(
     weft: &Weft,
     view: &MessagesView,
@@ -225,12 +230,13 @@ fn thread(
     sms: &Sms,
     context: &mut ViewContext<Weft>,
 ) -> View {
-    let mut views = vec![header(
+    let header = header(
         people(sms, open),
         open.addresses.join(", "),
         Message::CloseThread,
         context,
-    )];
+    );
+    let mut views: Vec<View> = Vec::new();
     let messages = open
         .thread
         .and_then(|thread| sms.threads.get(&thread))
@@ -299,21 +305,46 @@ fn thread(
         views.push(secondary(t("No messages yet", "Pas encore de message")).into());
     }
     views.push(StackPanel::new().spacing(8.0).keyed_children(bubbles));
-    views.push(compose(weft, view, context));
+    // Short threads sit just above the reply box, as in a chat.
+    let scrolled = ScrollViewer::new()
+        .grid_row(1)
+        .automation_id(THREAD_LIST)
+        // Its bar in the page's margin, clear of the bubbles.
+        .margin(Thickness::new(0.0, 0.0, -16.0, 0.0))
+        .content(
+            Border::new()
+                .padding(Thickness::new(0.0, 0.0, 16.0, 0.0))
+                .vertical_alignment(VerticalAlignment::Bottom)
+                .content(column(16.0, views)),
+        );
 
-    // Focusing the reply box scrolls the page to it, under the newest
-    // message, when a thread opens or grows.
+    // The reply box takes the focus when the thread opens; the messages
+    // go to the newest when they come, and when one is added.
+    let opened = context.message(Message::ThreadOpened);
+    context.use_effect("sms-thread", (view.device, open.thread), move || {
+        let _ = opened.call(());
+        None
+    });
     let newest = messages.last().map(|message| message.id);
-    let compose_box = weft.compose.clone();
+    let show = context.message(Message::ShowNewest);
     context.use_effect(
-        "sms-thread",
+        "sms-newest",
         (view.device, open.thread, newest, sms.outbox.len()),
         move || {
-            let _ = compose_box.request_focus();
+            let _ = show.call(());
             None
         },
     );
-    column(16.0, views)
+    Grid::new()
+        .rows([GridLength::Auto, GridLength::STAR, GridLength::Auto])
+        .row_spacing(16.0)
+        .children((
+            Border::new().grid_row(0).content(header),
+            scrolled,
+            Border::new()
+                .grid_row(2)
+                .content(compose(weft, view, context)),
+        ))
 }
 
 /// A new message: who to, from the contacts or as a number, and the text.
@@ -370,6 +401,21 @@ fn new_message(
     column(16.0, views)
 }
 
+/// Whether the phone's messages can be shown here.
+fn available(weft: &Weft, view: &MessagesView) -> bool {
+    weft.snapshot.features.sms
+        && weft
+            .snapshot
+            .peer(&view.device)
+            .handles("sms.conversations.request")
+}
+
+/// Whether the view is a thread, which fills the window rather than
+/// scrolling with the page.
+pub fn fills(weft: &Weft, view: &MessagesView) -> bool {
+    view.open.is_some() && available(weft, view)
+}
+
 pub fn view(weft: &Weft, view: &MessagesView, context: &mut ViewContext<Weft>) -> View {
     let snapshot = &weft.snapshot;
     let name = snapshot
@@ -379,7 +425,7 @@ pub fn view(weft: &Weft, view: &MessagesView, context: &mut ViewContext<Weft>) -
         .map(|known| words::device_name(known).to_owned())
         .unwrap_or_default();
     let peer = snapshot.peer(&view.device);
-    if !snapshot.features.sms || !peer.handles("sms.conversations.request") {
+    if !available(weft, view) {
         let text = if is_french() {
             format!(
                 "Les messages de {name} ne sont pas disponibles. Activez-les dans les réglages de Weft sur le téléphone."

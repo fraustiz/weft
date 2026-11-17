@@ -12,6 +12,7 @@ use super::{Shell, detail, devices, messages, pairing, picker, qr, settings};
 use crate::features::{Features, UserCommand};
 use crate::i18n::t;
 use crate::packets::{MediaAction, MediaCommand, Packet, VolumeSet, is_shareable_url};
+use crate::scroll::{self, Follow};
 use crate::sms;
 use crate::worker::{Command, Handle, PairingState, Published, RING_DURATION, Snapshot};
 use crate::{autostart, window};
@@ -21,6 +22,9 @@ use crate::{autostart, window};
 const SIZE: (f64, f64) = (520.0, 640.0);
 /// Below this the pairing code would not fit across.
 const MIN_SIZE: (f64, f64) = (400.0, 480.0);
+/// Long enough for WinUI to lay out what was just published: brought into
+/// view before that, a new message would be where nothing is yet.
+const LAYOUT_WAIT: Duration = Duration::from_millis(100);
 /// The longest wait between two redraws for texts that change with time.
 const MAX_TICK: Duration = Duration::from_secs(60);
 /// The shortest wait between two ticks, so no deadline can make them
@@ -104,6 +108,15 @@ pub enum Message {
     /// Back from a thread or a new message to the conversations.
     CloseThread,
     LoadEarlier,
+    /// A thread opened: its reply box takes the focus once laid out.
+    ThreadOpened,
+    /// Gives the reply box of the open thread the focus.
+    FocusReply,
+    /// A thread's messages came or grew: the newest is brought into view
+    /// once WinUI has laid it out.
+    ShowNewest,
+    /// A task with nothing to report ended.
+    Done,
     StartConversation,
     RecipientEdited(String),
     SmsDraftEdited(String),
@@ -114,6 +127,8 @@ pub enum Message {
     TypedEdited(String),
     ClearTyped,
     AddCommand,
+    /// Fills a new shortcut from one of [`words::command_presets`].
+    UsePreset(usize),
     EditCommand(String),
     RemoveCommand(String),
     CommandNameEdited(String),
@@ -208,9 +223,11 @@ pub struct Weft {
     pub volume_draft: Option<Draft<u8>>,
     /// The messages shown in place of the device's details.
     pub messages: Option<MessagesView>,
-    /// The reply box of a thread, focused when one opens so the view
-    /// scrolls down to the newest messages.
+    /// The reply box of a thread, focused once it opens.
     pub compose: ElementRef<TextBox>,
+    /// The thread whose messages were shown to their end since it opened:
+    /// from then on, they follow a new one only if they were at the end.
+    followed: Option<([u8; 16], Option<i64>)>,
     /// What the "Type on phone" box holds, as already sent.
     pub typed: String,
     /// The link being written for the device shown, while its box is open.
@@ -302,6 +319,44 @@ impl Weft {
             thread: open.thread,
         });
         view.draft.clear();
+    }
+
+    /// Scrolls the open thread to its newest message: always the first time
+    /// it has messages, then only if it was at its end.
+    fn show_newest(&mut self, context: &ComponentContext<Self>) {
+        let Some(view) = &self.messages else {
+            return;
+        };
+        let Some(open) = &view.open else {
+            return;
+        };
+        let thread = (view.device, open.thread);
+        let follow = if self.followed == Some(thread) {
+            Follow::IfNearEnd
+        } else {
+            Follow::Always
+        };
+        let sms = self.snapshot.peer(&view.device).sms;
+        let loaded = open
+            .thread
+            .and_then(|shown| sms.threads.get(&shown))
+            .is_some_and(|messages| !messages.is_empty());
+        if loaded {
+            self.followed = Some(thread);
+        }
+        let window = window::handle();
+        context.spawn_background(move |_| {
+            std::thread::sleep(LAYOUT_WAIT);
+            if let Err(err) = scroll::to_end(window, messages::THREAD_LIST, follow) {
+                tracing::debug!(error = %err, "the messages could not be scrolled");
+            }
+            // The messages coming moved the focus off the reply box.
+            if follow == Follow::Always {
+                Message::FocusReply
+            } else {
+                Message::Done
+            }
+        });
     }
 
     /// Adds the command being edited, or puts it in place of the one it
@@ -442,6 +497,7 @@ impl Component for Weft {
             volume_draft: None,
             messages: None,
             compose: ElementRef::new(),
+            followed: None,
             typed: String::new(),
             link: None,
             command_draft: None,
@@ -717,6 +773,20 @@ impl Component for Weft {
                     worker.send(Command::OpenMessages(view.device));
                 }
             }
+            Message::ThreadOpened => {
+                self.followed = None;
+                // Asked at once, the focus does not move: the box is not
+                // in the window yet.
+                context.spawn_background(|_| {
+                    std::thread::sleep(LAYOUT_WAIT);
+                    Message::FocusReply
+                });
+            }
+            Message::FocusReply => {
+                let _ = self.compose.request_focus();
+            }
+            Message::ShowNewest => self.show_newest(context),
+            Message::Done => {}
             Message::LoadEarlier => {
                 if let Some(view) = &self.messages
                     && let Some(thread) = view.open.as_ref().and_then(|open| open.thread)
@@ -772,6 +842,15 @@ impl Component for Weft {
                     name: String::new(),
                     line: String::new(),
                 });
+            }
+            Message::UsePreset(index) => {
+                if let Some((name, line)) = words::command_presets().get(index) {
+                    self.command_draft = Some(CommandDraft {
+                        id: None,
+                        name: (*name).to_owned(),
+                        line: (*line).to_owned(),
+                    });
+                }
             }
             Message::EditCommand(id) => {
                 self.command_draft = self
@@ -833,6 +912,9 @@ impl Component for Weft {
             None
         });
 
+        // A thread fills the window, its header and reply box fixed and
+        // only its messages scrolling; every other page scrolls whole.
+        let mut fills = false;
         let page = match self.page {
             Page::Devices if self.pairing => pairing::view(self, context),
             Page::Devices => match (self.selected, &self.messages) {
@@ -840,6 +922,7 @@ impl Component for Weft {
                     if view.device == device
                         && self.snapshot.devices.iter().any(|known| known.id == device) =>
                 {
+                    fills = messages::fills(self, view);
                     messages::view(self, view, context)
                 }
                 (Some(device), _)
@@ -864,6 +947,33 @@ impl Component for Weft {
                     )]),
             )
         };
+        let padding = Thickness::new(24.0, 16.0, 24.0, 24.0);
+        let ringing = detail::ringing(self, context);
+        let content: View = if fills {
+            let mut rows = vec![KeyedView::new(
+                "page",
+                Border::new().grid_row(1).content(page),
+            )];
+            if let Some(ringing) = ringing {
+                rows.push(KeyedView::new(
+                    "ringing",
+                    Border::new()
+                        .grid_row(0)
+                        .margin(Thickness::new(0.0, 0.0, 0.0, 24.0))
+                        .content(ringing),
+                ));
+            }
+            Border::new().padding(padding).content(
+                Grid::new()
+                    .rows([GridLength::Auto, GridLength::STAR])
+                    .keyed_children(rows),
+            )
+        } else {
+            ScrollViewer::new().content(Border::new().padding(padding).content(match ringing {
+                Some(ringing) => super::widgets::column(24.0, vec![ringing, page]),
+                None => page,
+            }))
+        };
         let navigation = NavigationView::new()
             .pane_display_mode(NavigationViewPaneDisplayMode::Top)
             .is_settings_visible(false)
@@ -882,17 +992,7 @@ impl Component for Weft {
                         item(Page::Settings, t("Settings", "Réglages")),
                     ],
                 ),
-                SlotView::new(
-                    NavigationViewSlot::Content,
-                    ScrollViewer::new().content(
-                        Border::new()
-                            .padding(Thickness::new(24.0, 16.0, 24.0, 24.0))
-                            .content(match detail::ringing(self, context) {
-                                Some(ringing) => super::widgets::column(24.0, vec![ringing, page]),
-                                None => page,
-                            }),
-                    ),
-                ),
+                SlotView::new(NavigationViewSlot::Content, content),
             ]);
         Grid::new()
             .rows([GridLength::Auto, GridLength::STAR])

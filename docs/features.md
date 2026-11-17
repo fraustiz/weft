@@ -119,7 +119,7 @@ Phone rules: each needs its Android permission (`READ_SMS`, `SEND_SMS`, `RECEIVE
 | `command.run` | any → computer | `id` |
 
 Safety rules:
-- The computer acts on `input.*` and `presenter` only while the user has turned on "Let <device> control this computer" for that device (off by default).
+- The computer acts on `input.*` and `presenter` only while the user has turned on "Let <device> control this computer" for that device (off by default, one switch per device, shown on the device's page whenever it sends `input.pointer`). It lists `input.pointer`, `input.click`, `input.key` and `presenter` in its `incoming` only in the `capabilities` it sends to a device allowed to control it, and sends that device fresh `capabilities` as soon as the switch changes, so the phone shows or hides its remote control at once. Typing on the phone (`input.key` in `outgoing`) does not depend on it.
 - The phone types received `input.key` only through the Weft keyboard (an input method the user must pick in Android's settings, as KDE Connect does); otherwise it ignores it.
 - Commands are defined **only on the computer** (name + command line, in its settings). `command.run` runs a listed command by `id`; nothing a peer sends is ever part of a command line.
 
@@ -135,6 +135,6 @@ Safety rules:
 
 ## 10. Local settings
 
-Each app has one switch per feature (files, links, notifications, battery, ring, calls, media, volume, SMS, contacts, input, commands), on by default except SMS, contacts and input. A switched-off feature is removed from `capabilities`; packets for it are ignored.
+Each app has one switch per feature (files, links, notifications, battery, ring, calls, media, volume, SMS, contacts, input, commands), on by default except SMS, contacts and input. A switched-off feature is removed from `capabilities`; packets for it are ignored. `capabilities` may differ per recipient: a computer has no global input switch, and lists `input.*` and `presenter` as `incoming` only to the devices allowed to control it (section 8).
 
 On the phone, "input" means only being typed into (the Weft keyboard, off by default); sending remote control and presenter packets is a separate "remote control" switch, on by default, since the computer accepts them only after its user allowed that phone.

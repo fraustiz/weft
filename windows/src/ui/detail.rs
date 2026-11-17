@@ -348,9 +348,8 @@ fn now_playing(
     views.push(
         StackPanel::new()
             .orientation(Orientation::Horizontal)
-            .spacing(4.0)
-            // The icons line up with the text above.
-            .margin(Thickness::new(-8.0, 0.0, 0.0, 0.0))
+            .spacing(8.0)
+            .horizontal_alignment(HorizontalAlignment::Center)
             .keyed_children(super::widgets::keyed(vec![
                 player_button(
                     Symbol::Previous,
@@ -429,8 +428,7 @@ fn volume(
 }
 
 /// The device's hold on this computer, and typing on it from here: the
-/// permission when it can send input and Input is on, the box when it can
-/// be typed on, whatever Input says.
+/// permission whenever it can send input, the box when it can be typed on.
 fn control(
     weft: &Weft,
     device: [u8; 16],
@@ -440,7 +438,7 @@ fn control(
 ) -> Option<View> {
     let mut views = Vec::new();
     let remote = ["input.pointer", "input.click", "input.key", "presenter"];
-    if weft.snapshot.features.input && remote.iter().any(|kind| peer.sends(kind)) {
+    if remote.iter().any(|kind| peer.sends(kind)) {
         let title = if is_french() {
             format!("Laisser {name} contrôler cet ordinateur")
         } else {

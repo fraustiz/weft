@@ -61,6 +61,8 @@ pub mod clipboard;
 #[cfg(windows)]
 pub mod notify;
 #[cfg(windows)]
+pub mod scroll;
+#[cfg(windows)]
 pub mod sound;
 #[cfg(windows)]
 pub mod system;

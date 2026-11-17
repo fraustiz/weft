@@ -28,3 +28,14 @@
     IAudioEndpointVolume
     CoCreateInstance
     CoInitializeEx
+    CUIAutomation
+    IUIAutomation
+    IUIAutomationElement
+    IUIAutomationScrollPattern
+    VARIANT
+    VT_BSTR
+    IUIAutomationCondition
+    TreeScope
+    UIA_HWND
+    PROPERTYID
+    PATTERNID

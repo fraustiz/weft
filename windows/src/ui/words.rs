@@ -428,9 +428,61 @@ pub fn sms_failure(reason: Option<&str>) -> &'static str {
     }
 }
 
+/// Ready-made shortcuts: a name and the line `cmd /C` runs. Each only
+/// fills a new shortcut, which the user can still change.
+pub fn command_presets() -> [(&'static str, &'static str); 6] {
+    [
+        (
+            t("Lock this PC", "Verrouiller le PC"),
+            "rundll32.exe user32.dll,LockWorkStation",
+        ),
+        // Not `rundll32 powrprof.dll,SetSuspendState`: rundll32 passes its
+        // own arguments, so that one hibernates where hibernation is on.
+        (
+            t("Sleep", "Mettre en veille"),
+            "powershell -NoProfile -WindowStyle Hidden -Command \"Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)\"",
+        ),
+        // SC_MONITORPOWER, 2 for off, posted to every window: posted, not
+        // sent, so a window that does not answer cannot hold it up.
+        (
+            t("Turn off the screen", "Éteindre l'écran"),
+            "powershell -NoProfile -WindowStyle Hidden -Command \"(Add-Type -Name Screen -Namespace Weft -PassThru -MemberDefinition '[DllImport(\\\"user32.dll\\\")] public static extern bool PostMessage(IntPtr w, uint m, IntPtr p, IntPtr l);')::PostMessage([IntPtr]0xFFFF, 0x0112, [IntPtr]0xF170, [IntPtr]2)\"",
+        ),
+        // The mute key, as the keyboard's.
+        (
+            t("Mute or unmute", "Couper ou remettre le son"),
+            "powershell -NoProfile -WindowStyle Hidden -Command \"(New-Object -ComObject WScript.Shell).SendKeys([char]173)\"",
+        ),
+        (
+            t("Shut down in 1 minute", "Éteindre dans 1 minute"),
+            "shutdown /s /t 60",
+        ),
+        (
+            t("Cancel the shutdown", "Annuler l'extinction"),
+            "shutdown /a",
+        ),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_presets_are_complete_lines() {
+        let presets = command_presets();
+        for (name, line) in presets {
+            assert!(!name.is_empty() && !line.trim().is_empty());
+            // cmd /C keeps its quotes in pairs.
+            assert_eq!(line.matches('"').count() % 2, 0, "{line}");
+        }
+        let lines: Vec<&str> = presets.iter().map(|(_, line)| *line).collect();
+        assert!(lines.contains(&"rundll32.exe user32.dll,LockWorkStation"));
+        assert!(lines.contains(&"shutdown /s /t 60") && lines.contains(&"shutdown /a"));
+        assert!(!lines.iter().any(|line| line.contains("powrprof")));
+        assert!(lines[1].contains("SetSuspendState('Suspend'"));
+        assert!(lines[2].contains(r#"[DllImport(\"user32.dll\")]"#));
+    }
     use crate::sync::Pause;
     use crate::worker::PairingState;
 

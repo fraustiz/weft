@@ -796,7 +796,7 @@ async fn paired(url: &str) -> (Tested, Peer) {
     let Packet::Capabilities(capabilities) = packet else {
         unreachable!();
     };
-    assert_eq!(capabilities, Features::default().capabilities());
+    assert_eq!(capabilities, Features::default().capabilities(false));
     (tested, phone)
 }
 
@@ -924,7 +924,7 @@ async fn exchanges_capabilities_and_status() {
         };
         tested.worker.send(Command::SetFeatures(off));
         let packet = phone.expect_packet(pc, is_capabilities).await;
-        assert_eq!(packet, Packet::Capabilities(off.capabilities()));
+        assert_eq!(packet, Packet::Capabilities(off.capabilities(false)));
         tested
             .wait(|snapshot| {
                 !snapshot.features.battery && snapshot.peer(&phone_id).battery.is_none()
@@ -2297,8 +2297,8 @@ async fn input_reaches_the_sink_only_from_an_allowed_device() {
             ..packets::InputPointer::default()
         });
 
-        // Off by default; typing on the phone is the user's own doing
-        // and works anyway.
+        // Not allowed by default, and not offered: typing on the phone is
+        // the user's own doing and works anyway.
         phone.send(pc, &pointer).await;
         let typed = Packet::InputKey(packets::InputKey::text("hi"));
         tested
@@ -2307,27 +2307,33 @@ async fn input_reaches_the_sink_only_from_an_allowed_device() {
         phone.expect_packet(pc, |packet| *packet == typed).await;
         settle(&mut phone, pc).await;
         assert!(tested.inputs.lock().unwrap().is_empty());
-
-        // On, but this phone is not allowed yet; typing on it works.
-        let on = Features {
-            input: true,
-            ..Features::default()
+        phone.send(pc, &Packet::StateRequest {}).await;
+        let Packet::Capabilities(offered) = phone.expect_packet(pc, is_capabilities).await else {
+            unreachable!();
         };
-        tested.worker.send(Command::SetFeatures(on));
-        phone.expect_packet(pc, is_capabilities).await;
-        phone.send(pc, &pointer).await;
-        settle(&mut phone, pc).await;
-        assert!(tested.inputs.lock().unwrap().is_empty());
-        tested
-            .worker
-            .send(Command::SendPacket(phone_id, typed.clone()));
-        phone.expect_packet(pc, |packet| *packet == typed).await;
+        assert!(!offered.handles("input.pointer") && !offered.handles("presenter"));
 
-        // Allowed: saved, and everything goes through, mapped.
+        // Allowed: saved, offered to this phone at once, and everything
+        // goes through, mapped.
         tested.worker.send(Command::SetControl(phone_id, true));
+        let Packet::Capabilities(offered) = phone.expect_packet(pc, is_capabilities).await else {
+            unreachable!();
+        };
+        for kind in ["input.pointer", "input.click", "input.key", "presenter"] {
+            assert!(offered.handles(kind), "{kind}");
+        }
+        assert_eq!(offered, Features::default().capabilities(true));
         tested
             .wait(|snapshot| snapshot.control.contains(&phone_id))
             .await;
+        // Changing a feature keeps it offered to this phone.
+        let quiet = Features {
+            ring: false,
+            ..Features::default()
+        };
+        tested.worker.send(Command::SetFeatures(quiet));
+        let packet = phone.expect_packet(pc, is_capabilities).await;
+        assert_eq!(packet, Packet::Capabilities(quiet.capabilities(true)));
         assert_eq!(
             Settings::load(tested.dir.path()).controllers(),
             [phone_id].into()
@@ -2399,9 +2405,12 @@ async fn input_reaches_the_sink_only_from_an_allowed_device() {
         ];
         assert_eq!(*tested.inputs.lock().unwrap(), expected);
 
-        // Forbidden again: the spot is hidden, and nothing more goes.
+        // Forbidden again: no longer offered, the spot is hidden, and
+        // nothing more goes.
         tested.inputs.lock().unwrap().clear();
         tested.worker.send(Command::SetControl(phone_id, false));
+        let packet = phone.expect_packet(pc, is_capabilities).await;
+        assert_eq!(packet, Packet::Capabilities(quiet.capabilities(false)));
         tested.wait(|snapshot| snapshot.control.is_empty()).await;
         phone.send(pc, &pointer).await;
         settle(&mut phone, pc).await;

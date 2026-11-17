@@ -5,6 +5,7 @@ use windows_reactor::*;
 
 use super::app::{CommandDraft, Message, Weft};
 use super::widgets::{body, button, card, column, label, primary_button, row, secondary};
+use super::words;
 use crate::features::Features;
 use crate::i18n::t;
 
@@ -113,7 +114,7 @@ fn command_editor(draft: &CommandDraft, context: &ViewContext<Weft>) -> View {
                     "Name, as your devices show it",
                     "Nom, tel que vos appareils l'affichent",
                 ))
-                .automation_name(t("Command name", "Nom de la commande"))
+                .automation_name(t("Shortcut name", "Nom du raccourci"))
                 .on_text_changed(context.callback(Message::CommandNameEdited))
                 .into(),
             TextBox::new()
@@ -130,14 +131,71 @@ fn command_editor(draft: &CommandDraft, context: &ViewContext<Weft>) -> View {
     ))
 }
 
-/// The commands the devices may run, each with Edit and Remove, then the
-/// form or the Add button.
+/// The ready-made shortcuts not added yet, two by two: each fills the
+/// form of a new one.
+fn presets(weft: &Weft, context: &ViewContext<Weft>) -> Option<View> {
+    let added = |line: &str| {
+        weft.snapshot
+            .commands
+            .iter()
+            .any(|known| known.line == line)
+    };
+    let buttons: Vec<KeyedView> = words::command_presets()
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, line))| !added(line))
+        .enumerate()
+        .map(|(place, (index, (name, _)))| {
+            let cell = Button::new()
+                .grid_row((place / 2) as i32)
+                .grid_column((place % 2) as i32)
+                .horizontal_alignment(HorizontalAlignment::Stretch)
+                .horizontal_content_alignment(HorizontalAlignment::Left)
+                .automation_name(*name)
+                .on_click(context.message(Message::UsePreset(index)))
+                .content(
+                    StackPanel::new()
+                        .orientation(Orientation::Horizontal)
+                        .spacing(8.0)
+                        .children((
+                            SymbolIcon::new().symbol(Symbol::Add).opacity(0.7),
+                            TextBlock::new()
+                                .text(*name)
+                                .max_lines(1)
+                                .text_trimming(TextTrimming::CharacterEllipsis),
+                        )),
+                );
+            KeyedView::new(index, cell)
+        })
+        .collect();
+    if buttons.is_empty() {
+        return None;
+    }
+    let rows = vec![GridLength::Auto; buttons.len().div_ceil(2)];
+    Some(card(column(
+        8.0,
+        vec![
+            secondary(t("Ready-made", "Prêts à l'emploi"))
+                .font_size(12.0)
+                .into(),
+            Grid::new()
+                .columns([GridLength::STAR, GridLength::STAR])
+                .rows(rows)
+                .column_spacing(8.0)
+                .row_spacing(8.0)
+                .keyed_children(buttons),
+        ],
+    )))
+}
+
+/// The shortcuts the devices may run, each with Edit and Remove, then the
+/// form, or the Add button and the ready-made ones.
 fn commands(weft: &Weft, context: &ViewContext<Weft>) -> View {
     let editing = weft.command_draft.as_ref();
     let mut views: Vec<View> = vec![
         secondary(t(
-            "Only the name goes to your devices; they run a command by picking it, never by sending a line",
-            "Seul le nom part vers vos appareils : ils lancent une commande en la choisissant, jamais en envoyant une ligne",
+            "Buttons on your phone that run something on this PC, such as locking it. Only the name goes to the phone, never the command line.",
+            "Des boutons sur votre téléphone qui lancent une action sur ce PC, comme le verrouiller. Seul le nom part vers le téléphone, jamais la ligne de commande.",
         ))
         .font_size(12.0)
         .into(),
@@ -190,14 +248,17 @@ fn commands(weft: &Weft, context: &ViewContext<Weft>) -> View {
     match editing {
         Some(draft) if draft.id.is_none() => views.push(command_editor(draft, context)),
         Some(_) => {}
-        None => views.push(
-            Border::new()
-                .horizontal_alignment(HorizontalAlignment::Left)
-                .content(button(
-                    t("Add command", "Ajouter une commande"),
-                    context.message(Message::AddCommand),
-                )),
-        ),
+        None => {
+            views.push(
+                Border::new()
+                    .horizontal_alignment(HorizontalAlignment::Left)
+                    .content(button(
+                        t("Add shortcut", "Ajouter un raccourci"),
+                        context.message(Message::AddCommand),
+                    )),
+            );
+            views.extend(presets(weft, context));
+        }
     }
     column(4.0, views)
 }
@@ -325,19 +386,10 @@ pub fn view(weft: &Weft, context: &mut ViewContext<Weft>) -> View {
             toggle(|features, on| features.sms = on),
         ),
         switch(
-            t("Remote input", "Contrôle à distance"),
+            t("Shortcuts", "Raccourcis"),
             t(
-                "Devices you allow on their page can move the pointer, type and run slideshows here. Windows run as administrator ignore it",
-                "Les appareils autorisés sur leur page peuvent déplacer le pointeur, taper et mener un diaporama ici. Les fenêtres lancées en administrateur l'ignorent",
-            ),
-            current.input,
-            toggle(|features, on| features.input = on),
-        ),
-        switch(
-            t("Commands", "Commandes"),
-            t(
-                "Your devices can run the commands listed below",
-                "Vos appareils peuvent lancer les commandes ci-dessous",
+                "Your phone can run the shortcuts listed below",
+                "Votre téléphone peut lancer les raccourcis ci-dessous",
             ),
             current.commands,
             toggle(|features, on| features.commands = on),
@@ -398,7 +450,11 @@ pub fn view(weft: &Weft, context: &mut ViewContext<Weft>) -> View {
             column(
                 8.0,
                 vec![
-                    label(t("Commands", "Commandes")).into(),
+                    label(t(
+                        "Shortcuts for your phone",
+                        "Raccourcis pour le téléphone",
+                    ))
+                    .into(),
                     commands(weft, context),
                 ],
             ),

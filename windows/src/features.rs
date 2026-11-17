@@ -50,8 +50,9 @@ const SMS_REQUESTS: &[&str] = &[
 /// What another device may do to this computer's pointer and keyboard.
 const INPUT_PACKETS: &[&str] = &["input.pointer", "input.click", "input.key", "presenter"];
 
-/// Every switch is on by default but Input. A switch missing from the file
-/// keeps its default, so a later version can add one.
+/// Every switch is on by default. A switch missing from the file keeps its
+/// default, so a later version can add one; one the file has that this
+/// version no longer knows, like the old global `input`, is ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Features {
@@ -74,10 +75,6 @@ pub struct Features {
     /// Read and send the phone's SMS, with its contacts to pick from. The
     /// phone has its own switch, off by default.
     pub sms: bool,
-    /// Let the devices allowed in [`Settings::control`] move the pointer,
-    /// type and present. Off by default. Typing on the phone from here is
-    /// the user's own doing and does not depend on it.
-    pub input: bool,
     /// Run the commands of [`Settings::commands`] for the other devices.
     pub commands: bool,
 }
@@ -94,7 +91,6 @@ impl Default for Features {
             media: true,
             volume: true,
             sms: true,
-            input: false,
             commands: true,
         }
     }
@@ -110,10 +106,13 @@ impl Features {
         Settings::load(dir).features
     }
 
-    /// What this device announces: a switched-off feature is in neither
-    /// list. Pings and state requests always go both ways, and typing on
-    /// the phone is always offered: the phone decides whether it types.
-    pub fn capabilities(&self) -> Capabilities {
+    /// What this device announces to a device: a switched-off feature is
+    /// in neither list. Pings and state requests always go both ways, and
+    /// typing on the phone is always offered: the phone decides whether it
+    /// types. Pointer, keyboard and slideshow input are taken only from a
+    /// device allowed to `control` this computer, so only such a device is
+    /// told about them.
+    pub fn capabilities(&self, control: bool) -> Capabilities {
         let mut incoming = vec!["state.request", "ping"];
         let mut outgoing = vec!["state.request", "ping", "input.key"];
         if self.ring {
@@ -151,7 +150,7 @@ impl Features {
             incoming.extend(SMS_ANSWERS);
             outgoing.extend(SMS_REQUESTS);
         }
-        if self.input {
+        if control {
             incoming.extend(INPUT_PACKETS);
         }
         if self.commands {
@@ -261,14 +260,17 @@ mod tests {
         std::fs::write(path(dir.path()), r#"{"ring":false}"#).unwrap();
         let loaded = Settings::load(dir.path());
         assert!(!loaded.features.ring && loaded.features.files && loaded.features.sms);
-        assert!(!loaded.features.input && loaded.control.is_empty());
+        assert!(loaded.control.is_empty());
+        // The old global input switch is read without harm.
+        std::fs::write(path(dir.path()), r#"{"input":true,"files":false}"#).unwrap();
+        assert!(!Settings::load(dir.path()).features.files);
         std::fs::write(path(dir.path()), "not json").unwrap();
         assert_eq!(Settings::load(dir.path()), Settings::default());
     }
 
     #[test]
     fn switched_off_features_leave_the_capabilities() {
-        let all = Features::default().capabilities();
+        let all = Features::default().capabilities(false);
         assert_eq!(all.platform, "windows");
         for kind in [
             "ring",
@@ -304,17 +306,15 @@ mod tests {
         ] {
             assert!(all.sends(kind), "{kind}");
         }
-        // Input is off until the user turns it on; typing on the phone
-        // does not wait for it.
+        // Input is offered only to a device allowed to control this
+        // computer; typing on the phone does not wait for it.
         assert!(!all.handles("input.pointer") && !all.handles("input.key"));
-        assert!(all.sends("input.key"));
-        let input = Features {
-            input: true,
-            ..Features::default()
-        }
-        .capabilities();
-        assert!(input.handles("input.pointer") && input.handles("presenter"));
-        assert!(input.handles("input.key") && input.sends("input.key"));
+        assert!(!all.handles("presenter") && all.sends("input.key"));
+        let allowed = Features::default().capabilities(true);
+        assert!(allowed.handles("input.pointer") && allowed.handles("input.click"));
+        assert!(allowed.handles("input.key") && allowed.handles("presenter"));
+        assert!(allowed.sends("input.key"));
+        assert_eq!(allowed.outgoing, all.outgoing);
 
         let none = Features {
             files: false,
@@ -326,10 +326,13 @@ mod tests {
             media: false,
             volume: false,
             sms: false,
-            input: false,
             commands: false,
-        }
-        .capabilities();
+        };
+        assert_eq!(
+            none.capabilities(true).incoming[2..],
+            ["input.pointer", "input.click", "input.key", "presenter"]
+        );
+        let none = none.capabilities(false);
         assert_eq!(none.incoming, ["state.request", "ping"]);
         assert_eq!(none.outgoing, ["state.request", "ping", "input.key"]);
     }

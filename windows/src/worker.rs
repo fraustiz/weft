@@ -1199,10 +1199,18 @@ impl Worker {
         only_connection_errors(done, "packet")
     }
 
+    /// What this device announces to `to`: input only if `to` may control
+    /// it.
+    fn capabilities_for(&self, to: &[u8; 16]) -> Capabilities {
+        self.view
+            .features
+            .capabilities(self.view.control.contains(to))
+    }
+
     /// Sends this device's capabilities, then its current state: what its
     /// players and volume are, when it knows them and the feature is on.
     async fn send_capabilities(&mut self, session: &mut Session, to: [u8; 16]) -> Result<()> {
-        let packet = Packet::Capabilities(self.view.features.capabilities());
+        let packet = Packet::Capabilities(self.capabilities_for(&to));
         self.send(session, to, &packet).await?;
         self.send_state(session, to).await
     }
@@ -1544,9 +1552,7 @@ impl Worker {
             ref asked @ (Packet::InputPointer(_)
             | Packet::InputClick(_)
             | Packet::InputKey(_)
-            | Packet::Presenter(_))
-                if features.input =>
-            {
+            | Packet::Presenter(_)) => {
                 if self.view.control.contains(&from) {
                     for input in input::of_packet(asked) {
                         (self.hooks.on_input)(input);
@@ -2136,7 +2142,6 @@ impl Worker {
     }
 
     fn set_features(&mut self, features: Features) {
-        let input_was = self.view.features.input;
         self.view.features = features;
         self.save_settings();
         if !features.sms {
@@ -2144,9 +2149,6 @@ impl Worker {
                 peer.sms = Arc::default();
             }
             self.older_asked.clear();
-        }
-        if input_was && !features.input {
-            (self.hooks.on_input)(Input::Spot(None));
         }
         if !features.battery {
             for peer in self.view.peers.values_mut() {
@@ -2249,11 +2251,15 @@ impl Worker {
             Command::SetFeatures(features) => {
                 let before = self.view.features;
                 self.set_features(features);
-                let packet = Packet::Capabilities(features.capabilities());
-                match session.send_packet_all(&packet.to_json()).await {
-                    Ok(_) => self.features_turned_on(session, before).await,
-                    Err(err) => Err(err),
+                // Each device gets its own: input goes only to those
+                // allowed to control this computer.
+                let devices: Vec<[u8; 16]> =
+                    self.view.devices.iter().map(|device| device.id).collect();
+                for device in devices {
+                    let packet = Packet::Capabilities(self.capabilities_for(&device));
+                    self.send(session, device, &packet).await?;
                 }
+                self.features_turned_on(session, before).await
             }
             Command::Ring(device) if self.view.features.ring => {
                 tracing::info!(device = %short_id(&device), "ringing a device");
@@ -2283,7 +2289,7 @@ impl Worker {
                 Ok(())
             }
             Command::SendPacket(device, packet) => {
-                if self.view.features.capabilities().sends(packet.kind()) {
+                if self.view.features.capabilities(false).sends(packet.kind()) {
                     self.send(session, device, &packet).await
                 } else {
                     tracing::debug!(
@@ -2346,9 +2352,11 @@ impl Worker {
                 self.send(session, device, &packet).await
             }
             Command::SendSms { .. } => Ok(()),
+            // At once, so the device shows or hides its remote control.
             Command::SetControl(device, allowed) => {
                 self.set_control(device, allowed);
-                Ok(())
+                let packet = Packet::Capabilities(self.capabilities_for(&device));
+                self.send(session, device, &packet).await
             }
             Command::SetCommands(commands) => {
                 self.view.commands = commands;
