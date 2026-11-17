@@ -18,7 +18,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import fr.frohub.weft.features.CallMonitor
 import fr.frohub.weft.features.ConnectivityMonitor
@@ -27,6 +29,7 @@ import fr.frohub.weft.features.Sms
 import fr.frohub.weft.features.WeftKeyboard
 import fr.frohub.weft.features.WeftNotificationListener
 import fr.frohub.weft.ui.CoreModel
+import fr.frohub.weft.ui.UpdateControls
 import fr.frohub.weft.ui.VolumeKeys
 import fr.frohub.weft.ui.WeftApp
 import fr.frohub.weft.ui.WeftTheme
@@ -72,6 +75,9 @@ class MainActivity : ComponentActivity() {
     /** Whether Weft may read notifications (Notifications and the phone's players in Media). */
     private val notificationAccess = mutableStateOf(true)
 
+    /** Set by the "update available" notification: open the settings, where Updates is. */
+    private val showUpdates = mutableStateOf(false)
+
     /** The device the file picker was opened for; kept across a recreation. */
     private var fileTarget: String? = null
 
@@ -87,7 +93,11 @@ class MainActivity : ComponentActivity() {
         fileTarget = savedInstanceState?.getString(STATE_FILE_TARGET)
         val canAddTile = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
         val model = weft.model
+        val updater = weft.updater
+        if (savedInstanceState == null) showUpdates.value = intent.getBooleanExtra(EXTRA_SHOW_UPDATES, false)
         setContent {
+            val updateState by updater.state.collectAsStateWithLifecycle()
+            val autoCheck by updater.autoCheck.collectAsStateWithLifecycle()
             WeftTheme {
                 WeftApp(
                     model = model,
@@ -109,6 +119,17 @@ class MainActivity : ComponentActivity() {
                     onAllowSmsAccess = if (smsAccess.value) null else ({ smsPermissions.launch(Sms.permissions().toTypedArray()) }),
                     onAllowContactsAccess = if (contactsAccess.value) null else ({ contactsPermission.launch(Manifest.permission.READ_CONTACTS) }),
                     onEnableKeyboard = if (keyboardEnabled.value) null else ::openKeyboardSettings,
+                    updates = UpdateControls(
+                        currentVersion = updater.installedVersionName,
+                        state = updateState,
+                        autoCheck = autoCheck,
+                        onCheck = updater::check,
+                        onSetAutoCheck = updater::setAutoCheck,
+                        onInstall = updater::downloadAndInstall,
+                        onAllowInstalls = ::openInstallPermission,
+                    ),
+                    showUpdates = showUpdates.value,
+                    onUpdatesShown = { showUpdates.value = false },
                 )
             }
         }
@@ -117,6 +138,21 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         weft.startServiceIfPaired()
+        weft.updater.checkIfDue()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_SHOW_UPDATES, false)) showUpdates.value = true
+    }
+
+    /** Android's page to let Weft install apps; the download goes on when the user is back. */
+    private fun openInstallPermission() {
+        try {
+            startActivity(weft.updater.permissionIntent())
+        } catch (_: ActivityNotFoundException) {
+            startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS))
+        }
     }
 
     override fun onResume() {
@@ -128,6 +164,7 @@ class MainActivity : ComponentActivity() {
         updateSmsAccess()
         contactsAccess.value = checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
         keyboardEnabled.value = WeftKeyboard.isEnabled(this)
+        weft.updater.onResume()
     }
 
     /** Re-reads the SMS permissions; the receiver for new messages starts once they are granted. */
@@ -240,7 +277,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private companion object {
-        const val STATE_FILE_TARGET = "file_target"
+    companion object {
+        private const val STATE_FILE_TARGET = "file_target"
+
+        /** Boolean extra: open the settings on the Updates section. */
+        const val EXTRA_SHOW_UPDATES = "fr.frohub.weft.SHOW_UPDATES"
     }
 }

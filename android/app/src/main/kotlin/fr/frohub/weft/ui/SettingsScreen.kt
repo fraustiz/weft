@@ -20,6 +20,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -30,6 +32,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import fr.frohub.weft.R
 import fr.frohub.weft.features.Feature
+import kotlinx.coroutines.flow.first
 
 /**
  * One switch per feature. Each `onAllow…` is non-null while a switched-on feature misses what
@@ -37,7 +40,8 @@ import fr.frohub.weft.features.Feature
  * [onAllowNotificationAccess] notification access (Notifications, Media), [onAllowCallAccess]
  * the call permissions, [onAllowSmsAccess] the SMS permissions, [onAllowContactsAccess] the
  * contacts permission, [onEnableKeyboard] the Weft keyboard (Remote input). [onExcludedApps]
- * opens the list of apps whose notifications stay here.
+ * opens the list of apps whose notifications stay here. [updates] adds the Updates section at the
+ * end; [scrollToUpdates] scrolls down to it once laid out, then [onScrolledToUpdates] runs.
  */
 @Composable
 fun SettingsScreen(
@@ -52,12 +56,23 @@ fun SettingsScreen(
     onAllowSmsAccess: (() -> Unit)? = null,
     onAllowContactsAccess: (() -> Unit)? = null,
     onEnableKeyboard: (() -> Unit)? = null,
+    updates: UpdateControls? = null,
+    scrollToUpdates: Boolean = false,
+    onScrolledToUpdates: () -> Unit = {},
 ) {
+    val scroll = rememberScrollState()
+    LaunchedEffect(scrollToUpdates) {
+        if (!scrollToUpdates || updates == null) return@LaunchedEffect
+        // maxValue is Int.MAX_VALUE until the column is measured.
+        val bottom = snapshotFlow { scroll.maxValue }.first { it < Int.MAX_VALUE }
+        scroll.animateScrollTo(bottom)
+        onScrolledToUpdates()
+    }
     Scaffold(topBar = { BackTopBar(stringResource(R.string.settings_title), onBack = onBack) }) { innerPadding ->
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scroll)
                 .padding(innerPadding)
                 .padding(vertical = 8.dp),
         ) {
@@ -99,6 +114,7 @@ fun SettingsScreen(
                     else -> Unit
                 }
             }
+            updates?.let { UpdatesSection(it) }
         }
     }
 }

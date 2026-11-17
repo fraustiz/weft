@@ -371,4 +371,33 @@
     <!-- %1$s: the computer that types. -->
     <string name="keyboard_typing_from">Typing from %1$s</string>
     <string name="keyboard_off">Weft keyboard is off in Weft’s settings</string>
+    <!-- Updates (settings) -->
+    <string name="channel_updates">App updates</string>
+    <string name="updates_title">Updates</string>
+    <!-- %1$s: version name, e.g. 0.2.0. -->
+    <string name="updates_current">Weft %1$s</string>
+    <string name="updates_check">Check for updates</string>
+    <string name="updates_checking">Checking…</string>
+    <string name="updates_up_to_date">Weft is up to date</string>
+    <!-- %1$s: version name. -->
+    <string name="update_available">Version %1$s available</string>
+    <string name="update_notification_body">Open Weft’s settings to download and install it.</string>
+    <string name="updates_install">Download and install</string>
+    <string name="updates_needs_permission">Android must allow Weft to install apps first. The download starts when you come back.</string>
+    <string name="updates_allow_installs">Allow installs</string>
+    <!-- %1$s: version name. -->
+    <string name="updates_downloading">Downloading %1$s…</string>
+    <!-- %1$s: version name, %2$d: percent done. -->
+    <string name="updates_downloading_percent">Downloading %1$s… %2$d %%</string>
+    <!-- %1$s: version name. -->
+    <string name="updates_installing">Installing %1$s…</string>
+    <string name="updates_error_network">Could not reach GitHub. Check the connection and try again.</string>
+    <string name="updates_error_no_release">No release is published yet.</string>
+    <!-- %1$d: HTTP status code. -->
+    <string name="updates_error_http">GitHub answered with error %1$d. Try again later.</string>
+    <string name="updates_error_invalid">The update information is not valid. Nothing was installed.</string>
+    <string name="updates_error_hash">The download is damaged (checksum mismatch). Nothing was installed.</string>
+    <string name="updates_error_install">The update could not be installed.</string>
+    <string name="updates_auto">Check automatically</string>
+    <string name="updates_auto_body">At most once a day, when Weft starts</string>
 </resources>

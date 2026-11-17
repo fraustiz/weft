@@ -5,6 +5,7 @@ import android.content.Context
 import fr.frohub.weft.core.WeftCore
 import fr.frohub.weft.features.Features
 import fr.frohub.weft.ui.CoreModel
+import fr.frohub.weft.update.Updater
 import kotlinx.coroutines.launch
 
 class WeftApplication : Application() {
@@ -19,6 +20,9 @@ class WeftApplication : Application() {
 
     /** What the screens use. */
     val model: CoreModel by lazy { CoreModel(core, features) }
+
+    /** Checks GitHub Releases for a newer Weft and installs it. */
+    val updater: Updater by lazy { Updater(this) }
 
     private var senderOverride: ClipboardSender? = null
 

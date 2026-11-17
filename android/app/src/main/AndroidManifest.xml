@@ -33,6 +33,9 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
+    <!-- Updates: installing a newer Weft downloaded from GitHub Releases (Settings, Updates). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <uses-feature
         android:name="android.hardware.telephony"
         android:required="false" />
@@ -129,6 +132,11 @@
         <!-- Notification actions: "Found it", cancelling a transfer. -->
         <receiver
             android:name=".features.FeatureReceiver"
+            android:exported="false" />
+
+        <!-- The package installer's answer to an update install (update/Updater.kt). -->
+        <receiver
+            android:name=".update.InstallResultReceiver"
             android:exported="false" />
 
         <!-- Opens files received below Android 10 (from Android 10 they are MediaStore items). -->

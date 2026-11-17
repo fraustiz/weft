@@ -32,6 +32,8 @@ import fr.frohub.weft.features.Packet
  * [onAllowNotificationAccess] while Weft may not read notifications, [onAllowCallAccess] while
  * a call permission is missing, [onAllowSmsAccess] and [onAllowContactsAccess] while those
  * permissions are, [onEnableKeyboard] while the Weft keyboard is off in Android's settings.
+ * [updates] drives the Updates section of the settings; [showUpdates] opens the settings (from
+ * the "update available" notification), then [onUpdatesShown] runs.
  */
 @Composable
 fun WeftApp(
@@ -48,6 +50,9 @@ fun WeftApp(
     onAllowSmsAccess: (() -> Unit)? = null,
     onAllowContactsAccess: (() -> Unit)? = null,
     onEnableKeyboard: (() -> Unit)? = null,
+    updates: UpdateControls? = null,
+    showUpdates: Boolean = false,
+    onUpdatesShown: () -> Unit = {},
 ) {
     var route by rememberSaveable { mutableStateOf(Route.MAIN) }
     var leaving by rememberSaveable { mutableStateOf(false) }
@@ -68,6 +73,16 @@ fun WeftApp(
             model.clearJoin()
             route = Route.MAIN
             onPaired()
+        }
+    }
+
+    // Settings scrolled down to Updates, once.
+    var jumpToUpdates by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(showUpdates) {
+        if (showUpdates) {
+            route = Route.SETTINGS
+            jumpToUpdates = true
+            onUpdatesShown()
         }
     }
 
@@ -115,6 +130,9 @@ fun WeftApp(
                 onAllowSmsAccess = onAllowSmsAccess,
                 onAllowContactsAccess = onAllowContactsAccess,
                 onEnableKeyboard = onEnableKeyboard,
+                updates = updates,
+                scrollToUpdates = jumpToUpdates,
+                onScrolledToUpdates = { jumpToUpdates = false },
             )
             current == Route.APPS -> {
                 val apps by model.notificationApps.collectAsStateWithLifecycle()

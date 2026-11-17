@@ -36,6 +36,7 @@ class Notifier(private val context: Context) {
                     setShowBadge(false)
                 },
                 NotificationChannel(CHANNEL_FILES, context.getString(R.string.channel_files), NotificationManager.IMPORTANCE_DEFAULT),
+                NotificationChannel(CHANNEL_UPDATES, context.getString(R.string.channel_updates), NotificationManager.IMPORTANCE_DEFAULT),
             ),
         )
     }
@@ -168,6 +169,30 @@ class Notifier(private val context: Context) {
 
     // endregion
 
+    // region Updates
+
+    /** An automatic check found [versionName]; tapping opens the Updates section of the settings. */
+    fun updateAvailable(versionName: String) {
+        val open = PendingIntent.getActivity(
+            context,
+            REQUEST_UPDATE,
+            Intent(context, fr.frohub.weft.MainActivity::class.java)
+                .putExtra(fr.frohub.weft.MainActivity.EXTRA_SHOW_UPDATES, true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val notification = Notification.Builder(context, CHANNEL_UPDATES)
+            .setSmallIcon(R.drawable.ic_tile)
+            .setContentTitle(context.getString(R.string.update_available, versionName))
+            .setContentText(context.getString(R.string.update_notification_body))
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        notify(ID_UPDATE, notification)
+    }
+
+    // endregion
+
     private fun openApp(): PendingIntent = PendingIntent.getActivity(
         context,
         REQUEST_OPEN,
@@ -189,12 +214,15 @@ class Notifier(private val context: Context) {
         const val CHANNEL_MESSAGES = "messages"
         const val CHANNEL_TRANSFERS = "transfers"
         const val CHANNEL_FILES = "files"
+        const val CHANNEL_UPDATES = "updates"
 
         // 1 is the service notification (WeftService.NOTIFICATION_ID).
         const val ID_RING = 2
+        const val ID_UPDATE = 3
         const val FIRST_MESSAGE_ID = 1000
         const val REQUEST_RING = 10
         const val REQUEST_OPEN = 11
+        const val REQUEST_UPDATE = 12
 
         /** Above every other id; one per transfer. */
         fun transferNotificationId(transferId: String) = 0x40000000 or (transferId.hashCode() and 0x3fffffff)
