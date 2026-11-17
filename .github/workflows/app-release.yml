@@ -1,14 +1,17 @@
 name: App release
 
-# Pushing a tag app-vX.Y.Z builds the macOS app and the Android app at
+# Pushing a tag app-vX.Y.Z builds the macOS, Android and Windows apps at
 # version X.Y.Z, and publishes them as the GitHub release of that tag:
 #
-#   Weft-X.Y.Z-mac.zip     the app, ad-hoc signed, zipped with ditto
-#   appcast.xml            Sparkle's feed: the app checks
-#                          releases/latest/download/appcast.xml
-#   weft-X.Y.Z.apk         the Android app, signed with the release key
-#   android-update.json    what the Android app checks:
-#                          releases/latest/download/android-update.json
+#   Weft-X.Y.Z-mac.zip         the app, ad-hoc signed, zipped with ditto
+#   appcast.xml                Sparkle's feed: the app checks
+#                              releases/latest/download/appcast.xml
+#   weft-X.Y.Z.apk             the Android app, signed with the release key
+#   android-update.json        what the Android app checks:
+#                              releases/latest/download/android-update.json
+#   weft-X.Y.Z-windows.exe     the Windows app
+#   windows-update.json        what the Windows app checks:
+#                              releases/latest/download/windows-update.json
 #
 # Run by hand (workflow_dispatch), it builds and checks everything, signs
 # with the same secrets, and keeps the files as workflow artifacts: nothing
@@ -207,8 +210,60 @@ jobs:
             dist/android-update.json
           if-no-files-found: error
 
+  windows:
+    needs: meta
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      TAG: ${{ needs.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # versionCode is the number of commits.
+          fetch-depth: 0
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install stable-x86_64-pc-windows-msvc --profile minimal
+          rustup default stable-x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows
+      - name: Build weft-windows.exe
+        shell: bash
+        run: |
+          export WEFT_VERSION="$VERSION"
+          WEFT_VERSION_CODE="$(git rev-list --count HEAD)"
+          export WEFT_VERSION_CODE
+          echo "versionName $WEFT_VERSION, versionCode $WEFT_VERSION_CODE"
+          cargo build --manifest-path windows/Cargo.toml --release --locked
+      - name: Executable and windows-update.json
+        shell: bash
+        run: |
+          exe=windows/target/release/weft-windows.exe
+          [[ -f "$exe" ]] || { echo "::error::no executable at $exe"; exit 1; }
+          mkdir -p dist
+          cp "$exe" "dist/weft-$VERSION-windows.exe"
+          sha256="$(sha256sum "dist/weft-$VERSION-windows.exe" | cut -d' ' -f1 | tr -d '\r')"
+          [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::unexpected sha256 '$sha256'"; exit 1; }
+          jq -n \
+            --argjson versionCode "$(git rev-list --count HEAD)" \
+            --arg versionName "$VERSION" \
+            --arg url "https://github.com/fraustiz/weft/releases/download/$TAG/weft-$VERSION-windows.exe" \
+            --arg sha256 "$sha256" \
+            '{versionCode: $versionCode, versionName: $versionName, url: $url, sha256: $sha256}' \
+            >dist/windows-update.json
+          cat dist/windows-update.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: |
+            dist/weft-${{ env.VERSION }}-windows.exe
+            dist/windows-update.json
+          if-no-files-found: error
+
   release:
-    needs: [meta, mac, android]
+    needs: [meta, mac, android, windows]
     if: needs.meta.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -236,4 +291,6 @@ jobs:
             "dist/Weft-$VERSION-mac.zip" \
             dist/appcast.xml \
             "dist/weft-$VERSION.apk" \
-            dist/android-update.json
+            dist/android-update.json \
+            "dist/weft-$VERSION-windows.exe" \
+            dist/windows-update.json

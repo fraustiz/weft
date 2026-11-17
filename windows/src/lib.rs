@@ -73,4 +73,6 @@ pub mod tray;
 #[cfg(windows)]
 pub mod ui;
 #[cfg(windows)]
+pub mod update;
+#[cfg(windows)]
 pub mod window;

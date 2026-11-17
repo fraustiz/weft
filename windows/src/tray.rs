@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM,
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM,
 };
 use windows_sys::Win32::System::DataExchange::{
     AddClipboardFormatListener, RemoveClipboardFormatListener,
@@ -39,6 +39,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use crate::clipboard::{SystemClipboard, wide};
 use crate::i18n::t;
 use crate::sync::{Outgoing, Sync};
+use crate::update::Updater;
 use crate::window;
 use crate::worker::{Command, Handle, Snapshot, Status};
 
@@ -61,10 +62,13 @@ const ICON_ID: u32 = 1;
 const ICON_RESOURCE: usize = 1;
 const MENU_OPEN: usize = 1;
 const MENU_PAUSE: usize = 2;
-const MENU_QUIT: usize = 3;
+const MENU_UPDATE: usize = 3;
+const MENU_QUIT: usize = 4;
 
 /// The message Explorer broadcasts when it restarts, registered at startup.
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+/// Handle of the single-instance mutex held by this process, or 0.
+static INSTANCE_MUTEX: AtomicIsize = AtomicIsize::new(0);
 
 thread_local! {
     /// The state of the tray thread, for its window procedure.
@@ -145,11 +149,34 @@ fn instance_name(state_dir: &Path) -> String {
 /// instance already runs on it.
 pub fn single_instance(state_dir: &Path) -> bool {
     let name = wide(&instance_name(state_dir));
-    // SAFETY: `name` is NUL-terminated and outlives the call. The mutex is
-    // never closed: it lasts as long as the process.
+    // SAFETY: `name` is NUL-terminated and outlives the call.
     unsafe {
         let mutex = CreateMutexW(null(), 0, name.as_ptr());
-        mutex.is_null() || GetLastError() != ERROR_ALREADY_EXISTS
+        if mutex.is_null() {
+            return true;
+        }
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            CloseHandle(mutex);
+            return false;
+        }
+        let previous = INSTANCE_MUTEX.swap(mutex as isize, Ordering::AcqRel);
+        if previous != 0 {
+            CloseHandle(previous as HANDLE);
+        }
+        true
+    }
+}
+
+/// Releases the single-instance mutex so a replacement executable spawned on
+/// update can claim the state directory without racing process exit.
+pub fn release_single_instance() {
+    let mutex = INSTANCE_MUTEX.swap(0, Ordering::AcqRel);
+    if mutex != 0 {
+        // SAFETY: `mutex` was returned by `CreateMutexW` and swapped to 0 so it
+        // is closed at most once.
+        unsafe {
+            CloseHandle(mutex as HANDLE);
+        }
     }
 }
 
@@ -220,6 +247,7 @@ struct Tray {
     window: HWND,
     worker: Handle,
     link: Arc<Link>,
+    updater: Arc<Updater>,
     sync: Sync<SystemClipboard>,
     icon: HICON,
     /// The tooltip as last given to the shell.
@@ -358,6 +386,12 @@ fn show_menu(window: HWND) {
         AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, wide(&status).as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
         AppendMenuW(menu, MF_STRING, MENU_PAUSE, wide(pause).as_ptr());
+        AppendMenuW(
+            menu,
+            MF_STRING,
+            MENU_UPDATE,
+            wide(t("Check for updates…", "Vérifier les mises à jour…")).as_ptr(),
+        );
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
         AppendMenuW(
             menu,
@@ -386,6 +420,11 @@ fn show_menu(window: HWND) {
         MENU_OPEN => window::show(),
         MENU_PAUSE => {
             with_tray(|tray| tray.worker.send(Command::SetPaused(!paused)));
+        }
+        MENU_UPDATE => {
+            crate::ui::open_settings();
+            window::show();
+            with_tray(|tray| tray.updater.check());
         }
         // SAFETY: `window` is this thread's window. Destroying it removes
         // the icon and ends the message loop (WM_DESTROY).
@@ -446,7 +485,7 @@ extern "system" fn window_proc(
 /// runs the message loop until the user quits. The window is named after
 /// `state_dir`, for [`show_running_instance`]. Call it on a thread of its
 /// own.
-pub fn run(worker: Handle, link: Arc<Link>, state_dir: &Path) {
+pub fn run(worker: Handle, link: Arc<Link>, updater: Arc<Updater>, state_dir: &Path) {
     let (class_name, title) = (wide(CLASS_NAME), wide(&instance_name(state_dir)));
     // SAFETY: the class and window names are NUL-terminated and outlive
     // the calls; `window_proc` matches the signature Windows expects.
@@ -500,6 +539,7 @@ pub fn run(worker: Handle, link: Arc<Link>, state_dir: &Path) {
         window,
         worker,
         link: link.clone(),
+        updater,
         // From here on, only changes are sent: not what is there now.
         sync: Sync::new(SystemClipboard::new(window)),
         icon,
@@ -611,5 +651,15 @@ mod tests {
         assert_eq!(name, instance_name(Path::new(r"c:\DATA\Weft\")));
         assert_eq!(name, instance_name(Path::new("C:/data/weft")));
         assert_ne!(name, instance_name(Path::new(r"C:\data\weft-test")));
+    }
+
+    #[test]
+    fn single_instance_can_be_released_and_reacquired() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(single_instance(dir.path()));
+        assert!(!single_instance(dir.path()));
+        release_single_instance();
+        assert!(single_instance(dir.path()));
+        release_single_instance();
     }
 }

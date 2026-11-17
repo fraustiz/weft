@@ -29,6 +29,7 @@ const OWN_GROUP: &str = "weft";
 /// The tag of the ring toast, and of a device's ringing call.
 const RING_TAG: &str = "ring";
 const CALL_TAG: &str = "call";
+const UPDATE_TAG: &str = "update";
 
 /// Turns notices into what the user sees; any thread.
 pub struct Notifier {
@@ -64,7 +65,7 @@ pub fn notification_tag(id: &str) -> String {
 
 /// Opens a web link in the default browser. The worker checked it is an
 /// http or https link.
-fn open_url(url: String) {
+pub(crate) fn open_url(url: String) {
     // The shell wants COM on the calling thread: a short-lived one of its
     // own, so the worker never waits on the browser.
     std::thread::spawn(move || {
@@ -258,6 +259,31 @@ pub fn sms_toast(
     }
 }
 
+/// The toast of an available update; clicking it shows the window on the
+/// Settings page.
+pub fn update_toast(version: &str) -> Toast {
+    let title = if is_french() {
+        format!("Version {version} disponible")
+    } else {
+        format!("Version {version} available")
+    };
+    let text = t(
+        "Open Weft's settings to download and install it",
+        "Ouvrez les réglages de Weft pour la télécharger et l'installer",
+    )
+    .to_owned();
+    Toast {
+        group: OWN_GROUP.into(),
+        tag: UPDATE_TAG.into(),
+        content: Content::new(vec![title, text]),
+        suppress_popup: false,
+        on_click: Some(Arc::new(|_, _| {
+            crate::ui::open_settings();
+            window::show();
+        })),
+    }
+}
+
 impl Notifier {
     /// Shows a plain toast: a title and a line.
     fn show(&self, title: String, text: String) {
@@ -268,6 +294,11 @@ impl Notifier {
             suppress_popup: false,
             on_click: Some(clicks(|_, _| {})),
         });
+    }
+
+    /// Posts a toast when an automatic check finds `version`.
+    pub fn update_available(&self, version: &str) {
+        self.system.toast(update_toast(version));
     }
 
     /// Acts on a notice. Called on the worker thread or a pool thread.
@@ -462,5 +493,16 @@ mod tests {
         assert_ne!(missed.tag, CALL_TAG);
         assert!(call_toast([1; 16], "Phone", &call("ended")).is_none());
         assert!(call_toast([1; 16], "Phone", &call("talking")).is_none());
+    }
+
+    #[test]
+    fn update_toast_uses_own_group_and_update_tag() {
+        let toast = update_toast("0.2.0");
+        assert_eq!(toast.group, OWN_GROUP);
+        assert_eq!(toast.tag, UPDATE_TAG);
+        assert!(!toast.suppress_popup);
+        assert_eq!(toast.content.lines.len(), 2);
+        assert!(toast.content.lines[0].contains("0.2.0"));
+        assert!(toast.on_click.is_some());
     }
 }

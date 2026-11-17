@@ -11,7 +11,7 @@ use super::widgets::{
 };
 use super::words;
 use crate::i18n::{is_french, t};
-use crate::worker::Device;
+use crate::worker::{Device, PairingKind};
 
 fn status(weft: &Weft) -> View {
     let (text, live) = words::status(&weft.snapshot);
@@ -26,20 +26,32 @@ fn status(weft: &Weft) -> View {
     column(4.0, views)
 }
 
-/// The notice that a pairing just added a device, by name once it is known.
+fn added_text(kind: PairingKind, name: Option<&str>) -> String {
+    match kind {
+        PairingKind::Joined => match (name, is_french()) {
+            (Some(name), false) => format!("Paired with {name}"),
+            (Some(name), true) => format!("Associé à {name}"),
+            (None, _) => t("Paired with a new device", "Associé à un nouvel appareil").to_owned(),
+        },
+        PairingKind::Invited | PairingKind::JoinedOther => match (name, is_french()) {
+            (Some(name), false) => format!("Joined {name}'s group"),
+            (Some(name), true) => format!("Ajouté au groupe de {name}"),
+            (None, _) => t("Joined the group", "Ajouté au groupe").to_owned(),
+        },
+    }
+}
+
+/// The notice that a pairing just added a device or joined a group, by name
+/// once it is known.
 fn added(weft: &Weft, context: &ViewContext<Weft>) -> Option<View> {
-    let device = weft.added?;
+    let (device, kind) = weft.added?;
     let name = weft
         .snapshot
         .devices
         .iter()
         .find(|known| known.id == device)
-        .and_then(|known| known.name.clone());
-    let message = match (name, is_french()) {
-        (Some(name), false) => format!("Paired with {name}"),
-        (Some(name), true) => format!("Associé à {name}"),
-        (None, _) => t("Paired with a new device", "Associé à un nouvel appareil").to_owned(),
-    };
+        .and_then(|known| known.name.as_deref());
+    let message = added_text(kind, name);
     Some(
         InfoBar::new()
             .severity(InfoBarSeverity::Success)
@@ -188,4 +200,39 @@ pub fn view(weft: &Weft, context: &mut ViewContext<Weft>) -> View {
     }
     views.extend(confirm_removal(weft, context));
     column(24.0, views)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pairing_banner_distinguishes_joining_and_inviting() {
+        assert_eq!(
+            added_text(PairingKind::Joined, Some("Phone")),
+            if is_french() {
+                "Associé à Phone"
+            } else {
+                "Paired with Phone"
+            }
+        );
+        assert_eq!(
+            added_text(PairingKind::Joined, None),
+            t("Paired with a new device", "Associé à un nouvel appareil")
+        );
+        for kind in [PairingKind::Invited, PairingKind::JoinedOther] {
+            assert_eq!(
+                added_text(kind, Some("Phone")),
+                if is_french() {
+                    "Ajouté au groupe de Phone"
+                } else {
+                    "Joined Phone's group"
+                }
+            );
+            assert_eq!(
+                added_text(kind, None),
+                t("Joined the group", "Ajouté au groupe")
+            );
+        }
+    }
 }

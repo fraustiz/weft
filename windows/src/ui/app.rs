@@ -14,8 +14,11 @@ use crate::i18n::t;
 use crate::packets::{MediaAction, MediaCommand, Packet, VolumeSet, is_shareable_url};
 use crate::scroll::{self, Follow};
 use crate::sms;
-use crate::worker::{Command, Handle, PairingState, Published, RING_DURATION, Snapshot};
-use crate::{autostart, window};
+use crate::update::{RELEASES_PAGE_URL, UpdateSnapshot, Updater};
+use crate::worker::{
+    Command, Handle, PairingKind, PairingState, Published, RING_DURATION, Snapshot,
+};
+use crate::{autostart, notify, window};
 
 /// The default client size in effective pixels: a small utility window
 /// that shows the whole pairing code.
@@ -135,6 +138,12 @@ pub enum Message {
     CommandLineEdited(String),
     SaveCommand,
     CancelCommand,
+    UpdatesPublished(Option<UpdateSnapshot>),
+    OpenSettingsRequested(Option<u64>),
+    CheckUpdates,
+    SetAutoUpdate(bool),
+    InstallUpdate,
+    OpenReleasesPage,
 }
 
 /// The messages of one phone, as the window shows them.
@@ -199,8 +208,8 @@ pub struct Weft {
     /// "Copy code" was used for the code being shown.
     pub copied: bool,
     pub join_code: String,
-    /// The device the last pairing added, until the notice is dismissed.
-    pub added: Option<[u8; 16]>,
+    /// The device the last pairing added and how it went, until dismissed.
+    pub added: Option<([u8; 16], PairingKind)>,
     /// The device whose removal waits for a confirmation.
     pub removing: Option<[u8; 16]>,
     /// The confirmation is hiding after a choice; `true` if it was Remove.
@@ -233,6 +242,7 @@ pub struct Weft {
     /// The link being written for the device shown, while its box is open.
     pub link: Option<String>,
     pub command_draft: Option<CommandDraft>,
+    pub updates: UpdateSnapshot,
     /// A tick is on its way.
     ticking: bool,
 }
@@ -242,6 +252,16 @@ pub struct Weft {
 /// task does not cancel it.
 fn watch(context: &ComponentContext<Weft>, worker: Handle, generation: u64) {
     context.spawn_background(move |_| Message::Published(worker.wait_newer(generation)));
+}
+
+fn watch_updates(context: &ComponentContext<Weft>, updater: Arc<Updater>, generation: u64) {
+    context.spawn_background(move |_| Message::UpdatesPublished(updater.wait_newer(generation)));
+}
+
+fn watch_settings_nav(context: &ComponentContext<Weft>, generation: u64) {
+    context.spawn_background(move |_| {
+        Message::OpenSettingsRequested(super::wait_open_settings(generation))
+    });
 }
 
 impl Weft {
@@ -260,7 +280,8 @@ impl Weft {
                 }
             }
             PairingState::Success { device } => {
-                self.added = Some(*device);
+                let kind = published.paired.unwrap_or(PairingKind::Joined);
+                self.added = Some((*device, kind));
                 self.pairing = false;
                 self.join_code.clear();
                 self.qr = None;
@@ -474,7 +495,10 @@ impl Component for Weft {
 
     fn create(shell: &Shell, context: &ComponentContext<Self>) -> Self {
         let published = shell.worker.published();
+        let updates = shell.updater.snapshot();
         watch(context, shell.worker.clone(), published.generation);
+        watch_updates(context, shell.updater.clone(), updates.generation);
+        watch_settings_nav(context, 0);
         let mut weft = Weft {
             shell: shell.clone(),
             snapshot: published.snapshot.clone(),
@@ -501,6 +525,7 @@ impl Component for Weft {
             typed: String::new(),
             link: None,
             command_draft: None,
+            updates,
             ticking: false,
         };
         weft.absorb(published);
@@ -888,6 +913,20 @@ impl Component for Weft {
             }
             Message::SaveCommand => self.save_command(),
             Message::CancelCommand => self.command_draft = None,
+            Message::UpdatesPublished(Some(updates)) => {
+                watch_updates(context, self.shell.updater.clone(), updates.generation);
+                self.updates = updates;
+            }
+            Message::UpdatesPublished(None) => {}
+            Message::OpenSettingsRequested(Some(generation)) => {
+                watch_settings_nav(context, generation);
+                self.page = Page::Settings;
+            }
+            Message::OpenSettingsRequested(None) => {}
+            Message::CheckUpdates => self.shell.updater.check(),
+            Message::SetAutoUpdate(enabled) => self.shell.updater.set_auto_check(enabled),
+            Message::InstallUpdate => self.shell.updater.install_and_restart(),
+            Message::OpenReleasesPage => notify::open_url(RELEASES_PAGE_URL.to_owned()),
         }
         self.schedule_tick(context);
     }

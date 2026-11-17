@@ -26,6 +26,7 @@ fn main() -> ExitCode {
     use weft_windows::notify::Notifier;
     use weft_windows::system::{self, System};
     use weft_windows::tray::{self, Link};
+    use weft_windows::update::{self, Updater};
     use weft_windows::worker::{self, Command, Hooks};
     use weft_windows::{autostart, control, files, toast, ui, window};
     use windows_sys::Win32::UI::HiDpi::{
@@ -61,6 +62,7 @@ fn main() -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
+    update::cleanup_old_executable(&state_dir);
     let hidden = std::env::args().any(|arg| arg == autostart::STARTUP_ARG);
     // Without it the menu is drawn for 96 dpi and stretched on scaled
     // displays.
@@ -74,6 +76,20 @@ fn main() -> ExitCode {
 
     let link = Arc::new(Link::default());
     let (system, system_inbox) = System::new();
+    let updater = {
+        let notifier = Notifier {
+            system: system.clone(),
+        };
+        let restart_link = link.clone();
+        Updater::new(
+            state_dir.clone(),
+            move |version| notifier.update_available(version),
+            move || {
+                restart_link.quit();
+                window::quit();
+            },
+        )
+    };
     let hooks = {
         let text_link = link.clone();
         let notifier = Notifier {
@@ -102,6 +118,7 @@ fn main() -> ExitCode {
     };
 
     system::start(&system, system_inbox, worker.clone(), link.clone());
+    updater.check_if_due();
 
     // The tray thread waits on window messages, not on the worker: this
     // thread turns each new snapshot into a message for it.
@@ -117,12 +134,17 @@ fn main() -> ExitCode {
     }
 
     let tray_thread = {
-        let (worker, link) = (worker.clone(), link.clone());
+        let (worker, link, updater, state_dir) = (
+            worker.clone(),
+            link.clone(),
+            updater.clone(),
+            state_dir.clone(),
+        );
         std::thread::Builder::new()
             .name("weft-tray".into())
             .spawn(move || {
                 // Returns when the user quits; the window goes with it.
-                tray::run(worker, link, &state_dir);
+                tray::run(worker, link, updater, &state_dir);
                 window::quit();
             })
     };
@@ -130,6 +152,7 @@ fn main() -> ExitCode {
         Ok(thread) => thread,
         Err(err) => {
             tracing::error!(error = %err, "could not start the tray thread");
+            updater.stop();
             worker.send(Command::Shutdown);
             return ExitCode::FAILURE;
         }
@@ -138,6 +161,7 @@ fn main() -> ExitCode {
     let shell = ui::Shell {
         worker: worker.clone(),
         link: link.clone(),
+        updater: updater.clone(),
         hidden,
     };
     // Returns once the window is closed for good, by Quit or by the
@@ -148,6 +172,7 @@ fn main() -> ExitCode {
         link.quit();
     }
     let _ = tray_thread.join();
+    updater.stop();
 
     worker.send(Command::Shutdown);
     let deadline = Instant::now() + SHUTDOWN_WAIT;
@@ -156,6 +181,13 @@ fn main() -> ExitCode {
     }
     if !worker_thread.is_finished() {
         tracing::warn!("the connection did not close in time");
+    }
+
+    if let Some(exe) = updater.take_restart_exe() {
+        tray::release_single_instance();
+        if let Err(err) = std::process::Command::new(&exe).spawn() {
+            tracing::error!(error = %err, "could not start the updated executable");
+        }
     }
     ExitCode::SUCCESS
 }

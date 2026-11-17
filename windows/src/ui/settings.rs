@@ -7,7 +7,8 @@ use super::app::{CommandDraft, Message, Weft};
 use super::widgets::{body, button, card, column, label, primary_button, row, secondary};
 use super::words;
 use crate::features::Features;
-use crate::i18n::t;
+use crate::i18n::{is_french, t};
+use crate::update::{INSTALLED_VERSION_NAME, UpdateError, UpdateState};
 
 /// The repository, shown in About.
 const SOURCE: &str = "https://github.com/fraustiz/weft";
@@ -263,6 +264,186 @@ fn commands(weft: &Weft, context: &ViewContext<Weft>) -> View {
     column(4.0, views)
 }
 
+fn update_error_text(error: &UpdateError) -> String {
+    match error {
+        UpdateError::Network(_) => t(
+            "Could not reach GitHub. Check the network, then try again.",
+            "Impossible de joindre GitHub. Vérifiez le réseau, puis réessayez.",
+        )
+        .to_owned(),
+        UpdateError::NoRelease => t(
+            "No Windows release is published yet.",
+            "Aucune version Windows n'est encore publiée.",
+        )
+        .to_owned(),
+        UpdateError::Http(code) => {
+            if is_french() {
+                format!("GitHub a répondu avec le code HTTP {code}. Réessayez plus tard.")
+            } else {
+                format!("GitHub answered with HTTP {code}. Try again later.")
+            }
+        }
+        UpdateError::Invalid(_) => t(
+            "The update information is not valid. Nothing was installed.",
+            "Les informations de mise à jour ne sont pas valides. Rien n'a été installé.",
+        )
+        .to_owned(),
+        UpdateError::BadHash => t(
+            "The downloaded file failed checksum verification. Nothing was installed.",
+            "Le fichier téléchargé a échoué à la vérification d'intégrité. Rien n'a été installé.",
+        )
+        .to_owned(),
+        UpdateError::WriteProtected => t(
+            "Weft cannot replace itself in this folder. Download the update from GitHub instead.",
+            "Weft ne peut pas se remplacer dans ce dossier. Téléchargez plutôt la mise à jour sur GitHub.",
+        )
+        .to_owned(),
+        UpdateError::Install(_) => t(
+            "The update could not be installed. Nothing was changed.",
+            "La mise à jour n'a pas pu être installée. Rien n'a été modifié.",
+        )
+        .to_owned(),
+    }
+}
+
+fn update_status_line(state: &UpdateState) -> Option<(String, bool)> {
+    let french = is_french();
+    let text = match state {
+        UpdateState::Idle => return None,
+        UpdateState::Checking => {
+            t("Checking for updates…", "Recherche de mises à jour…").to_owned()
+        }
+        UpdateState::UpToDate => t("Weft is up to date", "Weft est à jour").to_owned(),
+        UpdateState::Available(info) => {
+            if french {
+                format!("Version {} disponible", info.version_name)
+            } else {
+                format!("Version {} available", info.version_name)
+            }
+        }
+        UpdateState::Downloading { info, done, total } => match total.filter(|&len| len > 0) {
+            Some(total) => {
+                let percent = (done.saturating_mul(100) / total).min(100);
+                let (done_str, total_str) = (words::size(*done), words::size(total));
+                if french {
+                    format!(
+                        "Téléchargement de {} — {done_str} sur {total_str} ({percent}\u{a0}%)",
+                        info.version_name
+                    )
+                } else {
+                    format!(
+                        "Downloading {} — {done_str} of {total_str} ({percent}%)",
+                        info.version_name
+                    )
+                }
+            }
+            None => {
+                if french {
+                    format!("Téléchargement de {}…", info.version_name)
+                } else {
+                    format!("Downloading {}…", info.version_name)
+                }
+            }
+        },
+        UpdateState::Installing(info) => {
+            if french {
+                format!("Installation de {}…", info.version_name)
+            } else {
+                format!("Installing {}…", info.version_name)
+            }
+        }
+        UpdateState::Restarting(info) => {
+            if french {
+                format!("Redémarrage vers {}…", info.version_name)
+            } else {
+                format!("Restarting into {}…", info.version_name)
+            }
+        }
+        UpdateState::Failed { error, .. } => return Some((update_error_text(error), true)),
+    };
+    Some((text, false))
+}
+
+fn updates(weft: &Weft, context: &ViewContext<Weft>) -> View {
+    let state = &weft.updates.state;
+    let busy = matches!(
+        state,
+        UpdateState::Checking
+            | UpdateState::Downloading { .. }
+            | UpdateState::Installing(_)
+            | UpdateState::Restarting(_)
+    );
+
+    let mut header = vec![body(format!("Weft {INSTALLED_VERSION_NAME}")).into()];
+    if let Some((text, critical)) = update_status_line(state) {
+        let line = if critical {
+            body(text).foreground(ThemeBrush::SystemCritical)
+        } else {
+            secondary(text).font_size(12.0)
+        };
+        header.push(line.into());
+    }
+
+    let mut card_views = vec![column(2.0, header)];
+
+    match state {
+        UpdateState::Downloading { done, total, .. } => {
+            let bar = match total {
+                Some(total) if *total > 0 && *done > 0 => ProgressBar::new()
+                    .maximum(*total as f64)
+                    .value((*done).min(*total) as f64),
+                _ => ProgressBar::new().is_indeterminate(true),
+            };
+            card_views.push(bar.into());
+        }
+        UpdateState::Installing(_) | UpdateState::Restarting(_) => {
+            card_views.push(ProgressBar::new().is_indeterminate(true).into());
+        }
+        _ => {}
+    }
+
+    let mut actions = Vec::new();
+    match state {
+        UpdateState::Failed {
+            error: UpdateError::WriteProtected,
+            ..
+        } => actions.push(primary_button(
+            t("Open GitHub Releases", "Ouvrir GitHub Releases"),
+            context.message(Message::OpenReleasesPage),
+        )),
+        UpdateState::Available(_) | UpdateState::Failed { info: Some(_), .. } => {
+            actions.push(primary_button(
+                t("Install and restart", "Installer et redémarrer"),
+                context.message(Message::InstallUpdate),
+            ))
+        }
+        _ => {}
+    }
+    actions.push(
+        Button::new()
+            .is_enabled(!busy)
+            .on_click(context.message(Message::CheckUpdates))
+            .content(t("Check for updates", "Vérifier les mises à jour")),
+    );
+    card_views.push(row(actions));
+
+    column(
+        4.0,
+        vec![
+            card(column(8.0, card_views)),
+            switch(
+                t("Check automatically", "Vérifier automatiquement"),
+                t(
+                    "At most once a day, when Weft starts",
+                    "Au plus une fois par jour, au démarrage de Weft",
+                ),
+                weft.updates.auto_check,
+                context.callback(Message::SetAutoUpdate),
+            ),
+        ],
+    )
+}
+
 pub fn view(weft: &Weft, context: &mut ViewContext<Weft>) -> View {
     let snapshot = &weft.snapshot;
     let mut sync = vec![
@@ -416,7 +597,7 @@ pub fn view(weft: &Weft, context: &mut ViewContext<Weft>) -> View {
     let about = card(column(
         2.0,
         vec![
-            body(format!("Weft {}", env!("CARGO_PKG_VERSION"))).into(),
+            body(format!("Weft {INSTALLED_VERSION_NAME}")).into(),
             secondary(t("MIT license", "Licence MIT"))
                 .font_size(12.0)
                 .into(),
@@ -459,7 +640,62 @@ pub fn view(weft: &Weft, context: &mut ViewContext<Weft>) -> View {
                 ],
             ),
             column(8.0, vec![label(t("Connection", "Connexion")).into(), relay]),
+            column(
+                8.0,
+                vec![
+                    label(t("Updates", "Mises à jour")).into(),
+                    updates(weft, context),
+                ],
+            ),
             column(8.0, vec![label(t("About", "À propos")).into(), about]),
         ],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::update::UpdateInfo;
+
+    #[test]
+    fn update_status_and_errors_are_distinct_and_calm() {
+        assert_eq!(update_status_line(&UpdateState::Idle), None);
+        let info = UpdateInfo {
+            version_code: 10,
+            version_name: "0.2.0".into(),
+            url: "https://github.com/fraustiz/weft/releases/download/app-v0.2.0/weft-0.2.0-windows.exe".into(),
+            sha256: "a".repeat(64),
+        };
+        let (available, critical) =
+            update_status_line(&UpdateState::Available(info.clone())).unwrap();
+        assert!(!critical);
+        assert!(available.contains("0.2.0"));
+
+        let (downloading, critical) = update_status_line(&UpdateState::Downloading {
+            info,
+            done: 512 * 1024,
+            total: Some(1024 * 1024),
+        })
+        .unwrap();
+        assert!(!critical);
+        assert!(downloading.contains("50"));
+
+        let errors = [
+            UpdateError::Network("timeout".into()),
+            UpdateError::NoRelease,
+            UpdateError::Http(503),
+            UpdateError::Invalid("bad".into()),
+            UpdateError::BadHash,
+            UpdateError::WriteProtected,
+            UpdateError::Install("io".into()),
+        ];
+        let mut seen = Vec::new();
+        for error in &errors {
+            let text = update_error_text(error);
+            assert!(text.ends_with('.'), "{text}");
+            assert!(!text.contains('!'), "{text}");
+            assert!(!seen.contains(&text), "{text}");
+            seen.push(text);
+        }
+    }
 }
