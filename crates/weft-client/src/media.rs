@@ -17,6 +17,23 @@ pub const MAX_ART_ID_LEN: usize = 64;
 /// The image types a cover may have.
 pub const ART_MIMES: &[&str] = &["image/jpeg", "image/png"];
 
+/// The first bytes of every image of each type in [`ART_MIMES`].
+const ART_SIGNATURES: &[(&str, &[u8])] = &[
+    ("image/jpeg", &[0xff, 0xd8, 0xff]),
+    (
+        "image/png",
+        &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a],
+    ),
+];
+
+/// Whether `data` starts as an image of type `mime` must: a cheap check
+/// that drops what is not an image without decoding it.
+pub fn looks_like(mime: &str, data: &[u8]) -> bool {
+    ART_SIGNATURES
+        .iter()
+        .any(|(known, signature)| *known == mime && data.starts_with(signature))
+}
+
 /// The covers kept per device.
 pub const COVERS_KEPT: usize = 8;
 
@@ -29,12 +46,11 @@ pub struct Cover {
 }
 
 impl Cover {
-    /// Whether it may be sent or kept: a known image type, and 1 byte to
-    /// [`MAX_ART_LEN`]. Its content is not looked at.
+    /// Whether it may be sent or kept: a known image type whose first
+    /// bytes it starts with (see [`looks_like`]), and at most
+    /// [`MAX_ART_LEN`] bytes. It is not decoded.
     pub fn is_valid(&self) -> bool {
-        ART_MIMES.contains(&self.mime.as_str())
-            && !self.data.is_empty()
-            && self.data.len() <= MAX_ART_LEN
+        looks_like(&self.mime, &self.data) && self.data.len() <= MAX_ART_LEN
     }
 
     /// The id this computer gives it: the first 128 bits of its BLAKE2b
@@ -170,10 +186,20 @@ mod tests {
         }
     }
 
+    const JPEG: &[u8] = &[0xff, 0xd8, 0xff];
+    const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+    /// `len` bytes in all, starting with `signature`.
+    fn image(signature: &[u8], byte: u8, len: usize) -> Arc<[u8]> {
+        let mut data = signature.to_vec();
+        data.resize(len, byte);
+        data.into()
+    }
+
     fn cover(byte: u8) -> Cover {
         Cover {
             mime: "image/jpeg".into(),
-            data: vec![byte; 10].into(),
+            data: image(JPEG, byte, 13),
         }
     }
 
@@ -196,9 +222,21 @@ mod tests {
         assert!(cover(1).is_valid());
         let png = Cover {
             mime: "image/png".into(),
-            ..cover(1)
+            data: image(PNG, 1, 20),
         };
         assert!(png.is_valid());
+        // The type must match the first bytes, and something else is no
+        // image.
+        let mislabelled = Cover {
+            mime: "image/png".into(),
+            ..cover(1)
+        };
+        assert!(!mislabelled.is_valid());
+        let text = Cover {
+            data: b"not an image".to_vec().into(),
+            ..cover(1)
+        };
+        assert!(!text.is_valid());
         let gif = Cover {
             mime: "image/gif".into(),
             ..cover(1)
@@ -210,12 +248,12 @@ mod tests {
         };
         assert!(!empty.is_valid());
         let largest = Cover {
-            data: vec![0; MAX_ART_LEN].into(),
+            data: image(JPEG, 0, MAX_ART_LEN),
             ..cover(1)
         };
         assert!(largest.is_valid());
         let over = Cover {
-            data: vec![0; MAX_ART_LEN + 1].into(),
+            data: image(JPEG, 0, MAX_ART_LEN + 1),
             ..cover(1)
         };
         assert!(!over.is_valid());

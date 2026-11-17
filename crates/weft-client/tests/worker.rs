@@ -1966,10 +1966,13 @@ fn phone_capabilities_with_covers() -> Packet {
     Packet::Capabilities(capabilities)
 }
 
+/// A cover of `len` bytes that starts as a JPEG does.
 fn jpeg(byte: u8, len: usize) -> Cover {
+    let mut data = vec![0xff, 0xd8, 0xff];
+    data.resize(len, byte);
     Cover {
         mime: "image/jpeg".into(),
-        data: vec![byte; len].into(),
+        data: data.into(),
     }
 }
 
@@ -2092,7 +2095,11 @@ async fn covers_go_once_per_connection_before_the_players() {
         let cover = MediaArt {
             art: "phone-1".into(),
             mime: "image/png".into(),
-            data: vec![9; 50],
+            data: [
+                &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a][..],
+                &[9; 42],
+            ]
+            .concat(),
         };
         phone.send(pc, &Packet::MediaArt(cover.clone())).await;
         let theirs = Player {

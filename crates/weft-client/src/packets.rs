@@ -280,7 +280,8 @@ pub struct Player {
 
 /// A cover a player's `art` names. `data` is standard base64 on the wire,
 /// at most [`media::MAX_ART_LEN`] bytes once decoded; [`parse`] finds a
-/// `media.art` with a bad id, type or size invalid.
+/// `media.art` with a bad id, type or size, or whose bytes do not start as
+/// its type's, invalid.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaArt {
     pub art: String,
@@ -300,8 +301,7 @@ impl MediaArt {
 
     pub fn is_valid(&self) -> bool {
         media::is_art_id(&self.art)
-            && media::ART_MIMES.contains(&self.mime.as_str())
-            && !self.data.is_empty()
+            && media::looks_like(&self.mime, &self.data)
             && self.data.len() <= media::MAX_ART_LEN
     }
 
@@ -1071,12 +1071,12 @@ mod tests {
         let art = Packet::MediaArt(MediaArt {
             art: "c0ffee".into(),
             mime: "image/png".into(),
-            data: vec![0xfb, 0xff, 0x00],
+            data: vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0xfb, 0xff],
         });
         let json = art.to_json();
         assert_eq!(
             json,
-            r#"{"type":"media.art","art":"c0ffee","mime":"image/png","data":"+/8A"}"#
+            r#"{"type":"media.art","art":"c0ffee","mime":"image/png","data":"iVBORw0KGgr7/w=="}"#
         );
         assert_eq!(parse(&json), Parsed::Known(art));
         assert_eq!(
@@ -1095,7 +1095,9 @@ mod tests {
         let sized = |len: usize| {
             format!(
                 r#"{{"type":"media.art","art":"a","mime":"image/jpeg","data":"{}"}}"#,
-                weft_protocol::base64_encode(&vec![7; len])
+                weft_protocol::base64_encode(
+                    &[&[0xff, 0xd8, 0xff][..], &vec![7; len - 3]].concat()
+                )
             )
         };
         assert!(matches!(
@@ -1105,6 +1107,9 @@ mod tests {
         assert_eq!(parse(&sized(media::MAX_ART_LEN + 1)), Parsed::Invalid);
         for invalid in [
             r#"{"type":"media.art","art":"a","mime":"image/gif","data":"AA=="}"#,
+            // Bytes that are no image, or another type's.
+            r#"{"type":"media.art","art":"a","mime":"image/png","data":"AA=="}"#,
+            r#"{"type":"media.art","art":"a","mime":"image/png","data":"/9j/"}"#,
             r#"{"type":"media.art","art":"a b","mime":"image/png","data":"AA=="}"#,
             r#"{"type":"media.art","art":"","mime":"image/png","data":"AA=="}"#,
             r#"{"type":"media.art","art":"a","mime":"image/png","data":""}"#,

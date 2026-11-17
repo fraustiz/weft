@@ -451,7 +451,7 @@ async fn pairs_and_syncs_the_pasteboard_both_ways() {
         let Packet::Capabilities(capabilities) = capabilities else {
             unreachable!();
         };
-        assert_eq!(capabilities.platform, "macos");
+        assert_eq!(capabilities.platform, packets::PLATFORM);
         assert_eq!(sorted(&capabilities.incoming), sorted_str(MAC_INCOMING));
         assert_eq!(sorted(&capabilities.outgoing), sorted_str(MAC_OUTGOING));
 
@@ -1060,7 +1060,7 @@ async fn shares_the_macs_players_and_shows_the_phones_covers() {
         peer.session
             .send_packet(
                 mac,
-                r#"{"type":"media.art","art":"ep-1","mime":"image/png","data":"iVBORw=="}"#,
+                r#"{"type":"media.art","art":"ep-1","mime":"image/png","data":"iVBORw0KGgo="}"#,
             )
             .await
             .unwrap();
@@ -1081,7 +1081,7 @@ async fn shares_the_macs_players_and_shows_the_phones_covers() {
             tested.core.media_art(phone.clone(), art),
             Some(CoverImage {
                 mime: "image/png".into(),
-                data: vec![0x89, 0x50, 0x4e, 0x47],
+                data: vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
             })
         );
         assert_eq!(tested.core.media_art(phone.clone(), "other".into()), None);
