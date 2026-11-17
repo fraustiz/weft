@@ -7,11 +7,12 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use weft_cli::{hex, short_id};
 use weft_client::features::Features;
-use weft_client::packets::{Player, RejectReason};
+use weft_client::media::Cover;
+use weft_client::packets::{MediaAction, Player, RejectReason};
 use weft_client::transfer::{Failure, Stage};
 use weft_client::worker::{
-    Direction, Notice, PairingFailure, PairingState, PeerMedia, Published, Snapshot, Status,
-    TransferView,
+    Direction, Notice, PairingFailure, PairingState, PeerInfo, PeerMedia, Published, Snapshot,
+    Status, TransferView,
 };
 
 /// The state of the connection to the relay.
@@ -68,6 +69,44 @@ pub struct PlayerInfo {
     pub can_seek: bool,
     /// 0 to 100, when the player has its own volume.
     pub volume: Option<u8>,
+    /// The id of its cover, only when the core has the image: get it with
+    /// [`crate::WeftCore::media_art`]. The same id is the same image, so
+    /// the app may keep it once read.
+    pub art: Option<String>,
+}
+
+/// A cover image, as `media.art` carries it.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CoverImage {
+    /// `"image/jpeg"` or `"image/png"`.
+    pub mime: String,
+    /// At most 128 KiB.
+    pub data: Vec<u8>,
+}
+
+/// One of this Mac's players, as the app reads it, for
+/// [`crate::WeftCore::set_local_media`]. Times are in milliseconds.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct LocalPlayer {
+    /// Stable while the player exists: `media.command` names it.
+    pub id: String,
+    pub app: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub playing: bool,
+    /// Where it is now, when known.
+    pub position_ms: Option<u64>,
+    pub length_ms: Option<u64>,
+    pub can_play: bool,
+    pub can_pause: bool,
+    pub can_next: bool,
+    pub can_previous: bool,
+    pub can_seek: bool,
+    /// Its cover, its longer side scaled to at most 512 px (300 px is
+    /// enough), JPEG unless it needs transparency. One over 128 KiB or of
+    /// another type is dropped, the player kept.
+    pub cover: Option<CoverImage>,
 }
 
 /// What another device plays. A player that plays has moved on by the
@@ -323,10 +362,12 @@ pub enum CoreNotice {
         number: Option<String>,
         name: Option<String>,
     },
+    /// A device asks one of this Mac's players (by its
+    /// [`LocalPlayer::id`]) to act.
     MediaCommand {
         from: String,
         player: String,
-        action: String,
+        control: MediaControl,
     },
     SetVolume {
         from: String,
@@ -483,7 +524,7 @@ pub(crate) fn snapshot(published: &Published, now: Now) -> CoreSnapshot {
                 .media
                 .as_ref()
                 .filter(|_| view.features.media)
-                .map(|media| media_info(media, now));
+                .map(|media| media_info(media, &peer, now));
             let volume = peer
                 .volume
                 .filter(|_| view.features.volume)
@@ -536,7 +577,7 @@ pub(crate) fn snapshot(published: &Published, now: Now) -> CoreSnapshot {
     }
 }
 
-fn player(player: &Player) -> PlayerInfo {
+fn player(player: &Player, peer: &PeerInfo) -> PlayerInfo {
     PlayerInfo {
         id: player.id.clone(),
         app: player.app.clone(),
@@ -552,10 +593,62 @@ fn player(player: &Player) -> PlayerInfo {
         can_previous: player.can_previous,
         can_seek: player.can_seek,
         volume: player.volume.filter(|volume| *volume <= 100),
+        art: peer.cover(player).and(player.art.clone()),
     }
 }
 
-fn media_info(media: &PeerMedia, now: Now) -> MediaInfo {
+/// A cover as the app gets it: its bytes are copied once, here.
+pub(crate) fn cover_image(cover: &Cover) -> CoverImage {
+    CoverImage {
+        mime: cover.mime.clone(),
+        data: cover.data.to_vec(),
+    }
+}
+
+/// One of this Mac's players as the worker takes it.
+pub(crate) fn local_player(local: LocalPlayer) -> weft_client::media::LocalPlayer {
+    let length = local.length_ms.filter(|length| *length > 0);
+    weft_client::media::LocalPlayer {
+        player: Player {
+            id: local.id,
+            app: local.app,
+            title: local.title,
+            artist: local.artist,
+            album: local.album,
+            playing: local.playing,
+            position: local
+                .position_ms
+                .map(|position| length.map_or(position, |length| position.min(length))),
+            length,
+            can_play: local.can_play,
+            can_pause: local.can_pause,
+            can_next: local.can_next,
+            can_previous: local.can_previous,
+            can_seek: local.can_seek && length.is_some(),
+            volume: None,
+            art: None,
+        },
+        cover: local.cover.map(|cover| Cover {
+            mime: cover.mime,
+            data: cover.data.into(),
+        }),
+    }
+}
+
+/// The inverse of [`MediaControl`]'s use in [`crate::WeftCore::media_command`].
+fn media_control(action: MediaAction) -> MediaControl {
+    match action {
+        MediaAction::Play => MediaControl::Play,
+        MediaAction::Pause => MediaControl::Pause,
+        MediaAction::PlayPause => MediaControl::PlayPause,
+        MediaAction::Next => MediaControl::Next,
+        MediaAction::Previous => MediaControl::Previous,
+        MediaAction::Seek(position_ms) => MediaControl::Seek { position_ms },
+        MediaAction::SetVolume(level) => MediaControl::SetVolume { level },
+    }
+}
+
+fn media_info(media: &PeerMedia, peer: &PeerInfo, now: Now) -> MediaInfo {
     let current = media.current().and_then(|shown| {
         let index = media
             .players
@@ -564,7 +657,11 @@ fn media_info(media: &PeerMedia, now: Now) -> MediaInfo {
         u32::try_from(index).ok()
     });
     MediaInfo {
-        players: media.players.iter().map(player).collect(),
+        players: media
+            .players
+            .iter()
+            .map(|shown| player(shown, peer))
+            .collect(),
         received_at_ms: now.unix_ms(media.at),
         current,
     }
@@ -689,7 +786,7 @@ pub(crate) fn notice(notice: Notice) -> CoreNotice {
         } => CoreNotice::MediaCommand {
             from: hex(&from),
             player,
-            action: format!("{action:?}"),
+            control: media_control(action),
         },
         Notice::SetVolume { from, set } => CoreNotice::SetVolume {
             from: hex(&from),

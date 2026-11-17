@@ -11,8 +11,8 @@ use weft_cli::{Event, Session, State, StateDir, unhex};
 use weft_client::packets::{self, Packet, Parsed};
 use weft_ffi::{
     ConnectionStatus, ConnectivityInfo, CoreConfig, CoreDelegate, CoreError, CoreNotice,
-    CoreSnapshot, FeatureSwitches, MediaControl, Pairing, Pasteboard, PasteboardContent,
-    SendOutcome, TransferStage, VolumeInfo, WeftCore,
+    CoreSnapshot, CoverImage, FeatureSwitches, LocalPlayer, MediaControl, Pairing, Pasteboard,
+    PasteboardContent, SendOutcome, TransferStage, VolumeInfo, WeftCore,
 };
 use weft_protocol::PairingCode;
 use weft_relay::Config;
@@ -311,6 +311,8 @@ const MAC_INCOMING: &[&str] = &[
     "notification.removed",
     "call",
     "media",
+    "media.art",
+    "media.command",
     "volume",
     "volume.set",
 ];
@@ -332,6 +334,8 @@ const MAC_OUTGOING: &[&str] = &[
     "notification.reply",
     "notification.request",
     "call.mute",
+    "media",
+    "media.art",
     "media.command",
     "volume",
     "volume.set",
@@ -617,6 +621,7 @@ async fn announces_only_what_the_mac_implements() {
         assert_eq!(sorted_str(weft_ffi::MAC_OUTGOING), sorted_str(MAC_OUTGOING));
         for kind in [
             "media",
+            "media.art",
             "media.command",
             "input.key",
             "input.pointer",
@@ -629,10 +634,9 @@ async fn announces_only_what_the_mac_implements() {
             let incoming = weft_ffi::MAC_INCOMING.contains(&kind);
             let outgoing = weft_ffi::MAC_OUTGOING.contains(&kind);
             match kind {
-                // The phone's players are shown and controlled; the Mac's
-                // own are not shared.
-                "media" => assert!(incoming && !outgoing),
-                "media.command" => assert!(!incoming && outgoing),
+                // The phone's players are shown with their covers and
+                // controlled; the Mac's own are shared the same way.
+                "media" | "media.art" | "media.command" => assert!(incoming && outgoing),
                 _ => assert!(!incoming && !outgoing, "{kind}"),
             }
         }
@@ -668,7 +672,7 @@ async fn announces_only_what_the_mac_implements() {
         else {
             unreachable!();
         };
-        for kind in ["media", "media.command", "ring", "ring.stop"] {
+        for kind in ["media", "media.art", "media.command", "ring", "ring.stop"] {
             assert!(
                 !capabilities.handles(kind) && !capabilities.sends(kind),
                 "{kind}"
@@ -926,9 +930,172 @@ async fn shows_the_phone_and_tells_what_it_does() {
                 muted: None
             }
         );
-        // Not implemented on the Mac: a media command for its own players
-        // is never announced, so it never comes; one that does is ignored
-        // by the app (the core still reports it).
+        tested.blocking(|core| core.stop()).await;
+    })
+    .await;
+}
+
+fn mac_player(title: &str, cover: Option<CoverImage>) -> LocalPlayer {
+    LocalPlayer {
+        id: "com.apple.Music".into(),
+        app: "Music".into(),
+        title: title.into(),
+        artist: "Band".into(),
+        album: String::new(),
+        playing: true,
+        position_ms: Some(3_000),
+        length_ms: Some(180_000),
+        can_play: true,
+        can_pause: true,
+        can_next: true,
+        can_previous: true,
+        can_seek: true,
+        cover,
+    }
+}
+
+#[tokio::test]
+async fn shares_the_macs_players_and_shows_the_phones_covers() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut peer) = paired(&url).await;
+        let mac = tested.id();
+        let phone = weft_cli::hex(&peer.id());
+        peer.expect_packet(|packet| matches!(packet, Packet::Capabilities(_)))
+            .await;
+        peer.session
+            .send_packet(
+                mac,
+                r#"{"type":"capabilities","platform":"android","incoming":["media","media.art","media.command"],"outgoing":["media","media.art","media.command"]}"#,
+            )
+            .await
+            .unwrap();
+        tested
+            .wait(|snapshot| snapshot.devices[0].handles.iter().any(|kind| kind == "media.art"))
+            .await;
+        // Before the app reads any player, the phone hears there is none.
+        let Packet::Media { players } = peer
+            .expect_packet(|packet| matches!(packet, Packet::Media { .. }))
+            .await
+        else {
+            unreachable!();
+        };
+        assert!(players.is_empty());
+
+        // The Mac's players go with their cover, the cover first.
+        let cover = CoverImage {
+            mime: "image/jpeg".into(),
+            data: vec![0xff, 0xd8, 0xff, 0xe0],
+        };
+        tested
+            .core
+            .set_local_media(vec![mac_player("Song", Some(cover.clone()))]);
+        let Packet::MediaArt(art) = peer
+            .expect_packet(|packet| matches!(packet, Packet::MediaArt(_)))
+            .await
+        else {
+            unreachable!();
+        };
+        assert_eq!((art.mime.as_str(), &art.data), ("image/jpeg", &cover.data));
+        let Packet::Media { players } = peer
+            .expect_packet(|packet| matches!(packet, Packet::Media { players } if !players.is_empty()))
+            .await
+        else {
+            unreachable!();
+        };
+        assert_eq!(players[0].title, "Song");
+        assert_eq!(players[0].art.as_deref(), Some(art.art.as_str()));
+        assert_eq!(players[0].position, Some(3_000));
+        // One over the limit is dropped, the player kept.
+        let huge = CoverImage {
+            mime: "image/jpeg".into(),
+            data: vec![0; 128 * 1024 + 1],
+        };
+        tested
+            .core
+            .set_local_media(vec![mac_player("Long", Some(huge))]);
+        let Packet::Media { players } = peer
+            .expect_packet(|packet| matches!(packet, Packet::Media { .. }))
+            .await
+        else {
+            unreachable!();
+        };
+        assert_eq!((players[0].title.as_str(), players[0].art.as_ref()), ("Long", None));
+
+        // The phone's commands for them reach the app.
+        peer.session
+            .send_packet(
+                mac,
+                r#"{"type":"media.command","player":"com.apple.Music","action":"seek","value":42000}"#,
+            )
+            .await
+            .unwrap();
+        let asked = tested
+            .expect_notice(|notice| matches!(notice, CoreNotice::MediaCommand { .. }))
+            .await;
+        assert_eq!(
+            asked,
+            CoreNotice::MediaCommand {
+                from: phone.clone(),
+                player: "com.apple.Music".into(),
+                control: MediaControl::Seek {
+                    position_ms: 42_000
+                },
+            }
+        );
+
+        // The phone's cover: named in the snapshot once the core has it,
+        // read on demand.
+        peer.session
+            .send_packet(
+                mac,
+                r#"{"type":"media","players":[{"id":"p1","title":"Episode","playing":true,"art":"ep-1"}]}"#,
+            )
+            .await
+            .unwrap();
+        let snapshot = tested
+            .wait(|snapshot| snapshot.devices[0].media.is_some())
+            .await;
+        assert_eq!(snapshot.devices[0].media.as_ref().unwrap().players[0].art, None);
+        peer.session
+            .send_packet(
+                mac,
+                r#"{"type":"media.art","art":"ep-1","mime":"image/png","data":"iVBORw=="}"#,
+            )
+            .await
+            .unwrap();
+        let snapshot = tested
+            .wait(|snapshot| {
+                snapshot.devices[0]
+                    .media
+                    .as_ref()
+                    .is_some_and(|media| media.players[0].art.is_some())
+            })
+            .await;
+        let art = snapshot.devices[0].media.as_ref().unwrap().players[0]
+            .art
+            .clone()
+            .unwrap();
+        assert_eq!(art, "ep-1");
+        assert_eq!(
+            tested.core.media_art(phone.clone(), art),
+            Some(CoverImage {
+                mime: "image/png".into(),
+                data: vec![0x89, 0x50, 0x4e, 0x47],
+            })
+        );
+        assert_eq!(tested.core.media_art(phone.clone(), "other".into()), None);
+        assert_eq!(tested.core.media_art("zz".into(), "ep-1".into()), None);
+
+        // Nothing plays any more: an empty list, not the old one.
+        tested.core.set_local_media(Vec::new());
+        let Packet::Media { players } = peer
+            .expect_packet(|packet| matches!(packet, Packet::Media { .. }))
+            .await
+        else {
+            unreachable!();
+        };
+        assert!(players.is_empty());
         tested.blocking(|core| core.stop()).await;
     })
     .await;

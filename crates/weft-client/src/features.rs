@@ -139,8 +139,10 @@ impl Features {
             outgoing.push("call.mute");
         }
         if self.media {
-            incoming.extend(["media", "media.command"]);
-            outgoing.extend(["media", "media.command"]);
+            // Covers are shown and sent; an app that does neither leaves
+            // `media.art` out of its [`Implemented`].
+            incoming.extend(["media", "media.art", "media.command"]);
+            outgoing.extend(["media", "media.art", "media.command"]);
         }
         if self.volume {
             incoming.extend(["volume", "volume.set"]);
@@ -308,6 +310,7 @@ mod tests {
             "notification.removed",
             "call",
             "media",
+            "media.art",
             "media.command",
             "volume",
             "volume.set",
@@ -325,6 +328,7 @@ mod tests {
             "notification.reply",
             "call.mute",
             "media",
+            "media.art",
             "volume.set",
             "sms.send",
             "contacts.request",

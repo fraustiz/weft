@@ -41,6 +41,1147 @@ pub struct BSTRBLOB {
     pub cbSize: u32,
     pub pData: *mut u8,
 }
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BitmapAlphaMode(pub i32);
+impl BitmapAlphaMode {
+    pub const Premultiplied: Self = Self(0);
+    pub const Straight: Self = Self(1);
+    pub const Ignore: Self = Self(2);
+}
+impl windows_core::imp::TypeKind for BitmapAlphaMode {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for BitmapAlphaMode {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Windows.Graphics.Imaging.BitmapAlphaMode;i4)",
+    );
+    const NAME: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"Windows.Graphics.Imaging.BitmapAlphaMode");
+}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BitmapCodecInformation(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    BitmapCodecInformation,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl BitmapCodecInformation {
+    pub fn CodecId(&self) -> windows_core::Result<windows_core::GUID> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).CodecId)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn FileExtensions(
+        &self,
+    ) -> windows_core::Result<windows_collections::IVectorView<windows_core::HSTRING>> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).FileExtensions)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn FriendlyName(&self) -> windows_core::Result<windows_core::HSTRING> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).FriendlyName)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| core::mem::transmute(result__))
+        }
+    }
+    pub fn MimeTypes(
+        &self,
+    ) -> windows_core::Result<windows_collections::IVectorView<windows_core::HSTRING>> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).MimeTypes)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+impl windows_core::RuntimeType for BitmapCodecInformation {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IBitmapCodecInformation>();
+}
+unsafe impl windows_core::Interface for BitmapCodecInformation {
+    type Vtable = <IBitmapCodecInformation as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IBitmapCodecInformation as windows_core::Interface>::IID;
+}
+impl windows_core::RuntimeName for BitmapCodecInformation {
+    const NAME: &'static str = "Windows.Graphics.Imaging.BitmapCodecInformation";
+}
+unsafe impl Send for BitmapCodecInformation {}
+unsafe impl Sync for BitmapCodecInformation {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BitmapDecoder(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    BitmapDecoder,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+windows_core::imp::required_hierarchy!(BitmapDecoder, IBitmapFrame, IBitmapFrameWithSoftwareBitmap);
+impl BitmapDecoder {
+    pub fn DecoderInformation(&self) -> windows_core::Result<BitmapCodecInformation> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).DecoderInformation)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn FrameCount(&self) -> windows_core::Result<u32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).FrameCount)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn GetPreviewAsync(
+        &self,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<ImageStream>> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetPreviewAsync)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn GetFrameAsync(
+        &self,
+        frameindex: u32,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<BitmapFrame>> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetFrameAsync)(
+                windows_core::Interface::as_raw(self),
+                frameindex,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn BmpDecoderId() -> windows_core::Result<windows_core::GUID> {
+        Self::IBitmapDecoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).BmpDecoderId)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        })
+    }
+    pub fn JpegDecoderId() -> windows_core::Result<windows_core::GUID> {
+        Self::IBitmapDecoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).JpegDecoderId)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        })
+    }
+    pub fn PngDecoderId() -> windows_core::Result<windows_core::GUID> {
+        Self::IBitmapDecoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).PngDecoderId)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        })
+    }
+    pub fn TiffDecoderId() -> windows_core::Result<windows_core::GUID> {
+        Self::IBitmapDecoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).TiffDecoderId)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        })
+    }
+    pub fn GifDecoderId() -> windows_core::Result<windows_core::GUID> {
+        Self::IBitmapDecoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GifDecoderId)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        })
+    }
+    pub fn JpegXRDecoderId() -> windows_core::Result<windows_core::GUID> {
+        Self::IBitmapDecoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).JpegXRDecoderId)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        })
+    }
+    pub fn IcoDecoderId() -> windows_core::Result<windows_core::GUID> {
+        Self::IBitmapDecoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).IcoDecoderId)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        })
+    }
+    pub fn GetDecoderInformationEnumerator()
+    -> windows_core::Result<windows_collections::IVectorView<BitmapCodecInformation>> {
+        Self::IBitmapDecoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GetDecoderInformationEnumerator)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    pub fn CreateAsync<P0>(
+        stream: P0,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<Self>>
+    where
+        P0: windows_core::Param<IRandomAccessStream>,
+    {
+        Self::IBitmapDecoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CreateAsync)(
+                windows_core::Interface::as_raw(this),
+                stream.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    pub fn CreateWithIdAsync<P1>(
+        decoderid: windows_core::GUID,
+        stream: P1,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<Self>>
+    where
+        P1: windows_core::Param<IRandomAccessStream>,
+    {
+        Self::IBitmapDecoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CreateWithIdAsync)(
+                windows_core::Interface::as_raw(this),
+                decoderid,
+                stream.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    pub fn HeifDecoderId() -> windows_core::Result<windows_core::GUID> {
+        Self::IBitmapDecoderStatics2(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).HeifDecoderId)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        })
+    }
+    pub fn WebpDecoderId() -> windows_core::Result<windows_core::GUID> {
+        Self::IBitmapDecoderStatics2(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).WebpDecoderId)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        })
+    }
+    pub fn GetThumbnailAsync(
+        &self,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<ImageStream>> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GetThumbnailAsync)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn BitmapPixelFormat(&self) -> windows_core::Result<BitmapPixelFormat> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).BitmapPixelFormat)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn BitmapAlphaMode(&self) -> windows_core::Result<BitmapAlphaMode> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).BitmapAlphaMode)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn DpiX(&self) -> windows_core::Result<f64> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).DpiX)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn DpiY(&self) -> windows_core::Result<f64> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).DpiY)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn PixelWidth(&self) -> windows_core::Result<u32> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).PixelWidth)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn PixelHeight(&self) -> windows_core::Result<u32> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).PixelHeight)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn OrientedPixelWidth(&self) -> windows_core::Result<u32> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).OrientedPixelWidth)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn OrientedPixelHeight(&self) -> windows_core::Result<u32> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).OrientedPixelHeight)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn GetPixelDataAsync(
+        &self,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<PixelDataProvider>> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GetPixelDataAsync)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn GetSoftwareBitmapAsync(
+        &self,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<SoftwareBitmap>> {
+        let this = &windows_core::Interface::cast::<IBitmapFrameWithSoftwareBitmap>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GetSoftwareBitmapAsync)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn GetSoftwareBitmapConvertedAsync(
+        &self,
+        pixelformat: BitmapPixelFormat,
+        alphamode: BitmapAlphaMode,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<SoftwareBitmap>> {
+        let this = &windows_core::Interface::cast::<IBitmapFrameWithSoftwareBitmap>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GetSoftwareBitmapConvertedAsync)(
+                windows_core::Interface::as_raw(this),
+                pixelformat,
+                alphamode,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    fn IBitmapDecoderStatics<R, F: FnOnce(&IBitmapDecoderStatics) -> windows_core::Result<R>>(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<BitmapDecoder, IBitmapDecoderStatics> =
+            windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+    fn IBitmapDecoderStatics2<R, F: FnOnce(&IBitmapDecoderStatics2) -> windows_core::Result<R>>(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<BitmapDecoder, IBitmapDecoderStatics2> =
+            windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+}
+impl windows_core::RuntimeType for BitmapDecoder {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IBitmapDecoder>();
+}
+unsafe impl windows_core::Interface for BitmapDecoder {
+    type Vtable = <IBitmapDecoder as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IBitmapDecoder as windows_core::Interface>::IID;
+}
+impl windows_core::RuntimeName for BitmapDecoder {
+    const NAME: &'static str = "Windows.Graphics.Imaging.BitmapDecoder";
+}
+unsafe impl Send for BitmapDecoder {}
+unsafe impl Sync for BitmapDecoder {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BitmapEncoder(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    BitmapEncoder,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl BitmapEncoder {
+    pub fn EncoderInformation(&self) -> windows_core::Result<BitmapCodecInformation> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).EncoderInformation)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn IsThumbnailGenerated(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).IsThumbnailGenerated)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SetIsThumbnailGenerated(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetIsThumbnailGenerated)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn GeneratedThumbnailWidth(&self) -> windows_core::Result<u32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GeneratedThumbnailWidth)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SetGeneratedThumbnailWidth(&self, value: u32) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetGeneratedThumbnailWidth)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn GeneratedThumbnailHeight(&self) -> windows_core::Result<u32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GeneratedThumbnailHeight)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SetGeneratedThumbnailHeight(&self, value: u32) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetGeneratedThumbnailHeight)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn BitmapTransform(&self) -> windows_core::Result<BitmapTransform> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).BitmapTransform)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn SetPixelData(
+        &self,
+        pixelformat: BitmapPixelFormat,
+        alphamode: BitmapAlphaMode,
+        width: u32,
+        height: u32,
+        dpix: f64,
+        dpiy: f64,
+        pixels: &[u8],
+    ) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetPixelData)(
+                windows_core::Interface::as_raw(self),
+                pixelformat,
+                alphamode,
+                width,
+                height,
+                dpix,
+                dpiy,
+                pixels.len().try_into().unwrap(),
+                pixels.as_ptr(),
+            )
+            .ok()
+        }
+    }
+    pub fn GoToNextFrameAsync(&self) -> windows_core::Result<windows_future::IAsyncAction> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GoToNextFrameAsync)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn GoToNextFrameWithEncodingOptionsAsync<P0>(
+        &self,
+        encodingoptions: P0,
+    ) -> windows_core::Result<windows_future::IAsyncAction>
+    where
+        P0: windows_core::Param<
+                windows_collections::IIterable<
+                    windows_collections::IKeyValuePair<windows_core::HSTRING, BitmapTypedValue>,
+                >,
+            >,
+    {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GoToNextFrameWithEncodingOptionsAsync)(
+                windows_core::Interface::as_raw(self),
+                encodingoptions.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn FlushAsync(&self) -> windows_core::Result<windows_future::IAsyncAction> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).FlushAsync)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn BmpEncoderId() -> windows_core::Result<windows_core::GUID> {
+        Self::IBitmapEncoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).BmpEncoderId)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        })
+    }
+    pub fn JpegEncoderId() -> windows_core::Result<windows_core::GUID> {
+        Self::IBitmapEncoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).JpegEncoderId)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        })
+    }
+    pub fn PngEncoderId() -> windows_core::Result<windows_core::GUID> {
+        Self::IBitmapEncoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).PngEncoderId)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        })
+    }
+    pub fn TiffEncoderId() -> windows_core::Result<windows_core::GUID> {
+        Self::IBitmapEncoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).TiffEncoderId)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        })
+    }
+    pub fn GifEncoderId() -> windows_core::Result<windows_core::GUID> {
+        Self::IBitmapEncoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GifEncoderId)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        })
+    }
+    pub fn JpegXREncoderId() -> windows_core::Result<windows_core::GUID> {
+        Self::IBitmapEncoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).JpegXREncoderId)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        })
+    }
+    pub fn GetEncoderInformationEnumerator()
+    -> windows_core::Result<windows_collections::IVectorView<BitmapCodecInformation>> {
+        Self::IBitmapEncoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GetEncoderInformationEnumerator)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    pub fn CreateAsync<P1>(
+        encoderid: windows_core::GUID,
+        stream: P1,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<Self>>
+    where
+        P1: windows_core::Param<IRandomAccessStream>,
+    {
+        Self::IBitmapEncoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CreateAsync)(
+                windows_core::Interface::as_raw(this),
+                encoderid,
+                stream.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    pub fn CreateWithEncodingOptionsAsync<P1, P2>(
+        encoderid: windows_core::GUID,
+        stream: P1,
+        encodingoptions: P2,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<Self>>
+    where
+        P1: windows_core::Param<IRandomAccessStream>,
+        P2: windows_core::Param<
+                windows_collections::IIterable<
+                    windows_collections::IKeyValuePair<windows_core::HSTRING, BitmapTypedValue>,
+                >,
+            >,
+    {
+        Self::IBitmapEncoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CreateWithEncodingOptionsAsync)(
+                windows_core::Interface::as_raw(this),
+                encoderid,
+                stream.param().abi(),
+                encodingoptions.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    pub fn CreateForTranscodingAsync<P0, P1>(
+        stream: P0,
+        bitmapdecoder: P1,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<Self>>
+    where
+        P0: windows_core::Param<IRandomAccessStream>,
+        P1: windows_core::Param<BitmapDecoder>,
+    {
+        Self::IBitmapEncoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CreateForTranscodingAsync)(
+                windows_core::Interface::as_raw(this),
+                stream.param().abi(),
+                bitmapdecoder.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    pub fn CreateForInPlacePropertyEncodingAsync<P0>(
+        bitmapdecoder: P0,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<Self>>
+    where
+        P0: windows_core::Param<BitmapDecoder>,
+    {
+        Self::IBitmapEncoderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CreateForInPlacePropertyEncodingAsync)(
+                windows_core::Interface::as_raw(this),
+                bitmapdecoder.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    pub fn HeifEncoderId() -> windows_core::Result<windows_core::GUID> {
+        Self::IBitmapEncoderStatics2(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).HeifEncoderId)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        })
+    }
+    pub fn SetSoftwareBitmap<P0>(&self, bitmap: P0) -> windows_core::Result<()>
+    where
+        P0: windows_core::Param<SoftwareBitmap>,
+    {
+        let this = &windows_core::Interface::cast::<IBitmapEncoderWithSoftwareBitmap>(self)?;
+        unsafe {
+            (windows_core::Interface::vtable(this).SetSoftwareBitmap)(
+                windows_core::Interface::as_raw(this),
+                bitmap.param().abi(),
+            )
+            .ok()
+        }
+    }
+    fn IBitmapEncoderStatics<R, F: FnOnce(&IBitmapEncoderStatics) -> windows_core::Result<R>>(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<BitmapEncoder, IBitmapEncoderStatics> =
+            windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+    fn IBitmapEncoderStatics2<R, F: FnOnce(&IBitmapEncoderStatics2) -> windows_core::Result<R>>(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<BitmapEncoder, IBitmapEncoderStatics2> =
+            windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+}
+impl windows_core::RuntimeType for BitmapEncoder {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IBitmapEncoder>();
+}
+unsafe impl windows_core::Interface for BitmapEncoder {
+    type Vtable = <IBitmapEncoder as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IBitmapEncoder as windows_core::Interface>::IID;
+}
+impl windows_core::RuntimeName for BitmapEncoder {
+    const NAME: &'static str = "Windows.Graphics.Imaging.BitmapEncoder";
+}
+unsafe impl Send for BitmapEncoder {}
+unsafe impl Sync for BitmapEncoder {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BitmapFrame(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    BitmapFrame,
+    windows_core::IUnknown,
+    windows_core::IInspectable,
+    IBitmapFrame
+);
+windows_core::imp::required_hierarchy!(BitmapFrame, IBitmapFrameWithSoftwareBitmap);
+impl BitmapFrame {
+    pub fn GetThumbnailAsync(
+        &self,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<ImageStream>> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetThumbnailAsync)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn BitmapPixelFormat(&self) -> windows_core::Result<BitmapPixelFormat> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).BitmapPixelFormat)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn BitmapAlphaMode(&self) -> windows_core::Result<BitmapAlphaMode> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).BitmapAlphaMode)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn DpiX(&self) -> windows_core::Result<f64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).DpiX)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn DpiY(&self) -> windows_core::Result<f64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).DpiY)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn PixelWidth(&self) -> windows_core::Result<u32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).PixelWidth)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn PixelHeight(&self) -> windows_core::Result<u32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).PixelHeight)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn OrientedPixelWidth(&self) -> windows_core::Result<u32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).OrientedPixelWidth)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn OrientedPixelHeight(&self) -> windows_core::Result<u32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).OrientedPixelHeight)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn GetPixelDataAsync(
+        &self,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<PixelDataProvider>> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetPixelDataAsync)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn GetSoftwareBitmapAsync(
+        &self,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<SoftwareBitmap>> {
+        let this = &windows_core::Interface::cast::<IBitmapFrameWithSoftwareBitmap>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GetSoftwareBitmapAsync)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn GetSoftwareBitmapConvertedAsync(
+        &self,
+        pixelformat: BitmapPixelFormat,
+        alphamode: BitmapAlphaMode,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<SoftwareBitmap>> {
+        let this = &windows_core::Interface::cast::<IBitmapFrameWithSoftwareBitmap>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GetSoftwareBitmapConvertedAsync)(
+                windows_core::Interface::as_raw(this),
+                pixelformat,
+                alphamode,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+impl windows_core::RuntimeType for BitmapFrame {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IBitmapFrame>();
+}
+unsafe impl windows_core::Interface for BitmapFrame {
+    type Vtable = <IBitmapFrame as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IBitmapFrame as windows_core::Interface>::IID;
+}
+impl windows_core::RuntimeName for BitmapFrame {
+    const NAME: &'static str = "Windows.Graphics.Imaging.BitmapFrame";
+}
+unsafe impl Send for BitmapFrame {}
+unsafe impl Sync for BitmapFrame {}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BitmapInterpolationMode(pub i32);
+impl BitmapInterpolationMode {
+    pub const NearestNeighbor: Self = Self(0);
+    pub const Linear: Self = Self(1);
+    pub const Cubic: Self = Self(2);
+    pub const Fant: Self = Self(3);
+}
+impl windows_core::imp::TypeKind for BitmapInterpolationMode {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for BitmapInterpolationMode {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Windows.Graphics.Imaging.BitmapInterpolationMode;i4)",
+    );
+    const NAME: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"Windows.Graphics.Imaging.BitmapInterpolationMode",
+    );
+}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BitmapPixelFormat(pub i32);
+impl BitmapPixelFormat {
+    pub const Unknown: Self = Self(0);
+    pub const Rgba16: Self = Self(12);
+    pub const Rgba8: Self = Self(30);
+    pub const Gray16: Self = Self(57);
+    pub const Gray8: Self = Self(62);
+    pub const Bgra8: Self = Self(87);
+    pub const Nv12: Self = Self(103);
+    pub const P010: Self = Self(104);
+    pub const Yuy2: Self = Self(107);
+}
+impl windows_core::imp::TypeKind for BitmapPixelFormat {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for BitmapPixelFormat {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Windows.Graphics.Imaging.BitmapPixelFormat;i4)",
+    );
+    const NAME: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"Windows.Graphics.Imaging.BitmapPixelFormat");
+}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BitmapTransform(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    BitmapTransform,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl BitmapTransform {
+    pub fn new() -> windows_core::Result<Self> {
+        Self::IActivationFactory(|f| f.ActivateInstance::<Self>())
+    }
+    fn IActivationFactory<
+        R,
+        F: FnOnce(&windows_core::imp::IGenericFactory) -> windows_core::Result<R>,
+    >(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<
+            BitmapTransform,
+            windows_core::imp::IGenericFactory,
+        > = windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+    pub fn ScaledWidth(&self) -> windows_core::Result<u32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ScaledWidth)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SetScaledWidth(&self, value: u32) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetScaledWidth)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn ScaledHeight(&self) -> windows_core::Result<u32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ScaledHeight)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SetScaledHeight(&self, value: u32) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetScaledHeight)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn InterpolationMode(&self) -> windows_core::Result<BitmapInterpolationMode> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).InterpolationMode)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SetInterpolationMode(&self, value: BitmapInterpolationMode) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetInterpolationMode)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+}
+impl windows_core::RuntimeType for BitmapTransform {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IBitmapTransform>();
+}
+unsafe impl windows_core::Interface for BitmapTransform {
+    type Vtable = <IBitmapTransform as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IBitmapTransform as windows_core::Interface>::IID;
+}
+impl windows_core::RuntimeName for BitmapTransform {
+    const NAME: &'static str = "Windows.Graphics.Imaging.BitmapTransform";
+}
+unsafe impl Send for BitmapTransform {}
+unsafe impl Sync for BitmapTransform {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BitmapTypedValue(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    BitmapTypedValue,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl BitmapTypedValue {
+    pub fn Value(&self) -> windows_core::Result<windows_core::IInspectable> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Value)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    fn IBitmapTypedValueFactory<
+        R,
+        F: FnOnce(&IBitmapTypedValueFactory) -> windows_core::Result<R>,
+    >(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<BitmapTypedValue, IBitmapTypedValueFactory> =
+            windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+}
+impl windows_core::RuntimeType for BitmapTypedValue {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IBitmapTypedValue>();
+}
+unsafe impl windows_core::Interface for BitmapTypedValue {
+    type Vtable = <IBitmapTypedValue as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IBitmapTypedValue as windows_core::Interface>::IID;
+}
+impl windows_core::RuntimeName for BitmapTypedValue {
+    const NAME: &'static str = "Windows.Graphics.Imaging.BitmapTypedValue";
+}
+unsafe impl Send for BitmapTypedValue {}
+unsafe impl Sync for BitmapTypedValue {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CABOOL {
@@ -270,6 +1411,249 @@ pub struct DECIMAL_1_0 {
     pub Lo32: u32,
     pub Mid32: u32,
 }
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DataReader(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    DataReader,
+    windows_core::IUnknown,
+    windows_core::IInspectable,
+    IDataReader
+);
+windows_core::imp::required_hierarchy!(DataReader, IClosable);
+impl DataReader {
+    pub fn Close(&self) -> windows_core::Result<()> {
+        let this = &windows_core::Interface::cast::<IClosable>(self)?;
+        unsafe {
+            (windows_core::Interface::vtable(this).Close)(windows_core::Interface::as_raw(this))
+                .ok()
+        }
+    }
+    pub fn UnconsumedBufferLength(&self) -> windows_core::Result<u32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).UnconsumedBufferLength)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadByte(&self) -> windows_core::Result<u8> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadByte)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadBytes(&self, value: &mut [u8]) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).ReadBytes)(
+                windows_core::Interface::as_raw(self),
+                value.len().try_into().unwrap(),
+                value.as_mut_ptr(),
+            )
+            .ok()
+        }
+    }
+    pub fn ReadBoolean(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadBoolean)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadGuid(&self) -> windows_core::Result<windows_core::GUID> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadGuid)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadInt16(&self) -> windows_core::Result<i16> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadInt16)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadInt32(&self) -> windows_core::Result<i32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadInt32)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadInt64(&self) -> windows_core::Result<i64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadInt64)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadUInt16(&self) -> windows_core::Result<u16> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadUInt16)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadUInt32(&self) -> windows_core::Result<u32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadUInt32)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadUInt64(&self) -> windows_core::Result<u64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadUInt64)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadSingle(&self) -> windows_core::Result<f32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadSingle)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadDouble(&self) -> windows_core::Result<f64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadDouble)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadString(&self, codeunitcount: u32) -> windows_core::Result<windows_core::HSTRING> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadString)(
+                windows_core::Interface::as_raw(self),
+                codeunitcount,
+                &mut result__,
+            )
+            .map(|| core::mem::transmute(result__))
+        }
+    }
+    pub fn ReadDateTime(&self) -> windows_core::Result<windows_time::DateTime> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadDateTime)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadTimeSpan(&self) -> windows_core::Result<windows_time::TimeSpan> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadTimeSpan)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn LoadAsync(&self, count: u32) -> windows_core::Result<DataReaderLoadOperation> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).LoadAsync)(
+                windows_core::Interface::as_raw(self),
+                count,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn DetachStream(&self) -> windows_core::Result<IInputStream> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).DetachStream)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn CreateDataReader<P0>(inputstream: P0) -> windows_core::Result<Self>
+    where
+        P0: windows_core::Param<IInputStream>,
+    {
+        Self::IDataReaderFactory(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CreateDataReader)(
+                windows_core::Interface::as_raw(this),
+                inputstream.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    fn IDataReaderFactory<R, F: FnOnce(&IDataReaderFactory) -> windows_core::Result<R>>(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<DataReader, IDataReaderFactory> =
+            windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+    fn IDataReaderStatics<R, F: FnOnce(&IDataReaderStatics) -> windows_core::Result<R>>(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<DataReader, IDataReaderStatics> =
+            windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+}
+impl windows_core::RuntimeType for DataReader {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IDataReader>();
+}
+unsafe impl windows_core::Interface for DataReader {
+    type Vtable = <IDataReader as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IDataReader as windows_core::Interface>::IID;
+}
+impl windows_core::RuntimeName for DataReader {
+    const NAME: &'static str = "Windows.Storage.Streams.DataReader";
+}
+unsafe impl Send for DataReader {}
+unsafe impl Sync for DataReader {}
+pub type DataReaderLoadOperation = windows_future::IAsyncOperation<u32>;
 pub type EDataFlow = i32;
 pub type ERole = i32;
 #[repr(C)]
@@ -847,6 +2231,16 @@ impl GlobalSystemMediaTransportControlsSessionMediaProperties {
             )
             .and_then(|| windows_core::imp::Type::from_abi(result__))
             .and_then(|r__: windows_reference::IReference<MediaPlaybackType>| r__.Value())
+        }
+    }
+    pub fn Thumbnail(&self) -> windows_core::Result<IRandomAccessStreamReference> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Thumbnail)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
         }
     }
 }
@@ -1518,6 +2912,853 @@ pub struct IAudioEndpointVolume_Vtbl {
 }
 impl windows_core::RuntimeName for IAudioEndpointVolume {}
 windows_core::imp::define_interface!(
+    IBitmapCodecInformation,
+    IBitmapCodecInformation_Vtbl,
+    0x400caaf2_c4b0_4392_a3b0_6f6f9ba95cb4
+);
+impl windows_core::RuntimeType for IBitmapCodecInformation {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"Windows.Graphics.Imaging.IBitmapCodecInformation",
+    );
+}
+#[repr(C)]
+pub struct IBitmapCodecInformation_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub CodecId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+    pub FileExtensions: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub FriendlyName: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub MimeTypes: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IBitmapDecoder,
+    IBitmapDecoder_Vtbl,
+    0xacef22ba_1d74_4c91_9dfc_9620745233e6
+);
+impl windows_core::RuntimeType for IBitmapDecoder {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"Windows.Graphics.Imaging.IBitmapDecoder");
+}
+#[repr(C)]
+pub struct IBitmapDecoder_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    BitmapContainerProperties: usize,
+    pub DecoderInformation: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub FrameCount:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut u32) -> windows_core::HRESULT,
+    pub GetPreviewAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub GetFrameAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        u32,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IBitmapDecoderStatics,
+    IBitmapDecoderStatics_Vtbl,
+    0x438ccb26_bcef_4e95_bad6_23a822e58d01
+);
+impl windows_core::RuntimeType for IBitmapDecoderStatics {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"Windows.Graphics.Imaging.IBitmapDecoderStatics",
+    );
+}
+#[repr(C)]
+pub struct IBitmapDecoderStatics_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub BmpDecoderId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+    pub JpegDecoderId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+    pub PngDecoderId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+    pub TiffDecoderId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+    pub GifDecoderId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+    pub JpegXRDecoderId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+    pub IcoDecoderId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+    pub GetDecoderInformationEnumerator: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub CreateAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub CreateWithIdAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        windows_core::GUID,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IBitmapDecoderStatics2,
+    IBitmapDecoderStatics2_Vtbl,
+    0x50ba68ea_99a1_40c4_80d9_aef0dafa6c3f
+);
+impl windows_core::RuntimeType for IBitmapDecoderStatics2 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"Windows.Graphics.Imaging.IBitmapDecoderStatics2",
+    );
+}
+#[repr(C)]
+pub struct IBitmapDecoderStatics2_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub HeifDecoderId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+    pub WebpDecoderId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IBitmapEncoder,
+    IBitmapEncoder_Vtbl,
+    0x2bc468e3_e1f8_4b54_95e8_32919551ce62
+);
+impl windows_core::RuntimeType for IBitmapEncoder {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"Windows.Graphics.Imaging.IBitmapEncoder");
+}
+#[repr(C)]
+pub struct IBitmapEncoder_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub EncoderInformation: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    BitmapProperties: usize,
+    BitmapContainerProperties: usize,
+    pub IsThumbnailGenerated:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
+    pub SetIsThumbnailGenerated:
+        unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
+    pub GeneratedThumbnailWidth:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut u32) -> windows_core::HRESULT,
+    pub SetGeneratedThumbnailWidth:
+        unsafe extern "system" fn(*mut core::ffi::c_void, u32) -> windows_core::HRESULT,
+    pub GeneratedThumbnailHeight:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut u32) -> windows_core::HRESULT,
+    pub SetGeneratedThumbnailHeight:
+        unsafe extern "system" fn(*mut core::ffi::c_void, u32) -> windows_core::HRESULT,
+    pub BitmapTransform: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub SetPixelData: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        BitmapPixelFormat,
+        BitmapAlphaMode,
+        u32,
+        u32,
+        f64,
+        f64,
+        u32,
+        *const u8,
+    ) -> windows_core::HRESULT,
+    pub GoToNextFrameAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub GoToNextFrameWithEncodingOptionsAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    )
+        -> windows_core::HRESULT,
+    pub FlushAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IBitmapEncoderStatics,
+    IBitmapEncoderStatics_Vtbl,
+    0xa74356a7_a4e4_4eb9_8e40_564de7e1ccb2
+);
+impl windows_core::RuntimeType for IBitmapEncoderStatics {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"Windows.Graphics.Imaging.IBitmapEncoderStatics",
+    );
+}
+#[repr(C)]
+pub struct IBitmapEncoderStatics_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub BmpEncoderId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+    pub JpegEncoderId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+    pub PngEncoderId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+    pub TiffEncoderId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+    pub GifEncoderId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+    pub JpegXREncoderId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+    pub GetEncoderInformationEnumerator: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub CreateAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        windows_core::GUID,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub CreateWithEncodingOptionsAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        windows_core::GUID,
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub CreateForTranscodingAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub CreateForInPlacePropertyEncodingAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    )
+        -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IBitmapEncoderStatics2,
+    IBitmapEncoderStatics2_Vtbl,
+    0x33cbc259_fe31_41b1_b812_086d21e87e16
+);
+impl windows_core::RuntimeType for IBitmapEncoderStatics2 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"Windows.Graphics.Imaging.IBitmapEncoderStatics2",
+    );
+}
+#[repr(C)]
+pub struct IBitmapEncoderStatics2_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub HeifEncoderId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IBitmapEncoderWithSoftwareBitmap,
+    IBitmapEncoderWithSoftwareBitmap_Vtbl,
+    0x686cd241_4330_4c77_ace4_0334968b1768
+);
+impl windows_core::RuntimeType for IBitmapEncoderWithSoftwareBitmap {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"Windows.Graphics.Imaging.IBitmapEncoderWithSoftwareBitmap",
+    );
+}
+#[repr(C)]
+pub struct IBitmapEncoderWithSoftwareBitmap_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub SetSoftwareBitmap: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IBitmapFrame,
+    IBitmapFrame_Vtbl,
+    0x72a49a1c_8081_438d_91bc_94ecfc8185c6
+);
+impl windows_core::RuntimeType for IBitmapFrame {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"Windows.Graphics.Imaging.IBitmapFrame");
+}
+windows_core::imp::interface_hierarchy!(
+    IBitmapFrame,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl IBitmapFrame {
+    pub fn GetThumbnailAsync(
+        &self,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<ImageStream>> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetThumbnailAsync)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn BitmapPixelFormat(&self) -> windows_core::Result<BitmapPixelFormat> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).BitmapPixelFormat)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn BitmapAlphaMode(&self) -> windows_core::Result<BitmapAlphaMode> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).BitmapAlphaMode)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn DpiX(&self) -> windows_core::Result<f64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).DpiX)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn DpiY(&self) -> windows_core::Result<f64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).DpiY)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn PixelWidth(&self) -> windows_core::Result<u32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).PixelWidth)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn PixelHeight(&self) -> windows_core::Result<u32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).PixelHeight)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn OrientedPixelWidth(&self) -> windows_core::Result<u32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).OrientedPixelWidth)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn OrientedPixelHeight(&self) -> windows_core::Result<u32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).OrientedPixelHeight)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn GetPixelDataAsync(
+        &self,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<PixelDataProvider>> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetPixelDataAsync)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+impl windows_core::RuntimeName for IBitmapFrame {
+    const NAME: &'static str = "Windows.Graphics.Imaging.IBitmapFrame";
+}
+#[repr(C)]
+pub struct IBitmapFrame_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub GetThumbnailAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    BitmapProperties: usize,
+    pub BitmapPixelFormat: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut BitmapPixelFormat,
+    ) -> windows_core::HRESULT,
+    pub BitmapAlphaMode: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut BitmapAlphaMode,
+    ) -> windows_core::HRESULT,
+    pub DpiX: unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
+    pub DpiY: unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
+    pub PixelWidth:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut u32) -> windows_core::HRESULT,
+    pub PixelHeight:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut u32) -> windows_core::HRESULT,
+    pub OrientedPixelWidth:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut u32) -> windows_core::HRESULT,
+    pub OrientedPixelHeight:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut u32) -> windows_core::HRESULT,
+    pub GetPixelDataAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IBitmapFrameWithSoftwareBitmap,
+    IBitmapFrameWithSoftwareBitmap_Vtbl,
+    0xfe287c9a_420c_4963_87ad_691436e08383
+);
+impl windows_core::RuntimeType for IBitmapFrameWithSoftwareBitmap {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"Windows.Graphics.Imaging.IBitmapFrameWithSoftwareBitmap",
+    );
+}
+windows_core::imp::interface_hierarchy!(
+    IBitmapFrameWithSoftwareBitmap,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+windows_core::imp::required_hierarchy!(IBitmapFrameWithSoftwareBitmap, IBitmapFrame);
+impl IBitmapFrameWithSoftwareBitmap {
+    pub fn GetSoftwareBitmapAsync(
+        &self,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<SoftwareBitmap>> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetSoftwareBitmapAsync)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn GetSoftwareBitmapConvertedAsync(
+        &self,
+        pixelformat: BitmapPixelFormat,
+        alphamode: BitmapAlphaMode,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<SoftwareBitmap>> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetSoftwareBitmapConvertedAsync)(
+                windows_core::Interface::as_raw(self),
+                pixelformat,
+                alphamode,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn GetThumbnailAsync(
+        &self,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<ImageStream>> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GetThumbnailAsync)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn BitmapPixelFormat(&self) -> windows_core::Result<BitmapPixelFormat> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).BitmapPixelFormat)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn BitmapAlphaMode(&self) -> windows_core::Result<BitmapAlphaMode> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).BitmapAlphaMode)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn DpiX(&self) -> windows_core::Result<f64> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).DpiX)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn DpiY(&self) -> windows_core::Result<f64> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).DpiY)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn PixelWidth(&self) -> windows_core::Result<u32> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).PixelWidth)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn PixelHeight(&self) -> windows_core::Result<u32> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).PixelHeight)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn OrientedPixelWidth(&self) -> windows_core::Result<u32> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).OrientedPixelWidth)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn OrientedPixelHeight(&self) -> windows_core::Result<u32> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).OrientedPixelHeight)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn GetPixelDataAsync(
+        &self,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<PixelDataProvider>> {
+        let this = &windows_core::Interface::cast::<IBitmapFrame>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GetPixelDataAsync)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+impl windows_core::RuntimeName for IBitmapFrameWithSoftwareBitmap {
+    const NAME: &'static str = "Windows.Graphics.Imaging.IBitmapFrameWithSoftwareBitmap";
+}
+#[repr(C)]
+pub struct IBitmapFrameWithSoftwareBitmap_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub GetSoftwareBitmapAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub GetSoftwareBitmapConvertedAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        BitmapPixelFormat,
+        BitmapAlphaMode,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IBitmapTransform,
+    IBitmapTransform_Vtbl,
+    0xae755344_e268_4d35_adcf_e995d31a8d34
+);
+impl windows_core::RuntimeType for IBitmapTransform {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"Windows.Graphics.Imaging.IBitmapTransform");
+}
+#[repr(C)]
+pub struct IBitmapTransform_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub ScaledWidth:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut u32) -> windows_core::HRESULT,
+    pub SetScaledWidth:
+        unsafe extern "system" fn(*mut core::ffi::c_void, u32) -> windows_core::HRESULT,
+    pub ScaledHeight:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut u32) -> windows_core::HRESULT,
+    pub SetScaledHeight:
+        unsafe extern "system" fn(*mut core::ffi::c_void, u32) -> windows_core::HRESULT,
+    pub InterpolationMode: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut BitmapInterpolationMode,
+    ) -> windows_core::HRESULT,
+    pub SetInterpolationMode: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        BitmapInterpolationMode,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IBitmapTypedValue,
+    IBitmapTypedValue_Vtbl,
+    0xcd8044a9_2443_4000_b0cd_79316c56f589
+);
+impl windows_core::RuntimeType for IBitmapTypedValue {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"Windows.Graphics.Imaging.IBitmapTypedValue");
+}
+#[repr(C)]
+pub struct IBitmapTypedValue_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub Value: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IBitmapTypedValueFactory,
+    IBitmapTypedValueFactory_Vtbl,
+    0x92dbb599_ce13_46bb_9545_cb3a3f63eb8b
+);
+impl windows_core::RuntimeType for IBitmapTypedValueFactory {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"Windows.Graphics.Imaging.IBitmapTypedValueFactory",
+    );
+}
+#[repr(C)]
+pub struct IBitmapTypedValueFactory_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
+    IClosable,
+    IClosable_Vtbl,
+    0x30d5a829_7fa4_4026_83bb_d75bae4ea99e
+);
+impl windows_core::RuntimeType for IClosable {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"Windows.Foundation.IClosable");
+}
+windows_core::imp::interface_hierarchy!(
+    IClosable,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl IClosable {
+    pub fn Close(&self) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).Close)(windows_core::Interface::as_raw(self))
+                .ok()
+        }
+    }
+}
+impl windows_core::RuntimeName for IClosable {
+    const NAME: &'static str = "Windows.Foundation.IClosable";
+}
+pub trait IClosable_Impl: windows_core::IUnknownImpl {
+    fn Close(&self) -> windows_core::Result<()>;
+}
+impl IClosable_Vtbl {
+    pub const fn new<Identity: IClosable_Impl, const OFFSET: isize>() -> Self {
+        unsafe extern "system" fn Close<Identity: IClosable_Impl, const OFFSET: isize>(
+            this: *mut core::ffi::c_void,
+        ) -> windows_core::HRESULT {
+            unsafe {
+                let this: &Identity =
+                    &*((this as *const *const ()).offset(OFFSET) as *const Identity);
+                IClosable_Impl::Close(this).into()
+            }
+        }
+        Self {
+            base__: windows_core::IInspectable_Vtbl::new::<Identity, IClosable, OFFSET>(),
+            Close: Close::<Identity, OFFSET>,
+        }
+    }
+    pub fn matches(iid: &windows_core::GUID) -> bool {
+        iid == &<IClosable as windows_core::Interface>::IID
+    }
+}
+#[repr(C)]
+pub struct IClosable_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub Close: unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IContentTypeProvider,
+    IContentTypeProvider_Vtbl,
+    0x97d098a5_3b99_4de9_88a5_e11d2f50c795
+);
+impl windows_core::RuntimeType for IContentTypeProvider {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"Windows.Storage.Streams.IContentTypeProvider");
+}
+windows_core::imp::interface_hierarchy!(
+    IContentTypeProvider,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl IContentTypeProvider {
+    pub fn ContentType(&self) -> windows_core::Result<windows_core::HSTRING> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ContentType)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| core::mem::transmute(result__))
+        }
+    }
+}
+impl windows_core::RuntimeName for IContentTypeProvider {
+    const NAME: &'static str = "Windows.Storage.Streams.IContentTypeProvider";
+}
+pub trait IContentTypeProvider_Impl: windows_core::IUnknownImpl {
+    fn ContentType(&self) -> windows_core::Result<windows_core::HSTRING>;
+}
+impl IContentTypeProvider_Vtbl {
+    pub const fn new<Identity: IContentTypeProvider_Impl, const OFFSET: isize>() -> Self {
+        unsafe extern "system" fn ContentType<
+            Identity: IContentTypeProvider_Impl,
+            const OFFSET: isize,
+        >(
+            this: *mut core::ffi::c_void,
+            result__: *mut *mut core::ffi::c_void,
+        ) -> windows_core::HRESULT {
+            unsafe {
+                let this: &Identity =
+                    &*((this as *const *const ()).offset(OFFSET) as *const Identity);
+                match IContentTypeProvider_Impl::ContentType(this) {
+                    Ok(ok__) => {
+                        result__.write(core::mem::transmute_copy(&ok__));
+                        core::mem::forget(ok__);
+                        windows_core::HRESULT(0)
+                    }
+                    Err(err) => err.into(),
+                }
+            }
+        }
+        Self {
+            base__: windows_core::IInspectable_Vtbl::new::<Identity, IContentTypeProvider, OFFSET>(
+            ),
+            ContentType: ContentType::<Identity, OFFSET>,
+        }
+    }
+    pub fn matches(iid: &windows_core::GUID) -> bool {
+        iid == &<IContentTypeProvider as windows_core::Interface>::IID
+    }
+}
+#[repr(C)]
+pub struct IContentTypeProvider_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub ContentType: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     ICurrentSessionChangedEventArgs,
     ICurrentSessionChangedEventArgs_Vtbl,
     0x6969cb39_0bfa_5fe0_8d73_09cc5e5408e1
@@ -1531,6 +3772,306 @@ impl windows_core::RuntimeType for ICurrentSessionChangedEventArgs {
 }
 #[repr(C)]
 pub struct ICurrentSessionChangedEventArgs_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
+    IDataReader,
+    IDataReader_Vtbl,
+    0xe2b50029_b4c1_4314_a4b8_fb813a2f275e
+);
+impl windows_core::RuntimeType for IDataReader {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"Windows.Storage.Streams.IDataReader");
+}
+windows_core::imp::interface_hierarchy!(
+    IDataReader,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl IDataReader {
+    pub fn UnconsumedBufferLength(&self) -> windows_core::Result<u32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).UnconsumedBufferLength)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadByte(&self) -> windows_core::Result<u8> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadByte)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadBytes(&self, value: &mut [u8]) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).ReadBytes)(
+                windows_core::Interface::as_raw(self),
+                value.len().try_into().unwrap(),
+                value.as_mut_ptr(),
+            )
+            .ok()
+        }
+    }
+    pub fn ReadBoolean(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadBoolean)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadGuid(&self) -> windows_core::Result<windows_core::GUID> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadGuid)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadInt16(&self) -> windows_core::Result<i16> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadInt16)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadInt32(&self) -> windows_core::Result<i32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadInt32)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadInt64(&self) -> windows_core::Result<i64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadInt64)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadUInt16(&self) -> windows_core::Result<u16> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadUInt16)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadUInt32(&self) -> windows_core::Result<u32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadUInt32)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadUInt64(&self) -> windows_core::Result<u64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadUInt64)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadSingle(&self) -> windows_core::Result<f32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadSingle)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadDouble(&self) -> windows_core::Result<f64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadDouble)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadString(&self, codeunitcount: u32) -> windows_core::Result<windows_core::HSTRING> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadString)(
+                windows_core::Interface::as_raw(self),
+                codeunitcount,
+                &mut result__,
+            )
+            .map(|| core::mem::transmute(result__))
+        }
+    }
+    pub fn ReadDateTime(&self) -> windows_core::Result<windows_time::DateTime> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadDateTime)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReadTimeSpan(&self) -> windows_core::Result<windows_time::TimeSpan> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ReadTimeSpan)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn LoadAsync(&self, count: u32) -> windows_core::Result<DataReaderLoadOperation> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).LoadAsync)(
+                windows_core::Interface::as_raw(self),
+                count,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn DetachStream(&self) -> windows_core::Result<IInputStream> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).DetachStream)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+impl windows_core::RuntimeName for IDataReader {
+    const NAME: &'static str = "Windows.Storage.Streams.IDataReader";
+}
+#[repr(C)]
+pub struct IDataReader_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub UnconsumedBufferLength:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut u32) -> windows_core::HRESULT,
+    UnicodeEncoding: usize,
+    SetUnicodeEncoding: usize,
+    ByteOrder: usize,
+    SetByteOrder: usize,
+    InputStreamOptions: usize,
+    SetInputStreamOptions: usize,
+    pub ReadByte:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut u8) -> windows_core::HRESULT,
+    pub ReadBytes:
+        unsafe extern "system" fn(*mut core::ffi::c_void, u32, *mut u8) -> windows_core::HRESULT,
+    ReadBuffer: usize,
+    pub ReadBoolean:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
+    pub ReadGuid: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_core::GUID,
+    ) -> windows_core::HRESULT,
+    pub ReadInt16:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut i16) -> windows_core::HRESULT,
+    pub ReadInt32:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut i32) -> windows_core::HRESULT,
+    pub ReadInt64:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut i64) -> windows_core::HRESULT,
+    pub ReadUInt16:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut u16) -> windows_core::HRESULT,
+    pub ReadUInt32:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut u32) -> windows_core::HRESULT,
+    pub ReadUInt64:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut u64) -> windows_core::HRESULT,
+    pub ReadSingle:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut f32) -> windows_core::HRESULT,
+    pub ReadDouble:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
+    pub ReadString: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        u32,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub ReadDateTime: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_time::DateTime,
+    ) -> windows_core::HRESULT,
+    pub ReadTimeSpan: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut windows_time::TimeSpan,
+    ) -> windows_core::HRESULT,
+    pub LoadAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        u32,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    DetachBuffer: usize,
+    pub DetachStream: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IDataReaderFactory,
+    IDataReaderFactory_Vtbl,
+    0xd7527847_57da_4e15_914c_06806699a098
+);
+impl windows_core::RuntimeType for IDataReaderFactory {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"Windows.Storage.Streams.IDataReaderFactory");
+}
+#[repr(C)]
+pub struct IDataReaderFactory_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub CreateDataReader: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IDataReaderStatics,
+    IDataReaderStatics_Vtbl,
+    0x11fcbfc8_f93a_471b_b121_f379e349313c
+);
+impl windows_core::RuntimeType for IDataReaderStatics {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"Windows.Storage.Streams.IDataReaderStatics");
+}
+#[repr(C)]
+pub struct IDataReaderStatics_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
 }
 windows_core::imp::define_interface!(
@@ -1783,6 +4324,10 @@ pub struct IGlobalSystemMediaTransportControlsSessionMediaProperties_Vtbl {
         *mut core::ffi::c_void,
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
+    pub Thumbnail: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     IGlobalSystemMediaTransportControlsSessionPlaybackControls,
@@ -1909,6 +4454,39 @@ pub struct IGlobalSystemMediaTransportControlsSessionTimelineProperties_Vtbl {
         *mut core::ffi::c_void,
         *mut windows_time::DateTime,
     ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IInputStream,
+    IInputStream_Vtbl,
+    0x905a0fe2_bc53_11df_8c49_001e4fc686da
+);
+impl windows_core::RuntimeType for IInputStream {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"Windows.Storage.Streams.IInputStream");
+}
+windows_core::imp::interface_hierarchy!(
+    IInputStream,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+windows_core::imp::required_hierarchy!(IInputStream, IClosable);
+impl IInputStream {
+    pub fn Close(&self) -> windows_core::Result<()> {
+        let this = &windows_core::Interface::cast::<IClosable>(self)?;
+        unsafe {
+            (windows_core::Interface::vtable(this).Close)(windows_core::Interface::as_raw(this))
+                .ok()
+        }
+    }
+}
+impl windows_core::RuntimeName for IInputStream {
+    const NAME: &'static str = "Windows.Storage.Streams.IInputStream";
+}
+#[repr(C)]
+pub struct IInputStream_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
 }
 windows_core::imp::define_interface!(
     IMMDevice,
@@ -2049,6 +4627,74 @@ impl windows_core::RuntimeType for IMediaPropertiesChangedEventArgs {
 #[repr(C)]
 pub struct IMediaPropertiesChangedEventArgs_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
+    IOutputStream,
+    IOutputStream_Vtbl,
+    0x905a0fe6_bc53_11df_8c49_001e4fc686da
+);
+impl windows_core::RuntimeType for IOutputStream {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"Windows.Storage.Streams.IOutputStream");
+}
+windows_core::imp::interface_hierarchy!(
+    IOutputStream,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+windows_core::imp::required_hierarchy!(IOutputStream, IClosable);
+impl IOutputStream {
+    pub fn FlushAsync(&self) -> windows_core::Result<windows_future::IAsyncOperation<bool>> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).FlushAsync)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn Close(&self) -> windows_core::Result<()> {
+        let this = &windows_core::Interface::cast::<IClosable>(self)?;
+        unsafe {
+            (windows_core::Interface::vtable(this).Close)(windows_core::Interface::as_raw(this))
+                .ok()
+        }
+    }
+}
+impl windows_core::RuntimeName for IOutputStream {
+    const NAME: &'static str = "Windows.Storage.Streams.IOutputStream";
+}
+#[repr(C)]
+pub struct IOutputStream_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    WriteAsync: usize,
+    pub FlushAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IPixelDataProvider,
+    IPixelDataProvider_Vtbl,
+    0xdd831f25_185c_4595_9fb9_ccbe6ec18a6f
+);
+impl windows_core::RuntimeType for IPixelDataProvider {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"Windows.Graphics.Imaging.IPixelDataProvider");
+}
+#[repr(C)]
+pub struct IPixelDataProvider_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub DetachPixelData: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut u32,
+        *mut *mut u8,
+    ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     IPlaybackInfoChangedEventArgs,
@@ -2775,6 +5421,408 @@ pub struct IPropertyValue_Vtbl {
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    IRandomAccessStream,
+    IRandomAccessStream_Vtbl,
+    0x905a0fe1_bc53_11df_8c49_001e4fc686da
+);
+impl windows_core::RuntimeType for IRandomAccessStream {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"Windows.Storage.Streams.IRandomAccessStream");
+}
+windows_core::imp::interface_hierarchy!(
+    IRandomAccessStream,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+windows_core::imp::required_hierarchy!(IRandomAccessStream, IClosable, IInputStream, IOutputStream);
+impl IRandomAccessStream {
+    pub fn Size(&self) -> windows_core::Result<u64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Size)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SetSize(&self, value: u64) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetSize)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn GetInputStreamAt(&self, position: u64) -> windows_core::Result<IInputStream> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetInputStreamAt)(
+                windows_core::Interface::as_raw(self),
+                position,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn GetOutputStreamAt(&self, position: u64) -> windows_core::Result<IOutputStream> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetOutputStreamAt)(
+                windows_core::Interface::as_raw(self),
+                position,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn Position(&self) -> windows_core::Result<u64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Position)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn Seek(&self, position: u64) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).Seek)(
+                windows_core::Interface::as_raw(self),
+                position,
+            )
+            .ok()
+        }
+    }
+    pub fn CloneStream(&self) -> windows_core::Result<Self> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).CloneStream)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn CanRead(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).CanRead)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn CanWrite(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).CanWrite)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn Close(&self) -> windows_core::Result<()> {
+        let this = &windows_core::Interface::cast::<IClosable>(self)?;
+        unsafe {
+            (windows_core::Interface::vtable(this).Close)(windows_core::Interface::as_raw(this))
+                .ok()
+        }
+    }
+    pub fn FlushAsync(&self) -> windows_core::Result<windows_future::IAsyncOperation<bool>> {
+        let this = &windows_core::Interface::cast::<IOutputStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).FlushAsync)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+impl windows_core::RuntimeName for IRandomAccessStream {
+    const NAME: &'static str = "Windows.Storage.Streams.IRandomAccessStream";
+}
+#[repr(C)]
+pub struct IRandomAccessStream_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub Size: unsafe extern "system" fn(*mut core::ffi::c_void, *mut u64) -> windows_core::HRESULT,
+    pub SetSize: unsafe extern "system" fn(*mut core::ffi::c_void, u64) -> windows_core::HRESULT,
+    pub GetInputStreamAt: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        u64,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub GetOutputStreamAt: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        u64,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub Position:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut u64) -> windows_core::HRESULT,
+    pub Seek: unsafe extern "system" fn(*mut core::ffi::c_void, u64) -> windows_core::HRESULT,
+    pub CloneStream: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub CanRead:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
+    pub CanWrite:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IRandomAccessStreamReference,
+    IRandomAccessStreamReference_Vtbl,
+    0x33ee3134_1dd6_4e3a_8067_d1c162e8642b
+);
+impl windows_core::RuntimeType for IRandomAccessStreamReference {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"Windows.Storage.Streams.IRandomAccessStreamReference",
+    );
+}
+windows_core::imp::interface_hierarchy!(
+    IRandomAccessStreamReference,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl IRandomAccessStreamReference {
+    pub fn OpenReadAsync(
+        &self,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<IRandomAccessStreamWithContentType>>
+    {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).OpenReadAsync)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+impl windows_core::RuntimeName for IRandomAccessStreamReference {
+    const NAME: &'static str = "Windows.Storage.Streams.IRandomAccessStreamReference";
+}
+pub trait IRandomAccessStreamReference_Impl: windows_core::IUnknownImpl {
+    fn OpenReadAsync(
+        &self,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<IRandomAccessStreamWithContentType>>;
+}
+impl IRandomAccessStreamReference_Vtbl {
+    pub const fn new<Identity: IRandomAccessStreamReference_Impl, const OFFSET: isize>() -> Self {
+        unsafe extern "system" fn OpenReadAsync<
+            Identity: IRandomAccessStreamReference_Impl,
+            const OFFSET: isize,
+        >(
+            this: *mut core::ffi::c_void,
+            result__: *mut *mut core::ffi::c_void,
+        ) -> windows_core::HRESULT {
+            unsafe {
+                let this: &Identity =
+                    &*((this as *const *const ()).offset(OFFSET) as *const Identity);
+                match IRandomAccessStreamReference_Impl::OpenReadAsync(this) {
+                    Ok(ok__) => {
+                        result__.write(core::mem::transmute_copy(&ok__));
+                        core::mem::forget(ok__);
+                        windows_core::HRESULT(0)
+                    }
+                    Err(err) => err.into(),
+                }
+            }
+        }
+        Self {
+            base__: windows_core::IInspectable_Vtbl::new::<
+                Identity,
+                IRandomAccessStreamReference,
+                OFFSET,
+            >(),
+            OpenReadAsync: OpenReadAsync::<Identity, OFFSET>,
+        }
+    }
+    pub fn matches(iid: &windows_core::GUID) -> bool {
+        iid == &<IRandomAccessStreamReference as windows_core::Interface>::IID
+    }
+}
+#[repr(C)]
+pub struct IRandomAccessStreamReference_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub OpenReadAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IRandomAccessStreamWithContentType,
+    IRandomAccessStreamWithContentType_Vtbl,
+    0xcc254827_4b3d_438f_9232_10c76bc7e038
+);
+impl windows_core::RuntimeType for IRandomAccessStreamWithContentType {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"Windows.Storage.Streams.IRandomAccessStreamWithContentType",
+    );
+}
+windows_core::imp::interface_hierarchy!(
+    IRandomAccessStreamWithContentType,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+windows_core::imp::required_hierarchy!(
+    IRandomAccessStreamWithContentType,
+    IClosable,
+    IContentTypeProvider,
+    IInputStream,
+    IOutputStream,
+    IRandomAccessStream
+);
+impl IRandomAccessStreamWithContentType {
+    pub fn Close(&self) -> windows_core::Result<()> {
+        let this = &windows_core::Interface::cast::<IClosable>(self)?;
+        unsafe {
+            (windows_core::Interface::vtable(this).Close)(windows_core::Interface::as_raw(this))
+                .ok()
+        }
+    }
+    pub fn ContentType(&self) -> windows_core::Result<windows_core::HSTRING> {
+        let this = &windows_core::Interface::cast::<IContentTypeProvider>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).ContentType)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| core::mem::transmute(result__))
+        }
+    }
+    pub fn FlushAsync(&self) -> windows_core::Result<windows_future::IAsyncOperation<bool>> {
+        let this = &windows_core::Interface::cast::<IOutputStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).FlushAsync)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn Size(&self) -> windows_core::Result<u64> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).Size)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SetSize(&self, value: u64) -> windows_core::Result<()> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            (windows_core::Interface::vtable(this).SetSize)(
+                windows_core::Interface::as_raw(this),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn GetInputStreamAt(&self, position: u64) -> windows_core::Result<IInputStream> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GetInputStreamAt)(
+                windows_core::Interface::as_raw(this),
+                position,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn GetOutputStreamAt(&self, position: u64) -> windows_core::Result<IOutputStream> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GetOutputStreamAt)(
+                windows_core::Interface::as_raw(this),
+                position,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn Position(&self) -> windows_core::Result<u64> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).Position)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn Seek(&self, position: u64) -> windows_core::Result<()> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            (windows_core::Interface::vtable(this).Seek)(
+                windows_core::Interface::as_raw(this),
+                position,
+            )
+            .ok()
+        }
+    }
+    pub fn CloneStream(&self) -> windows_core::Result<IRandomAccessStream> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CloneStream)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn CanRead(&self) -> windows_core::Result<bool> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CanRead)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn CanWrite(&self) -> windows_core::Result<bool> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CanWrite)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+}
+impl windows_core::RuntimeName for IRandomAccessStreamWithContentType {
+    const NAME: &'static str = "Windows.Storage.Streams.IRandomAccessStreamWithContentType";
+}
+#[repr(C)]
+pub struct IRandomAccessStreamWithContentType_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
     IRecordInfo,
     IRecordInfo_Vtbl,
     0x0000002f_0000_0000_c000_000000000046
@@ -3185,6 +6233,115 @@ impl windows_core::RuntimeType for ISessionsChangedEventArgs {
 #[repr(C)]
 pub struct ISessionsChangedEventArgs_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
+    ISoftwareBitmap,
+    ISoftwareBitmap_Vtbl,
+    0x689e0708_7eef_483f_963f_da938818e073
+);
+impl windows_core::RuntimeType for ISoftwareBitmap {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"Windows.Graphics.Imaging.ISoftwareBitmap");
+}
+#[repr(C)]
+pub struct ISoftwareBitmap_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub BitmapPixelFormat: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut BitmapPixelFormat,
+    ) -> windows_core::HRESULT,
+    pub BitmapAlphaMode: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut BitmapAlphaMode,
+    ) -> windows_core::HRESULT,
+    pub PixelWidth:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut i32) -> windows_core::HRESULT,
+    pub PixelHeight:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut i32) -> windows_core::HRESULT,
+    pub IsReadOnly:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
+    pub SetDpiX: unsafe extern "system" fn(*mut core::ffi::c_void, f64) -> windows_core::HRESULT,
+    pub DpiX: unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
+    pub SetDpiY: unsafe extern "system" fn(*mut core::ffi::c_void, f64) -> windows_core::HRESULT,
+    pub DpiY: unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
+    LockBuffer: usize,
+    pub CopyTo: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    CopyFromBuffer: usize,
+    CopyToBuffer: usize,
+    pub GetReadOnlyView: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ISoftwareBitmapFactory,
+    ISoftwareBitmapFactory_Vtbl,
+    0xc99feb69_2d62_4d47_a6b3_4fdb6a07fdf8
+);
+impl windows_core::RuntimeType for ISoftwareBitmapFactory {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"Windows.Graphics.Imaging.ISoftwareBitmapFactory",
+    );
+}
+#[repr(C)]
+pub struct ISoftwareBitmapFactory_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub Create: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        BitmapPixelFormat,
+        i32,
+        i32,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub CreateWithAlpha: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        BitmapPixelFormat,
+        i32,
+        i32,
+        BitmapAlphaMode,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ISoftwareBitmapStatics,
+    ISoftwareBitmapStatics_Vtbl,
+    0xdf0385db_672f_4a9d_806e_c2442f343e86
+);
+impl windows_core::RuntimeType for ISoftwareBitmapStatics {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+    const NAME: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"Windows.Graphics.Imaging.ISoftwareBitmapStatics",
+    );
+}
+#[repr(C)]
+pub struct ISoftwareBitmapStatics_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub Copy: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub Convert: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        BitmapPixelFormat,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub ConvertWithAlpha: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        BitmapPixelFormat,
+        BitmapAlphaMode,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     IStorage,
@@ -6308,6 +9465,320 @@ pub struct IXmlNodeSerializer_Vtbl {
         *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
 }
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImageStream(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    ImageStream,
+    windows_core::IUnknown,
+    windows_core::IInspectable,
+    IRandomAccessStreamWithContentType
+);
+windows_core::imp::required_hierarchy!(
+    ImageStream,
+    IClosable,
+    IContentTypeProvider,
+    IInputStream,
+    IOutputStream,
+    IRandomAccessStream
+);
+impl ImageStream {
+    pub fn Close(&self) -> windows_core::Result<()> {
+        let this = &windows_core::Interface::cast::<IClosable>(self)?;
+        unsafe {
+            (windows_core::Interface::vtable(this).Close)(windows_core::Interface::as_raw(this))
+                .ok()
+        }
+    }
+    pub fn ContentType(&self) -> windows_core::Result<windows_core::HSTRING> {
+        let this = &windows_core::Interface::cast::<IContentTypeProvider>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).ContentType)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| core::mem::transmute(result__))
+        }
+    }
+    pub fn FlushAsync(&self) -> windows_core::Result<windows_future::IAsyncOperation<bool>> {
+        let this = &windows_core::Interface::cast::<IOutputStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).FlushAsync)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn Size(&self) -> windows_core::Result<u64> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).Size)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SetSize(&self, value: u64) -> windows_core::Result<()> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            (windows_core::Interface::vtable(this).SetSize)(
+                windows_core::Interface::as_raw(this),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn GetInputStreamAt(&self, position: u64) -> windows_core::Result<IInputStream> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GetInputStreamAt)(
+                windows_core::Interface::as_raw(this),
+                position,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn GetOutputStreamAt(&self, position: u64) -> windows_core::Result<IOutputStream> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GetOutputStreamAt)(
+                windows_core::Interface::as_raw(this),
+                position,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn Position(&self) -> windows_core::Result<u64> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).Position)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn Seek(&self, position: u64) -> windows_core::Result<()> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            (windows_core::Interface::vtable(this).Seek)(
+                windows_core::Interface::as_raw(this),
+                position,
+            )
+            .ok()
+        }
+    }
+    pub fn CloneStream(&self) -> windows_core::Result<IRandomAccessStream> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CloneStream)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn CanRead(&self) -> windows_core::Result<bool> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CanRead)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn CanWrite(&self) -> windows_core::Result<bool> {
+        let this = &windows_core::Interface::cast::<IRandomAccessStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CanWrite)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+}
+impl windows_core::RuntimeType for ImageStream {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IRandomAccessStreamWithContentType>();
+}
+unsafe impl windows_core::Interface for ImageStream {
+    type Vtable = <IRandomAccessStreamWithContentType as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <IRandomAccessStreamWithContentType as windows_core::Interface>::IID;
+}
+impl windows_core::RuntimeName for ImageStream {
+    const NAME: &'static str = "Windows.Graphics.Imaging.ImageStream";
+}
+unsafe impl Send for ImageStream {}
+unsafe impl Sync for ImageStream {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InMemoryRandomAccessStream(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    InMemoryRandomAccessStream,
+    windows_core::IUnknown,
+    windows_core::IInspectable,
+    IRandomAccessStream
+);
+windows_core::imp::required_hierarchy!(
+    InMemoryRandomAccessStream,
+    IClosable,
+    IInputStream,
+    IOutputStream
+);
+impl InMemoryRandomAccessStream {
+    pub fn new() -> windows_core::Result<Self> {
+        Self::IActivationFactory(|f| f.ActivateInstance::<Self>())
+    }
+    fn IActivationFactory<
+        R,
+        F: FnOnce(&windows_core::imp::IGenericFactory) -> windows_core::Result<R>,
+    >(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<
+            InMemoryRandomAccessStream,
+            windows_core::imp::IGenericFactory,
+        > = windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+    pub fn Close(&self) -> windows_core::Result<()> {
+        let this = &windows_core::Interface::cast::<IClosable>(self)?;
+        unsafe {
+            (windows_core::Interface::vtable(this).Close)(windows_core::Interface::as_raw(this))
+                .ok()
+        }
+    }
+    pub fn FlushAsync(&self) -> windows_core::Result<windows_future::IAsyncOperation<bool>> {
+        let this = &windows_core::Interface::cast::<IOutputStream>(self)?;
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).FlushAsync)(
+                windows_core::Interface::as_raw(this),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn Size(&self) -> windows_core::Result<u64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Size)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SetSize(&self, value: u64) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetSize)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn GetInputStreamAt(&self, position: u64) -> windows_core::Result<IInputStream> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetInputStreamAt)(
+                windows_core::Interface::as_raw(self),
+                position,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn GetOutputStreamAt(&self, position: u64) -> windows_core::Result<IOutputStream> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetOutputStreamAt)(
+                windows_core::Interface::as_raw(self),
+                position,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn Position(&self) -> windows_core::Result<u64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Position)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn Seek(&self, position: u64) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).Seek)(
+                windows_core::Interface::as_raw(self),
+                position,
+            )
+            .ok()
+        }
+    }
+    pub fn CloneStream(&self) -> windows_core::Result<IRandomAccessStream> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).CloneStream)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn CanRead(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).CanRead)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn CanWrite(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).CanWrite)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+}
+impl windows_core::RuntimeType for InMemoryRandomAccessStream {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IRandomAccessStream>();
+}
+unsafe impl windows_core::Interface for InMemoryRandomAccessStream {
+    type Vtable = <IRandomAccessStream as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IRandomAccessStream as windows_core::Interface>::IID;
+}
+impl windows_core::RuntimeName for InMemoryRandomAccessStream {
+    const NAME: &'static str = "Windows.Storage.Streams.InMemoryRandomAccessStream";
+}
+unsafe impl Send for InMemoryRandomAccessStream {}
+unsafe impl Sync for InMemoryRandomAccessStream {}
 pub type LPSAFEARRAY = *mut SAFEARRAY;
 pub type LPVERSIONEDSTREAM = *mut VERSIONEDSTREAM;
 pub const MMDeviceEnumerator: windows_core::GUID =
@@ -6520,6 +9991,40 @@ pub struct PROPVAR_PAD2(pub u16);
 pub struct PROPVAR_PAD3(pub u16);
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PixelDataProvider(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    PixelDataProvider,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl PixelDataProvider {
+    pub fn DetachPixelData(&self) -> windows_core::Result<windows_core::Array<u8>> {
+        unsafe {
+            let mut result__ = core::mem::MaybeUninit::zeroed();
+            (windows_core::Interface::vtable(self).DetachPixelData)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Array::<u8>::set_abi_len(core::mem::transmute(&mut result__)),
+                result__.as_mut_ptr() as *mut _ as _,
+            )
+            .map(|| result__.assume_init())
+        }
+    }
+}
+impl windows_core::RuntimeType for PixelDataProvider {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IPixelDataProvider>();
+}
+unsafe impl windows_core::Interface for PixelDataProvider {
+    type Vtable = <IPixelDataProvider as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IPixelDataProvider as windows_core::Interface>::IID;
+}
+impl windows_core::RuntimeName for PixelDataProvider {
+    const NAME: &'static str = "Windows.Graphics.Imaging.PixelDataProvider";
+}
+unsafe impl Send for PixelDataProvider {}
+unsafe impl Sync for PixelDataProvider {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlaybackInfoChangedEventArgs(windows_core::IUnknown);
 windows_core::imp::interface_hierarchy!(
     PlaybackInfoChangedEventArgs,
@@ -6584,6 +10089,246 @@ impl windows_core::RuntimeName for SessionsChangedEventArgs {
 }
 unsafe impl Send for SessionsChangedEventArgs {}
 unsafe impl Sync for SessionsChangedEventArgs {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SoftwareBitmap(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    SoftwareBitmap,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+windows_core::imp::required_hierarchy!(SoftwareBitmap, IClosable);
+impl SoftwareBitmap {
+    pub fn Close(&self) -> windows_core::Result<()> {
+        let this = &windows_core::Interface::cast::<IClosable>(self)?;
+        unsafe {
+            (windows_core::Interface::vtable(this).Close)(windows_core::Interface::as_raw(this))
+                .ok()
+        }
+    }
+    pub fn BitmapPixelFormat(&self) -> windows_core::Result<BitmapPixelFormat> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).BitmapPixelFormat)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn BitmapAlphaMode(&self) -> windows_core::Result<BitmapAlphaMode> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).BitmapAlphaMode)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn PixelWidth(&self) -> windows_core::Result<i32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).PixelWidth)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn PixelHeight(&self) -> windows_core::Result<i32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).PixelHeight)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn IsReadOnly(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).IsReadOnly)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SetDpiX(&self, value: f64) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetDpiX)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn DpiX(&self) -> windows_core::Result<f64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).DpiX)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SetDpiY(&self, value: f64) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetDpiY)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn DpiY(&self) -> windows_core::Result<f64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).DpiY)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn CopyTo<P0>(&self, bitmap: P0) -> windows_core::Result<()>
+    where
+        P0: windows_core::Param<Self>,
+    {
+        unsafe {
+            (windows_core::Interface::vtable(self).CopyTo)(
+                windows_core::Interface::as_raw(self),
+                bitmap.param().abi(),
+            )
+            .ok()
+        }
+    }
+    pub fn GetReadOnlyView(&self) -> windows_core::Result<Self> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetReadOnlyView)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn Create(
+        format: BitmapPixelFormat,
+        width: i32,
+        height: i32,
+    ) -> windows_core::Result<Self> {
+        Self::ISoftwareBitmapFactory(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).Create)(
+                windows_core::Interface::as_raw(this),
+                format,
+                width,
+                height,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    pub fn CreateWithAlpha(
+        format: BitmapPixelFormat,
+        width: i32,
+        height: i32,
+        alpha: BitmapAlphaMode,
+    ) -> windows_core::Result<Self> {
+        Self::ISoftwareBitmapFactory(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CreateWithAlpha)(
+                windows_core::Interface::as_raw(this),
+                format,
+                width,
+                height,
+                alpha,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    pub fn Copy<P0>(source: P0) -> windows_core::Result<Self>
+    where
+        P0: windows_core::Param<Self>,
+    {
+        Self::ISoftwareBitmapStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).Copy)(
+                windows_core::Interface::as_raw(this),
+                source.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    pub fn Convert<P0>(source: P0, format: BitmapPixelFormat) -> windows_core::Result<Self>
+    where
+        P0: windows_core::Param<Self>,
+    {
+        Self::ISoftwareBitmapStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).Convert)(
+                windows_core::Interface::as_raw(this),
+                source.param().abi(),
+                format,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    pub fn ConvertWithAlpha<P0>(
+        source: P0,
+        format: BitmapPixelFormat,
+        alpha: BitmapAlphaMode,
+    ) -> windows_core::Result<Self>
+    where
+        P0: windows_core::Param<Self>,
+    {
+        Self::ISoftwareBitmapStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).ConvertWithAlpha)(
+                windows_core::Interface::as_raw(this),
+                source.param().abi(),
+                format,
+                alpha,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    fn ISoftwareBitmapFactory<R, F: FnOnce(&ISoftwareBitmapFactory) -> windows_core::Result<R>>(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<SoftwareBitmap, ISoftwareBitmapFactory> =
+            windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+    fn ISoftwareBitmapStatics<R, F: FnOnce(&ISoftwareBitmapStatics) -> windows_core::Result<R>>(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<SoftwareBitmap, ISoftwareBitmapStatics> =
+            windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+}
+impl windows_core::RuntimeType for SoftwareBitmap {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, ISoftwareBitmap>();
+}
+unsafe impl windows_core::Interface for SoftwareBitmap {
+    type Vtable = <ISoftwareBitmap as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <ISoftwareBitmap as windows_core::Interface>::IID;
+}
+impl windows_core::RuntimeName for SoftwareBitmap {
+    const NAME: &'static str = "Windows.Graphics.Imaging.SoftwareBitmap";
+}
+unsafe impl Send for SoftwareBitmap {}
+unsafe impl Sync for SoftwareBitmap {}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TimelinePropertiesChangedEventArgs(windows_core::IUnknown);

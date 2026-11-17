@@ -15,9 +15,10 @@ use tokio::net::TcpListener;
 use weft_cli::{Error, Event, Session, State, StateDir};
 use weft_client::features::{Features, Settings, UserCommand};
 use weft_client::input::{Button, Input, Key, Modifiers, Press};
+use weft_client::media::{Cover, LocalPlayer, MAX_ART_LEN};
 use weft_client::packets::{
-    self, Battery, Call, Capabilities, Connectivity, FileOffer, MediaAction, MediaCommand,
-    Notification, Packet, Parsed, Player, Volume, VolumeSet, transfer_id,
+    self, Battery, Call, Capabilities, Connectivity, FileOffer, MediaAction, MediaArt,
+    MediaCommand, Notification, Packet, Parsed, Player, Volume, VolumeSet, transfer_id,
 };
 use weft_client::sms::SendState;
 use weft_client::transfer::{CHUNK, Stage, WINDOW};
@@ -1539,6 +1540,11 @@ fn song(title: &str, position: u64) -> Player {
     }
 }
 
+/// This computer's players, without covers.
+fn local(players: &[Player]) -> Vec<LocalPlayer> {
+    players.iter().cloned().map(LocalPlayer::from).collect()
+}
+
 /// The packets from `from` up to the first one `wanted` accepts, that one
 /// included.
 async fn packets_until(
@@ -1803,12 +1809,12 @@ async fn media_and_volume_go_both_ways() {
         // This computer's players and volume go to the phone on change; a
         // reading where only time moved, or the same volume, does not.
         let players = vec![song("First", 10_000)];
-        tested.worker.send(Command::LocalMedia(players.clone()));
+        tested.worker.send(Command::LocalMedia(local(&players)));
         let sent = phone.expect_packet(pc, is_state).await;
         assert_eq!(sent, Packet::Media { players });
         tested
             .worker
-            .send(Command::LocalMedia(vec![song("First", 10_100)]));
+            .send(Command::LocalMedia(local(&[song("First", 10_100)])));
         let volume = Volume {
             level: Some(35),
             muted: Some(false),
@@ -1818,7 +1824,7 @@ async fn media_and_volume_go_both_ways() {
         let sent = phone.expect_packet(pc, is_state).await;
         assert_eq!(sent, Packet::Volume(volume));
         let next = vec![song("Second", 0)];
-        tested.worker.send(Command::LocalMedia(next.clone()));
+        tested.worker.send(Command::LocalMedia(local(&next)));
         let sent = phone.expect_packet(pc, is_state).await;
         assert_eq!(sent, Packet::Media { players: next });
 
@@ -1940,10 +1946,182 @@ async fn media_and_volume_go_both_ways() {
             .await;
         tested
             .worker
-            .send(Command::LocalMedia(vec![song("Third", 0)]));
+            .send(Command::LocalMedia(local(&[song("Third", 0)])));
         tested.worker.send(Command::Ring(phone_id));
         let seen = packets_until(&mut phone, pc, |packet| *packet == Packet::Ring {}).await;
         assert!(!seen.iter().any(is_state), "{seen:?}");
+        tested.stop().await;
+    })
+    .await;
+}
+
+/// A phone that shows covers: [`phone_capabilities_with_media`] and
+/// `media.art` both ways.
+fn phone_capabilities_with_covers() -> Packet {
+    let Packet::Capabilities(mut capabilities) = phone_capabilities_with_media() else {
+        unreachable!();
+    };
+    capabilities.incoming.push("media.art".into());
+    capabilities.outgoing.push("media.art".into());
+    Packet::Capabilities(capabilities)
+}
+
+fn jpeg(byte: u8, len: usize) -> Cover {
+    Cover {
+        mime: "image/jpeg".into(),
+        data: vec![byte; len].into(),
+    }
+}
+
+fn with_cover(player: Player, cover: Cover) -> LocalPlayer {
+    LocalPlayer {
+        player,
+        cover: Some(cover),
+    }
+}
+
+fn kinds(packets: &[Packet]) -> Vec<&'static str> {
+    packets.iter().map(Packet::kind).collect()
+}
+
+#[tokio::test]
+async fn covers_go_once_per_connection_before_the_players() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut phone) = paired(&url).await;
+        let (pc, phone_id) = (tested.id(), phone.id());
+        phone.send(pc, &phone_capabilities_with_covers()).await;
+        tested
+            .wait(|snapshot| snapshot.peer(&phone_id).handles("media.art"))
+            .await;
+        phone
+            .expect_packet(pc, |packet| *packet == Packet::NotificationRequest {})
+            .await;
+        let is_media = |packet: &Packet| matches!(packet, Packet::Media { .. });
+
+        // A new cover goes before the first players that name it.
+        let first = jpeg(1, 1000);
+        tested.worker.send(Command::LocalMedia(vec![with_cover(
+            song("First", 0),
+            first.clone(),
+        )]));
+        let seen = packets_until(&mut phone, pc, is_media).await;
+        assert_eq!(kinds(&seen), ["media.art", "media"]);
+        let (Packet::MediaArt(art), Packet::Media { players }) = (&seen[0], &seen[1]) else {
+            unreachable!();
+        };
+        assert_eq!(art.data, first.data.to_vec());
+        assert_eq!(art.mime, "image/jpeg");
+        assert_eq!(players[0].art.as_deref(), Some(art.art.as_str()));
+        assert_eq!(art.art, first.id());
+        let first_id = art.art.clone();
+
+        // The same image is not sent again on this connection; another is.
+        tested.worker.send(Command::LocalMedia(vec![with_cover(
+            song("Same album", 0),
+            first.clone(),
+        )]));
+        let seen = packets_until(&mut phone, pc, is_media).await;
+        assert_eq!(kinds(&seen), ["media"]);
+        let second = jpeg(2, 2000);
+        tested.worker.send(Command::LocalMedia(vec![
+            with_cover(song("Second", 0), second.clone()),
+            with_cover(
+                Player {
+                    id: "other".into(),
+                    ..song("First again", 0)
+                },
+                first.clone(),
+            ),
+        ]));
+        let seen = packets_until(&mut phone, pc, is_media).await;
+        assert_eq!(kinds(&seen), ["media.art", "media"]);
+        let Packet::MediaArt(art) = &seen[0] else {
+            unreachable!();
+        };
+        assert_eq!(art.art, second.id());
+
+        // A fresh connection gets them all again, after the capabilities.
+        phone.send(pc, &Packet::StateRequest {}).await;
+        let seen = packets_until(&mut phone, pc, is_media).await;
+        assert_eq!(
+            kinds(&seen),
+            ["capabilities", "media.art", "media.art", "media"]
+        );
+        let again: Vec<&str> = seen
+            .iter()
+            .filter_map(|packet| match packet {
+                Packet::MediaArt(art) => Some(art.art.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(again, [second.id().as_str(), first_id.as_str()]);
+
+        // A cover over the limit is dropped, its player kept.
+        tested.worker.send(Command::LocalMedia(vec![with_cover(
+            song("Huge", 0),
+            jpeg(3, MAX_ART_LEN + 1),
+        )]));
+        let seen = packets_until(&mut phone, pc, is_media).await;
+        assert_eq!(kinds(&seen), ["media"]);
+        let Packet::Media { players } = &seen[0] else {
+            unreachable!();
+        };
+        assert_eq!(
+            (players[0].title.as_str(), players[0].art.as_ref()),
+            ("Huge", None)
+        );
+
+        // A device that does not show covers gets no `art`.
+        phone.send(pc, &phone_capabilities_with_media()).await;
+        tested
+            .wait(|snapshot| !snapshot.peer(&phone_id).handles("media.art"))
+            .await;
+        tested.worker.send(Command::LocalMedia(vec![with_cover(
+            song("Plain", 0),
+            jpeg(4, 10),
+        )]));
+        let seen = packets_until(&mut phone, pc, is_media).await;
+        assert_eq!(kinds(&seen), ["media"]);
+        let Packet::Media { players } = &seen[0] else {
+            unreachable!();
+        };
+        assert_eq!(players[0].art, None);
+
+        // The phone's covers reach the snapshot; a bad one does not.
+        let cover = MediaArt {
+            art: "phone-1".into(),
+            mime: "image/png".into(),
+            data: vec![9; 50],
+        };
+        phone.send(pc, &Packet::MediaArt(cover.clone())).await;
+        let theirs = Player {
+            id: "org.podcasts".into(),
+            art: Some("phone-1".into()),
+            ..song("Episode", 0)
+        };
+        phone
+            .send(
+                pc,
+                &Packet::Media {
+                    players: vec![theirs.clone()],
+                },
+            )
+            .await;
+        let snapshot = tested
+            .wait(|snapshot| snapshot.peer(&phone_id).media.is_some())
+            .await;
+        let peer = snapshot.peer(&phone_id);
+        let shown = peer.cover(&theirs).expect("the phone's cover");
+        assert_eq!((shown.mime.as_str(), shown.data.len()), ("image/png", 50));
+        let gif = r#"{"type":"media.art","art":"phone-2","mime":"image/gif","data":"AA=="}"#;
+        phone.session.send_packet(pc, gif).await.unwrap();
+        phone.send(pc, &Packet::Ping { message: None }).await;
+        tested
+            .expect_notice(|notice| matches!(notice, Notice::Ping { .. }))
+            .await;
+        let peer = tested.worker.snapshot().peer(&phone_id);
+        assert!(peer.covers.get("phone-2").is_none() && peer.covers.len() == 1);
         tested.stop().await;
     })
     .await;

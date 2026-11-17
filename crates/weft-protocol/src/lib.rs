@@ -120,6 +120,24 @@ pub fn device_id_from_sign_pk(sign_pk: &[u8; 32]) -> [u8; 16] {
     sodium::generichash_16(sign_pk)
 }
 
+/// `crypto_generichash` (BLAKE2b) of `data` without a key, 16-byte output:
+/// a short name for content, such as a cover image. Not a MAC.
+pub fn content_hash(data: &[u8]) -> [u8; 16] {
+    sodium::generichash_16(data)
+}
+
+/// Standard base64 (RFC 4648 section 4, with padding), as packets carry
+/// binary data.
+pub fn base64_encode(data: &[u8]) -> String {
+    sodium::base64_encode(data)
+}
+
+/// The inverse of [`base64_encode`]. `None` unless `text` is standard
+/// base64 with its padding, without whitespace.
+pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    sodium::base64_decode(text)
+}
+
 /// A device's long-term key pairs (Ed25519 signing and X25519 key exchange).
 pub struct Identity {
     sign_pk: [u8; sodium::SIGN_PK_BYTES],

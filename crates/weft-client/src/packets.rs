@@ -8,6 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::media::{self, Cover};
+
 /// The `platform` this app announces: the one it is built for.
 #[cfg(not(target_os = "macos"))]
 pub const PLATFORM: &str = "windows";
@@ -82,6 +84,8 @@ pub enum Packet {
         #[serde(default)]
         players: Vec<Player>,
     },
+    #[serde(rename = "media.art")]
+    MediaArt(MediaArt),
     #[serde(rename = "media.command")]
     MediaCommand(MediaCommand),
     #[serde(rename = "volume")]
@@ -269,6 +273,75 @@ pub struct Player {
     pub can_seek: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<u8>,
+    /// The id of its cover, sent in a `media.art`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub art: Option<String>,
+}
+
+/// A cover a player's `art` names. `data` is standard base64 on the wire,
+/// at most [`media::MAX_ART_LEN`] bytes once decoded; [`parse`] finds a
+/// `media.art` with a bad id, type or size invalid.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaArt {
+    pub art: String,
+    pub mime: String,
+    #[serde(with = "base64_data")]
+    pub data: Vec<u8>,
+}
+
+impl MediaArt {
+    pub fn new(art: &str, cover: &Cover) -> MediaArt {
+        MediaArt {
+            art: art.into(),
+            mime: cover.mime.clone(),
+            data: cover.data.to_vec(),
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        media::is_art_id(&self.art)
+            && media::ART_MIMES.contains(&self.mime.as_str())
+            && !self.data.is_empty()
+            && self.data.len() <= media::MAX_ART_LEN
+    }
+
+    pub fn cover(self) -> Cover {
+        Cover {
+            mime: self.mime,
+            data: self.data.into(),
+        }
+    }
+}
+
+/// Without the bytes.
+impl std::fmt::Debug for MediaArt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MediaArt")
+            .field("art", &self.art)
+            .field("mime", &self.mime)
+            .field("len", &self.data.len())
+            .finish()
+    }
+}
+
+/// Binary data as standard base64, refused when it cannot be a cover's.
+mod base64_data {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    use crate::media::MAX_ART_LEN;
+
+    pub fn serialize<S: Serializer>(data: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&weft_protocol::base64_encode(data))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        // Not decoded at all when even its padding could not make it fit.
+        if text.len() > MAX_ART_LEN.div_ceil(3) * 4 {
+            return Err(D::Error::custom("too long"));
+        }
+        weft_protocol::base64_decode(&text).ok_or_else(|| D::Error::custom("not base64"))
+    }
 }
 
 /// What a `media.command` asks a player to do.
@@ -621,6 +694,7 @@ const KNOWN: &[&str] = &[
     "call",
     "call.mute",
     "media",
+    "media.art",
     "media.command",
     "volume",
     "volume.set",
@@ -652,6 +726,7 @@ pub fn parse(json: &str) -> Parsed {
         return Parsed::Unknown(kind.to_owned());
     }
     match serde_json::from_value(serde_json::Value::Object(object)) {
+        Ok(Packet::MediaArt(art)) if !art.is_valid() => Parsed::Invalid,
         Ok(packet) => Parsed::Known(packet),
         Err(_) => Parsed::Invalid,
     }
@@ -969,6 +1044,82 @@ mod tests {
             .to_json(),
             r#"{"type":"volume.set","muted":true}"#
         );
+    }
+
+    #[test]
+    fn covers_round_trip_and_bad_ones_are_dropped() {
+        let player = Player {
+            id: "a".into(),
+            art: Some("c0ffee".into()),
+            ..Player::default()
+        };
+        let media = Packet::Media {
+            players: vec![player],
+        };
+        let json = media.to_json();
+        assert!(json.contains(r#""art":"c0ffee""#));
+        assert_eq!(parse(&json), Parsed::Known(media));
+        // No cover, no member.
+        assert!(
+            !Packet::Media {
+                players: vec![Player::default()]
+            }
+            .to_json()
+            .contains("art")
+        );
+
+        let art = Packet::MediaArt(MediaArt {
+            art: "c0ffee".into(),
+            mime: "image/png".into(),
+            data: vec![0xfb, 0xff, 0x00],
+        });
+        let json = art.to_json();
+        assert_eq!(
+            json,
+            r#"{"type":"media.art","art":"c0ffee","mime":"image/png","data":"+/8A"}"#
+        );
+        assert_eq!(parse(&json), Parsed::Known(art));
+        assert_eq!(
+            Packet::MediaArt(MediaArt::new(
+                "x",
+                &Cover {
+                    mime: "image/jpeg".into(),
+                    data: vec![1, 2].into(),
+                }
+            ))
+            .kind(),
+            "media.art"
+        );
+
+        // The largest cover passes; one byte more does not.
+        let sized = |len: usize| {
+            format!(
+                r#"{{"type":"media.art","art":"a","mime":"image/jpeg","data":"{}"}}"#,
+                weft_protocol::base64_encode(&vec![7; len])
+            )
+        };
+        assert!(matches!(
+            parse(&sized(media::MAX_ART_LEN)),
+            Parsed::Known(Packet::MediaArt(_))
+        ));
+        assert_eq!(parse(&sized(media::MAX_ART_LEN + 1)), Parsed::Invalid);
+        for invalid in [
+            r#"{"type":"media.art","art":"a","mime":"image/gif","data":"AA=="}"#,
+            r#"{"type":"media.art","art":"a b","mime":"image/png","data":"AA=="}"#,
+            r#"{"type":"media.art","art":"","mime":"image/png","data":"AA=="}"#,
+            r#"{"type":"media.art","art":"a","mime":"image/png","data":""}"#,
+            r#"{"type":"media.art","art":"a","mime":"image/png","data":"A-=="}"#,
+            r#"{"type":"media.art","art":"a","mime":"image/png","data":"AA"}"#,
+            r#"{"type":"media.art","art":"a","mime":"image/png"}"#,
+            r#"{"type":"media.art","mime":"image/png","data":"AA=="}"#,
+        ] {
+            assert_eq!(parse(invalid), Parsed::Invalid, "{invalid}");
+        }
+        let long_id = format!(
+            r#"{{"type":"media.art","art":"{}","mime":"image/png","data":"AA=="}}"#,
+            "a".repeat(65)
+        );
+        assert_eq!(parse(&long_id), Parsed::Invalid);
     }
 
     #[test]

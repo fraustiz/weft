@@ -14,6 +14,26 @@
     Windows.Media.Control
     Windows.Media.MediaPlaybackType
     Windows.Media.MediaPlaybackAutoRepeatMode
+    Windows.Storage.Streams.IRandomAccessStreamReference
+    Windows.Storage.Streams.IRandomAccessStreamWithContentType
+    Windows.Storage.Streams.IRandomAccessStream
+    Windows.Storage.Streams.IInputStream
+    Windows.Storage.Streams.IOutputStream
+    Windows.Storage.Streams.InMemoryRandomAccessStream
+    Windows.Storage.Streams.DataReader
+    Windows.Storage.Streams.DataReaderLoadOperation
+    Windows.Graphics.Imaging.BitmapDecoder
+    Windows.Graphics.Imaging.BitmapEncoder
+    Windows.Graphics.Imaging.BitmapTransform
+    Windows.Graphics.Imaging.BitmapInterpolationMode
+    Windows.Graphics.Imaging.BitmapPixelFormat
+    Windows.Graphics.Imaging.BitmapAlphaMode
+    Windows.Graphics.Imaging.SoftwareBitmap
+    Windows.Graphics.Imaging.ImageStream
+    Windows.Graphics.Imaging.BitmapFrame
+    Windows.Graphics.Imaging.BitmapCodecInformation
+    Windows.Graphics.Imaging.PixelDataProvider
+    Windows.Graphics.Imaging.BitmapTypedValue
     !Windows.UI.Notifications.ToastNotifier::GetScheduledToastNotifications
     !Windows.UI.Notifications.IToastNotifier3::ScheduledToastNotificationShowing
     IMMDeviceEnumerator

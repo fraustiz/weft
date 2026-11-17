@@ -42,6 +42,7 @@ use weft_protocol::{ControlError, PairingCode, device_id_from_sign_pk, random_me
 
 use crate::features::{Features, Implemented, Settings, UserCommand};
 use crate::input::Input;
+use crate::media::{Cover, Covers, LocalPlayer};
 use crate::packets::{
     self, Battery, Call, Capabilities, Connectivity, FileOffer, MediaAction, Notification, Packet,
     Parsed, Player, RejectReason, SmsMessagesRequest, SmsSend, Volume, VolumeSet, is_shareable_url,
@@ -119,8 +120,9 @@ pub enum Command {
     /// if the feature it belongs to is off.
     SendPacket([u8; 16], Packet),
     /// This computer's players changed; sent on to the devices that show
-    /// them, unless only the positions moved with time.
-    LocalMedia(Vec<Player>),
+    /// them, unless only the positions moved with time. Their covers go
+    /// first, once per connection, to the devices that show covers.
+    LocalMedia(Vec<LocalPlayer>),
     /// This computer's output volume changed.
     LocalVolume(Volume),
     /// The messages of a phone are shown: ask for its conversations, and
@@ -193,6 +195,8 @@ pub struct PeerInfo {
     pub battery: Option<Battery>,
     pub connectivity: Option<Connectivity>,
     pub media: Option<PeerMedia>,
+    /// The last covers it sent, by id.
+    pub covers: Covers,
     pub volume: Option<Volume>,
     /// Its SMS and contacts, shared between snapshots until they change.
     pub sms: Arc<Sms>,
@@ -211,6 +215,12 @@ impl PeerInfo {
         self.capabilities
             .as_ref()
             .is_some_and(|capabilities| capabilities.sends(kind))
+    }
+
+    /// The cover of one of its players, when it sent the image `art`
+    /// names.
+    pub fn cover(&self, player: &Player) -> Option<&Cover> {
+        self.covers.get(player.art.as_deref()?)
     }
 }
 
@@ -590,6 +600,8 @@ pub fn spawn_on(dir: StateDir, relay_url: &str, hooks: Hooks) -> Result<(Handle,
         incoming: Vec::new(),
         completed: Vec::new(),
         local_media: None,
+        local_covers: BTreeMap::new(),
+        art_sent: BTreeMap::new(),
         local_volume: None,
         requested: BTreeMap::new(),
         shown: BTreeMap::new(),
@@ -677,6 +689,11 @@ struct Worker {
     completed: Vec<([u8; 16], [u8; 16])>,
     /// This computer's players as last sent, and when they were read.
     local_media: Option<(Vec<Player>, Instant)>,
+    /// The covers of these players, by id.
+    local_covers: BTreeMap<String, Cover>,
+    /// The covers each device got on this connection, by id: sent again
+    /// only after new capabilities.
+    art_sent: BTreeMap<[u8; 16], BTreeSet<String>>,
     /// This computer's volume as last sent.
     local_volume: Option<Volume>,
     /// The last `notification.request` to each device.
@@ -911,6 +928,7 @@ impl Worker {
             }
             // Kept, and sent with the state at the next connection.
             Command::LocalMedia(players) => {
+                let players = self.keep_covers(players);
                 self.local_media = Some((players, Instant::now()));
             }
             Command::LocalVolume(volume) => self.local_volume = Some(volume),
@@ -1267,32 +1285,95 @@ impl Worker {
 
     /// Sends this device's capabilities, then its current state: what its
     /// players and volume are, when it knows them and the feature is on.
+    /// The device may have restarted: it gets the covers again.
     async fn send_capabilities(&mut self, session: &mut Session, to: [u8; 16]) -> Result<()> {
         let packet = Packet::Capabilities(self.capabilities_for(&to));
         self.send(session, to, &packet).await?;
+        self.art_sent.remove(&to);
         self.send_state(session, to).await
     }
 
+    /// Keeps the covers of this computer's players, and names each in its
+    /// player's `art`. A cover the contract does not allow is dropped, its
+    /// player kept.
+    fn keep_covers(&mut self, players: Vec<LocalPlayer>) -> Vec<Player> {
+        self.local_covers.clear();
+        players
+            .into_iter()
+            .map(|LocalPlayer { mut player, cover }| {
+                player.art = None;
+                match cover {
+                    Some(cover) if cover.is_valid() => {
+                        let id = cover.id();
+                        player.art = Some(id.clone());
+                        self.local_covers.insert(id, cover);
+                    }
+                    Some(cover) => {
+                        tracing::debug!(
+                            ?cover,
+                            "cover not sent: over the limit or of another type"
+                        );
+                    }
+                    None => {}
+                }
+                player
+            })
+            .collect()
+    }
+
+    /// The `media` packet of `players` for `to`, after the `media.art`
+    /// packets of the covers it names that `to` did not get yet on this
+    /// connection, now marked as sent. A device that does not show covers,
+    /// or an app that does not send them, gets the players without `art`.
+    fn media_packets(&mut self, to: [u8; 16], mut players: Vec<Player>) -> Vec<Packet> {
+        let mut packets = Vec::new();
+        if self.view.peer(&to).handles("media.art") && self.announced(false).sends("media.art") {
+            let sent = self.art_sent.entry(to).or_default();
+            for player in &players {
+                if let Some(id) = &player.art
+                    && let Some(cover) = self.local_covers.get(id)
+                    && sent.insert(id.clone())
+                {
+                    packets.push(Packet::MediaArt(packets::MediaArt::new(id, cover)));
+                }
+            }
+        } else {
+            for player in &mut players {
+                player.art = None;
+            }
+        }
+        packets.push(Packet::Media { players });
+        packets
+    }
+
+    /// This computer's players, positions brought up to now.
+    fn local_players_now(&self) -> Option<Vec<Player>> {
+        let (players, at) = self.local_media.as_ref()?;
+        let elapsed = at.elapsed();
+        Some(
+            players
+                .iter()
+                .map(|player| Player {
+                    position: media::position(player, elapsed),
+                    ..player.clone()
+                })
+                .collect(),
+        )
+    }
+
     /// The current `media` and `volume` packets, positions brought up to
-    /// now. A device that told its capabilities gets only what it handles.
-    fn state_packets(&self, to: &[u8; 16]) -> Vec<Packet> {
+    /// now, the covers `to` needs first. A device that told its
+    /// capabilities gets only what it handles.
+    fn state_packets(&mut self, to: &[u8; 16]) -> Vec<Packet> {
         let peer = self.view.peer(to);
         let wants = |kind| peer.capabilities.is_none() || peer.handles(kind);
         let features = self.view.features;
         let mut packets = Vec::new();
         if features.media
             && wants("media")
-            && let Some((players, at)) = &self.local_media
+            && let Some(players) = self.local_players_now()
         {
-            let elapsed = at.elapsed();
-            let players = players
-                .iter()
-                .map(|player| Player {
-                    position: media::position(player, elapsed),
-                    ..player.clone()
-                })
-                .collect();
-            packets.push(Packet::Media { players });
+            packets.extend(self.media_packets(*to, players));
         }
         if features.volume
             && wants("volume")
@@ -1332,6 +1413,24 @@ impl Worker {
         self.requested.insert(to, request);
         self.send(session, to, &Packet::NotificationRequest {})
             .await
+    }
+
+    /// Sends this computer's players to every device that shows them, each
+    /// after the covers it needs.
+    async fn send_media(&mut self, session: &mut Session, players: Vec<Player>) -> Result<()> {
+        let devices: Vec<[u8; 16]> = self
+            .view
+            .devices
+            .iter()
+            .map(|device| device.id)
+            .filter(|device| self.view.peer(device).handles("media"))
+            .collect();
+        for device in devices {
+            for packet in self.media_packets(device, players.clone()) {
+                self.send(session, device, &packet).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Sends `packet` to every device that handles it.
@@ -1376,7 +1475,11 @@ impl Worker {
                 let peer = self.view.peers.entry(from).or_default();
                 let fresh = peer.capabilities.is_none();
                 let notifies = capabilities.sends("notification");
+                let shows_covers =
+                    |peer: &PeerInfo| peer.handles("media") && peer.handles("media.art");
+                let covers_before = shows_covers(peer);
                 peer.capabilities = Some(capabilities);
+                let covers_now = shows_covers(peer);
                 // It may have restarted: it needs this device's too.
                 if fresh {
                     self.send_capabilities(session, from).await?;
@@ -1384,6 +1487,16 @@ impl Worker {
                         self.request_notifications(session, from).await?;
                     }
                     self.offer_again(session, from).await?;
+                } else if covers_now && !covers_before {
+                    // Its media switch just came on: it forgot the covers.
+                    self.art_sent.remove(&from);
+                    if features.media
+                        && let Some(players) = self.local_players_now()
+                    {
+                        for packet in self.media_packets(from, players) {
+                            self.send(session, from, &packet).await?;
+                        }
+                    }
                 }
             }
             Packet::StateRequest {} => {
@@ -1527,6 +1640,13 @@ impl Worker {
                 }
                 let peer = self.view.peers.entry(from).or_default();
                 peer.media = Some(PeerMedia { players, at: now });
+            }
+            Packet::MediaArt(art)
+                if features.media && self.announced(false).handles("media.art") =>
+            {
+                tracing::debug!(from = %short_id(&from), ?art, "cover received");
+                let peer = self.view.peers.entry(from).or_default();
+                peer.covers.insert(art.art.clone(), art.cover());
             }
             Packet::Volume(volume) if features.volume => {
                 let volume = Volume {
@@ -2220,6 +2340,7 @@ impl Worker {
         for peer in self.view.peers.values_mut() {
             if !features.media {
                 peer.media = None;
+                peer.covers = Covers::default();
             }
             if !features.volume {
                 peer.volume = None;
@@ -2359,14 +2480,14 @@ impl Worker {
             }
             Command::LocalMedia(players) => {
                 let now = Instant::now();
+                let players = self.keep_covers(players);
                 let news = match &self.local_media {
                     Some((old, at)) => media::differs(old, now.duration_since(*at), &players),
                     None => true,
                 };
                 self.local_media = Some((players.clone(), now));
                 if news && self.view.features.media {
-                    self.send_to_handlers(session, &Packet::Media { players })
-                        .await
+                    self.send_media(session, players).await
                 } else {
                     Ok(())
                 }

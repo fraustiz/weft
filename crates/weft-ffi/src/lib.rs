@@ -30,10 +30,10 @@ pub use crate::core::{
     WeftCore,
 };
 pub use crate::map::{
-    BatteryInfo, ConnectionStatus, ConnectivityInfo, CoreNotice, CoreSnapshot, DeviceInfo,
-    FeatureSwitches, LastActivity, MediaControl, MediaInfo, Pairing, PairingFailureKind,
-    PlayerInfo, PollOutcome, SendOutcome, TextDirection, TransferFailureKind, TransferInfo,
-    TransferStage, VolumeInfo,
+    BatteryInfo, ConnectionStatus, ConnectivityInfo, CoreNotice, CoreSnapshot, CoverImage,
+    DeviceInfo, FeatureSwitches, LastActivity, LocalPlayer, MediaControl, MediaInfo, Pairing,
+    PairingFailureKind, PlayerInfo, PollOutcome, SendOutcome, TextDirection, TransferFailureKind,
+    TransferInfo, TransferStage, VolumeInfo,
 };
 
 uniffi::setup_scaffolding!();

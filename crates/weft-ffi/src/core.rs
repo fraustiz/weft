@@ -14,7 +14,8 @@ use weft_client::worker::{self, Command, DEFAULT_RELAY_URL, Handle, Hooks, Publi
 use weft_protocol::MAX_CLIPBOARD_TEXT_LEN;
 
 use crate::map::{
-    self, CoreNotice, CoreSnapshot, FeatureSwitches, MediaControl, Now, PollOutcome, SendOutcome,
+    self, CoreNotice, CoreSnapshot, CoverImage, FeatureSwitches, LocalPlayer, MediaControl, Now,
+    PollOutcome, SendOutcome,
 };
 use crate::{CoreConfig, CoreError, check_device_name, check_relay_url, group};
 
@@ -38,9 +39,10 @@ const SUPPORTED: Features = Features {
 
 /// The packet types the Mac app acts on: its capabilities list only
 /// these, less the switched-off features (`docs/features.md` sections 2
-/// and 10). Its own players are not here: macOS has no public way to read
-/// what other apps play, so it never sends `media` nor takes
-/// `media.command`. No remote input, presenter, SMS or commands either.
+/// and 10). Its own players are read by the app (through
+/// mediaremote-adapter) and given with [`WeftCore::set_local_media`]; the
+/// commands for them come back as [`CoreNotice::MediaCommand`]. No remote
+/// input, presenter, SMS or commands.
 ///
 /// A later version that implements a packet adds it here (and to
 /// [`MAC_OUTGOING`] if it sends it), with its switch in [`SUPPORTED`].
@@ -61,8 +63,11 @@ pub const MAC_INCOMING: &[&str] = &[
     "notification",
     "notification.removed",
     "call",
-    // The players of the other devices, shown and controlled from here.
+    // The players of the other devices, shown with their covers, and the
+    // commands for this Mac's players.
     "media",
+    "media.art",
+    "media.command",
     "volume",
     "volume.set",
 ];
@@ -85,7 +90,10 @@ pub const MAC_OUTGOING: &[&str] = &[
     "notification.reply",
     "notification.request",
     "call.mute",
-    // Control of the other devices' players.
+    // This Mac's players with their covers, and control of the other
+    // devices' players.
+    "media",
+    "media.art",
     "media.command",
     "volume",
     "volume.set",
@@ -246,6 +254,9 @@ pub struct WeftCore {
     sync: Mutex<Sync<AppClipboard>>,
     /// The last received text, until the next poll writes it.
     received: Arc<Mutex<Option<String>>>,
+    /// This Mac's players as the app last gave them, for a restarted
+    /// worker: none until the app reads some.
+    local_media: Mutex<Vec<LocalPlayer>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -323,6 +334,12 @@ impl WeftCore {
         if supported(features) != features || features != handle.snapshot().features {
             handle.send(Command::SetFeatures(supported(features)));
         }
+        // A new worker knows no players: the app's last ones, or none
+        // rather than nothing, so the devices never keep stale ones.
+        let players = lock(&self.local_media).clone();
+        handle.send(Command::LocalMedia(
+            players.into_iter().map(map::local_player).collect(),
+        ));
         let watcher = handle.clone();
         let delegate = self.delegate.clone();
         let started = std::thread::Builder::new()
@@ -462,6 +479,7 @@ impl WeftCore {
             restarting: Mutex::new(()),
             sync: Mutex::new(sync),
             received: Arc::new(Mutex::new(None)),
+            local_media: Mutex::new(Vec::new()),
         };
         if fresh {
             core.create_identity(config.default_name.as_deref())?;
@@ -741,6 +759,27 @@ impl WeftCore {
             level: Some(level.min(100)),
             muted: Some(muted),
         }));
+    }
+
+    /// This Mac's players as they are now, positions included: sent to the
+    /// devices that show them when something more than time changed, each
+    /// cover once per connection. An empty list when nothing plays or the
+    /// players cannot be read. Commands for them come back as
+    /// [`CoreNotice::MediaCommand`].
+    pub fn set_local_media(&self, players: Vec<LocalPlayer>) {
+        *lock(&self.local_media) = players.clone();
+        self.send(Command::LocalMedia(
+            players.into_iter().map(map::local_player).collect(),
+        ));
+    }
+
+    /// The cover `art` names among those a device sent, if it is still
+    /// kept: the last 8 per device, by id (`PlayerInfo::art`).
+    pub fn media_art(&self, device_id: String, art: String) -> Option<CoverImage> {
+        let device = unhex::<16>(&device_id)?;
+        let snapshot = self.published().snapshot;
+        let peer = snapshot.peers.get(&device)?;
+        peer.covers.get(&art).map(map::cover_image)
     }
 
     /// Stops the worker. The core does nothing afterwards.

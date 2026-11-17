@@ -84,12 +84,15 @@ Computer rules: shown as system notifications (toasts) titled "<app> · <device>
 
 | Type | Direction | Members |
 | --- | --- | --- |
-| `media` | any → others, on change | `players`: array of `{"id", "app", "title", "artist", "album", "playing" (bool), "position" (ms), "length" (ms), "canPlay", "canPause", "canNext", "canPrevious", "canSeek" (bools), "volume" (0–100, optional)}`. An empty array means nothing plays. `position` is the position at the moment of sending; the receiver extrapolates while `playing`. |
+| `media` | any → others, on change | `players`: array of `{"id", "app", "title", "artist", "album", "playing" (bool), "position" (ms), "length" (ms), "canPlay", "canPause", "canNext", "canPrevious", "canSeek" (bools), "volume" (0–100, optional), "art" (optional string)}`. An empty array means nothing plays. `position` is the position at the moment of sending; the receiver extrapolates while `playing`. |
+| `media.art` | any → others | `art` (the id a player's `art` names), `mime` (`"image/jpeg"` or `"image/png"`), `data` (standard base64, at most 128 KiB once decoded) |
 | `media.command` | any → any | `player` (id), `action` (`"play"`, `"pause"`, `"playPause"`, `"next"`, `"previous"`, `"seek"`, `"setVolume"`), `value` (ms for `seek`, 0–100 for `setVolume`) |
 | `volume` | any → others, on change | `level` (0–100), `muted` (bool) — the computer's default output device, the phone's media volume |
 | `volume.set` | any → any | `level` (optional), `muted` (optional) |
 
-Phone: reads media sessions through the notification listener permission (`MediaSessionManager.getActiveSessions`). Computer: Windows global system media transport controls, default render endpoint volume (Core Audio).
+Artwork: a player's `art` is an id its sender chooses for the current cover (for example a hash of the image), 1 to 64 ASCII letters, digits, `-` or `_`; the same image keeps the same id. The sender sends `media.art` for an id **before** the first `media` packet that names it on a connection, and again after its capabilities on a fresh connection; it never resends an id the peer already got on this connection. A connection, here, starts each time a device sends a peer its capabilities followed by its state (section 2: after its own reconnection, a `state.request`, or a first `capabilities` from that peer). A peer that does not list `media.art` in its `incoming` gets players without `art`. It scales the cover so that its longer side is at most 512 px (300 px is enough), JPEG unless the image needs transparency. The receiver keeps the last 8 covers per device, by id, in memory, and shows a player's cover only when it has the image of its `art`; a `media.art` it cannot decode, over the limit or with another `mime` is dropped. `media.art` belongs to the `media` feature: a device lists it in `incoming` only if it shows covers.
+
+Phone: reads media sessions through the notification listener permission (`MediaSessionManager.getActiveSessions`). Computer: Windows global system media transport controls (the session thumbnail as cover), default render endpoint volume (Core Audio); macOS reads now-playing through [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) (BSD-3-Clause).
 
 ## 7. SMS and contacts
 

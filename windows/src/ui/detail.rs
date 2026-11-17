@@ -16,6 +16,9 @@ use crate::media;
 use crate::packets::{Battery, Connectivity, MAX_URL_LEN, MediaAction, Player, is_shareable_url};
 use crate::worker::{PeerInfo, TransferView};
 
+/// The side of a player's cover, in effective pixels.
+const COVER_SIZE: f64 = 64.0;
+
 /// The bars icon for a signal of 0 to 4.
 fn bars(signal: u8) -> Symbol {
     match signal {
@@ -303,7 +306,28 @@ fn now_playing(
     if !player.artist.trim().is_empty() {
         lines.push(one_line(secondary(player.artist.clone())));
     }
-    let mut views = vec![column(2.0, lines)];
+    let text = column(2.0, lines);
+    // The cover, once the device sent the image its `art` names.
+    let heading = match peer.cover(player) {
+        Some(cover) => Grid::new()
+            .columns([GridLength::Auto, GridLength::STAR])
+            .column_spacing(12.0)
+            .children((
+                Image::new()
+                    .grid_column(0)
+                    .width(COVER_SIZE)
+                    .height(COVER_SIZE)
+                    .stretch(Stretch::UniformToFill)
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .source_data(EncodedImage::new(cover.data.clone())),
+                Border::new()
+                    .grid_column(1)
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .content(text),
+            )),
+        None => text,
+    };
+    let mut views = vec![heading];
     if player.can_seek
         && let (Some(length), Some(position)) = (player.length, position_shown(weft, device))
     {

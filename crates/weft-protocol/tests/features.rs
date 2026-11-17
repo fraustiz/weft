@@ -194,3 +194,37 @@ fn route_header_checks_version_and_length() {
         Err(Error::UnsupportedVersion(2))
     );
 }
+
+#[test]
+fn standard_base64_round_trips_and_is_strict() {
+    use weft_protocol::{base64_decode, base64_encode};
+    // RFC 4648 test vectors.
+    for (plain, encoded) in [
+        ("", ""),
+        ("f", "Zg=="),
+        ("fo", "Zm8="),
+        ("foo", "Zm9v"),
+        ("foobar", "Zm9vYmFy"),
+    ] {
+        assert_eq!(base64_encode(plain.as_bytes()), encoded);
+        assert_eq!(base64_decode(encoded).unwrap(), plain.as_bytes());
+    }
+    // The standard alphabet, not the URL-safe one.
+    assert_eq!(base64_encode(&[0xfb, 0xff]), "+/8=");
+    for refused in ["Zg", "Zg=", "-_8=", "Zm9v\n", "Zm 9v", "Zh=="] {
+        assert_eq!(base64_decode(refused), None, "{refused}");
+    }
+}
+
+#[test]
+fn content_hashes_are_blake2b_128() {
+    let hash = weft_protocol::content_hash(b"cover");
+    assert_eq!(hash, weft_protocol::content_hash(b"cover"));
+    assert_ne!(hash, weft_protocol::content_hash(b"cover2"));
+    // Same function as the device id.
+    let pk = [7u8; 32];
+    assert_eq!(
+        weft_protocol::content_hash(&pk),
+        weft_protocol::device_id_from_sign_pk(&pk)
+    );
+}

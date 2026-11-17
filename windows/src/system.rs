@@ -10,7 +10,9 @@
 //!   balloon of the tray icon.
 //! - Players: the global system media transport controls. Their events
 //!   mark the list as changed; it is read and sent [`MEDIA_DEBOUNCE`] after
-//!   the first change, so a burst of events gives one packet.
+//!   the first change, so a burst of events gives one packet. Each
+//!   player's thumbnail becomes its cover, a JPEG of at most [`COVER_SIDE`]
+//!   px, read again only when the track changes.
 //! - Volume: the default output device, read every [`VOLUME_POLL`]. The
 //!   device itself is looked up again every [`DEVICE_REFRESH`], in case the
 //!   default changed.
@@ -25,11 +27,14 @@ use windows_sys::Win32::Media::Audio::{eMultimedia, eRender};
 use windows_sys::Win32::System::Com::CLSCTX_ALL;
 
 use crate::bindings::{
-    CoCreateInstance, GlobalSystemMediaTransportControlsSession as Session,
+    BitmapAlphaMode, BitmapDecoder, BitmapEncoder, BitmapInterpolationMode, BitmapPixelFormat,
+    CoCreateInstance, DataReader, GlobalSystemMediaTransportControlsSession as Session,
     GlobalSystemMediaTransportControlsSessionManager as Manager,
+    GlobalSystemMediaTransportControlsSessionMediaProperties as Properties,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status, IAudioEndpointVolume,
-    IMMDeviceEnumerator, MMDeviceEnumerator,
+    IMMDeviceEnumerator, InMemoryRandomAccessStream, MMDeviceEnumerator,
 };
+use crate::media::{Cover, LocalPlayer, MAX_ART_LEN};
 use crate::packets::{MediaAction, Player, Volume, VolumeSet};
 use crate::toast::{Activation, Content, Shown, Toaster};
 use crate::tray::Link;
@@ -41,6 +46,8 @@ pub const MEDIA_DEBOUNCE: Duration = Duration::from_millis(300);
 pub const VOLUME_POLL: Duration = Duration::from_millis(500);
 /// How often the default output device is looked up again.
 const DEVICE_REFRESH: Duration = Duration::from_secs(5);
+/// The longer side of a cover, in pixels (`docs/features.md` section 6).
+pub const COVER_SIDE: u32 = 300;
 /// Toasts whose click handlers are kept; older ones no longer answer.
 const TOASTS_KEPT: usize = 64;
 
@@ -151,7 +158,12 @@ struct Players {
     /// The events of the sessions, dropped (unsubscribed) on a new list.
     watched: Vec<EventRevoker>,
     sessions: Vec<(String, Session)>,
+    /// The cover of each player, by id, with the track it was read for.
+    covers: Vec<(String, Track, Cover)>,
 }
+
+/// What tells one track from another: a new one has a new cover.
+type Track = (String, String, String);
 
 impl Players {
     fn new(changed: Sender<Request>) -> windows_core::Result<Players> {
@@ -165,6 +177,7 @@ impl Players {
             _sessions_changed: sessions_changed,
             watched: Vec::new(),
             sessions: Vec::new(),
+            covers: Vec::new(),
         };
         players.watch(&changed);
         Ok(players)
@@ -215,11 +228,39 @@ impl Players {
         }
     }
 
-    fn read(&self) -> Vec<Player> {
-        self.sessions
-            .iter()
-            .filter_map(|(id, session)| read_player(id, session).ok())
-            .collect()
+    /// The players, each with its cover. A cover is read again only for
+    /// a new track, and until there is one: players often set the
+    /// thumbnail after the title.
+    fn read(&mut self) -> Vec<LocalPlayer> {
+        let mut covers = Vec::new();
+        let mut players = Vec::new();
+        for (id, session) in &self.sessions {
+            let Ok((player, properties)) = read_player(id, session) else {
+                continue;
+            };
+            let track = (
+                player.title.clone(),
+                player.artist.clone(),
+                player.album.clone(),
+            );
+            let known = self
+                .covers
+                .iter()
+                .find(|(known, shown, _)| known == id && *shown == track)
+                .map(|(_, _, cover)| cover.clone());
+            let cover = known.or_else(|| {
+                read_cover(&properties)
+                    .inspect_err(|err| tracing::debug!(error = %err, "no cover"))
+                    .ok()
+                    .flatten()
+            });
+            if let Some(cover) = &cover {
+                covers.push((id.clone(), track, cover.clone()));
+            }
+            players.push(LocalPlayer { player, cover });
+        }
+        self.covers = covers;
+        players
     }
 
     fn command(&self, player: &str, action: MediaAction) {
@@ -255,7 +296,7 @@ impl Players {
     }
 }
 
-fn read_player(id: &str, session: &Session) -> windows_core::Result<Player> {
+fn read_player(id: &str, session: &Session) -> windows_core::Result<(Player, Properties)> {
     let app_id = session.SourceAppUserModelId()?.to_string_lossy();
     let properties = session.TryGetMediaPropertiesAsync()?.join()?;
     let info = session.GetPlaybackInfo()?;
@@ -276,7 +317,7 @@ fn read_player(id: &str, session: &Session) -> windows_core::Result<Player> {
     } else {
         (None, None)
     };
-    Ok(Player {
+    let player = Player {
         id: id.to_owned(),
         app: app_name(&app_id),
         title: properties.Title()?.to_string_lossy(),
@@ -291,7 +332,67 @@ fn read_player(id: &str, session: &Session) -> windows_core::Result<Player> {
         can_previous: controls.IsPreviousEnabled()?,
         can_seek: controls.IsPlaybackPositionEnabled()? && length.is_some(),
         volume: None,
-    })
+        art: None,
+    };
+    Ok((player, properties))
+}
+
+/// The thumbnail of a track as a JPEG whose longer side is at most
+/// [`COVER_SIDE`] px; `None` if it has none, or if even scaled it is over
+/// the size a cover may have.
+fn read_cover(properties: &Properties) -> windows_core::Result<Option<Cover>> {
+    // No thumbnail: a null reference, which fails to project.
+    let Ok(thumbnail) = properties.Thumbnail() else {
+        return Ok(None);
+    };
+    let source = thumbnail.OpenReadAsync()?.join()?;
+    let decoder = BitmapDecoder::CreateAsync(&source)?.join()?;
+    let (width, height) = (
+        decoder.OrientedPixelWidth()?,
+        decoder.OrientedPixelHeight()?,
+    );
+    if width == 0 || height == 0 {
+        return Ok(None);
+    }
+    // JPEG has no transparency: what is transparent becomes black, and
+    // album art seldom has any.
+    let bitmap = decoder
+        .GetSoftwareBitmapConvertedAsync(BitmapPixelFormat::Bgra8, BitmapAlphaMode::Ignore)?
+        .join()?;
+    let (scaled_width, scaled_height) = scaled(width, height, COVER_SIDE);
+    let output = InMemoryRandomAccessStream::new()?;
+    let encoder = BitmapEncoder::CreateAsync(BitmapEncoder::JpegEncoderId()?, &output)?.join()?;
+    encoder.SetSoftwareBitmap(&bitmap)?;
+    let transform = encoder.BitmapTransform()?;
+    transform.SetScaledWidth(scaled_width)?;
+    transform.SetScaledHeight(scaled_height)?;
+    transform.SetInterpolationMode(BitmapInterpolationMode::Fant)?;
+    encoder.FlushAsync()?.join()?;
+    let size = output.Size()?;
+    if size == 0 || size > MAX_ART_LEN as u64 {
+        return Ok(None);
+    }
+    let reader = DataReader::CreateDataReader(&output.GetInputStreamAt(0)?)?;
+    let loaded = reader.LoadAsync(size as u32)?.join()?;
+    let mut data = vec![0; loaded as usize];
+    reader.ReadBytes(&mut data)?;
+    Ok(Some(Cover {
+        mime: "image/jpeg".into(),
+        data: data.into(),
+    }))
+}
+
+/// `width` × `height` scaled down, proportions kept, so that its longer
+/// side is at most `side`; never scaled up, never below 1 px.
+fn scaled(width: u32, height: u32, side: u32) -> (u32, u32) {
+    let longer = width.max(height);
+    if longer <= side {
+        return (width, height);
+    }
+    let scale = |length: u32| {
+        ((u64::from(length) * u64::from(side)).div_ceil(u64::from(longer)) as u32).clamp(1, side)
+    };
+    (scale(width), scale(height))
 }
 
 /// The default output device's volume.
@@ -484,6 +585,15 @@ fn run(inbox: Receiver<Request>, changed: Sender<Request>, worker: Handle, link:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn covers_are_scaled_down_only() {
+        assert_eq!(scaled(1200, 1200, 300), (300, 300));
+        assert_eq!(scaled(1920, 1080, 300), (300, 169));
+        assert_eq!(scaled(100, 4000, 300), (8, 300));
+        assert_eq!(scaled(5000, 1, 300), (300, 1));
+        assert_eq!(scaled(200, 120, 300), (200, 120));
+    }
 
     #[test]
     fn app_names_from_session_ids() {

@@ -257,15 +257,39 @@ pub fn memcmp_32(a: &[u8; 32], b: &[u8; 32]) -> bool {
     rc == 0
 }
 
-const BASE64_VARIANT: std::ffi::c_int =
+const BASE64URL_VARIANT: std::ffi::c_int =
     ffi::sodium_base64_VARIANT_URLSAFE_NO_PADDING as std::ffi::c_int;
+const BASE64_VARIANT: std::ffi::c_int = ffi::sodium_base64_VARIANT_ORIGINAL as std::ffi::c_int;
 
 /// `sodium_bin2base64`, URL-safe alphabet, no padding.
 pub fn base64url_encode(bin: &[u8]) -> String {
+    bin2base64(bin, BASE64URL_VARIANT)
+}
+
+/// `sodium_base642bin`, URL-safe alphabet, no padding. `None` if the input
+/// has any other character (padding and whitespace included), a length that
+/// cannot be produced by the encoder, or non-zero trailing bits.
+pub fn base64url_decode(b64: &str) -> Option<Vec<u8>> {
+    base642bin(b64, BASE64URL_VARIANT)
+}
+
+/// `sodium_bin2base64`, standard alphabet, with padding.
+pub fn base64_encode(bin: &[u8]) -> String {
+    bin2base64(bin, BASE64_VARIANT)
+}
+
+/// `sodium_base642bin`, standard alphabet, with padding. `None` if the
+/// input has any other character (whitespace included), missing padding,
+/// or non-zero trailing bits.
+pub fn base64_decode(b64: &str) -> Option<Vec<u8>> {
+    base642bin(b64, BASE64_VARIANT)
+}
+
+fn bin2base64(bin: &[u8], variant: std::ffi::c_int) -> String {
     init();
     // SAFETY: pure function of its arguments. The returned length includes
     // the trailing NUL byte.
-    let max_len = unsafe { ffi::sodium_base64_encoded_len(bin.len(), BASE64_VARIANT) };
+    let max_len = unsafe { ffi::sodium_base64_encoded_len(bin.len(), variant) };
     let mut out = vec![0u8; max_len];
     // SAFETY: out has the size libsodium asked for; bin length is passed.
     unsafe {
@@ -274,17 +298,14 @@ pub fn base64url_encode(bin: &[u8]) -> String {
             out.len(),
             bin.as_ptr(),
             bin.len(),
-            BASE64_VARIANT,
+            variant,
         )
     };
     out.pop(); // trailing NUL
     String::from_utf8(out).expect("base64 output is ASCII")
 }
 
-/// `sodium_base642bin`, URL-safe alphabet, no padding. `None` if the input
-/// has any other character (padding and whitespace included), a length that
-/// cannot be produced by the encoder, or non-zero trailing bits.
-pub fn base64url_decode(b64: &str) -> Option<Vec<u8>> {
+fn base642bin(b64: &str, variant: std::ffi::c_int) -> Option<Vec<u8>> {
     init();
     let mut out = vec![0u8; b64.len() / 4 * 3 + 3];
     let mut out_len: usize = 0;
@@ -301,7 +322,7 @@ pub fn base64url_decode(b64: &str) -> Option<Vec<u8>> {
             std::ptr::null(),
             &mut out_len,
             std::ptr::null_mut(),
-            BASE64_VARIANT,
+            variant,
         )
     };
     if rc != 0 {
