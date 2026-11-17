@@ -288,17 +288,28 @@ class WeftCore internal constructor(
                 val dropped = state.devices.filter { next.device(it.deviceIdHex) == null }
                 next to (next.devices to dropped)
             }
+            val deferred = pending.buffer.settleAndDrain()
+            pendingJoin = null
+            for (buffered in deferred) {
+                try {
+                    handleEnvelope(buffered)
+                } catch (e: WeftException) {
+                    Log.w(TAG, "dropped a deferred frame: ${e.error.javaClass.simpleName}")
+                }
+            }
             pending.settled.complete(Unit)
+            val joinedDevices = if (deferred.isEmpty()) devices else repository.state.value.devices
             for (device in dropped) {
                 Log.w(TAG, "no longer trusted, it belongs to the previous group: ${shortId(device.deviceIdHex)}")
             }
-            Log.i(TAG, "joined the group: ${devices.size} trusted device(s)")
-            sendName(devices.map { it.deviceIdHex })
+            Log.i(TAG, "joined the group: ${joinedDevices.size} trusted device(s)")
+            sendName(joinedDevices.map { it.deviceIdHex })
             if (!relay.flush(FLUSH_TIMEOUT)) Log.w(TAG, "the relay connection closed before the name left")
             // Before the join lets go of the connection, so it stays up.
             startService()
-            return JoinResult.Joined(devices.map { it.toDevice() }, replacedGroup = dropped.isNotEmpty())
+            return JoinResult.Joined(joinedDevices.map { it.toDevice() }, replacedGroup = dropped.isNotEmpty())
         } finally {
+            pending.buffer.settleAndDrain()
             pending.settled.complete(Unit)
             pendingJoin = null
             pending.rx.fill(0)
@@ -519,6 +530,7 @@ class WeftCore internal constructor(
 
     private class PendingJoin(val ownerIdHex: String, val rx: ByteArray) {
         val result = CompletableDeferred<JoinOutcome>()
+        val buffer = JoinFrameBuffer(ownerIdHex)
 
         /** Completed once the join has saved (or given up on) the new group. */
         val settled = CompletableDeferred<Unit>()
@@ -639,9 +651,16 @@ class WeftCore internal constructor(
         }
         val senderHex = header.sender.toHex()
         val pending = pendingJoin
-        if (pending != null && senderHex == pending.ownerIdHex && header.kind == Kind.WELCOME) {
-            handleJoinWelcome(pending, frame)
-            return
+        if (pending != null) {
+            val isTrusted = repository.state.value.device(senderHex) != null
+            when (pending.buffer.onEnvelope(senderHex, header.kind, isTrusted, frame)) {
+                JoinDisposition.WELCOME -> {
+                    handleJoinWelcome(pending, frame)
+                    return
+                }
+                JoinDisposition.DEFERRED -> return
+                JoinDisposition.PROCESS_NOW -> Unit
+            }
         }
         val event = repository.update { state -> receive(state, local, senderHex, frame) }
         when (event) {
@@ -784,4 +803,49 @@ interface PacketListener {
 
     /** This phone's name was just sent to [deviceIds]. */
     suspend fun onNameSent(deviceIds: List<String>)
+}
+
+internal enum class JoinDisposition {
+    WELCOME,
+    PROCESS_NOW,
+    DEFERRED,
+}
+
+/**
+ * Holds envelopes from not-yet-trusted senders while a join waits for its Welcome to be saved,
+ * so a member's Device name arriving ahead of the Welcome is not dropped.
+ */
+internal class JoinFrameBuffer(
+    private val ownerIdHex: String,
+    private val maxDeferred: Int = 32,
+) {
+    private val deferred = ArrayDeque<ByteArray>()
+    private var settled = false
+
+    @Synchronized
+    fun onEnvelope(
+        senderHex: String,
+        kind: Kind,
+        isTrusted: Boolean,
+        frame: ByteArray,
+    ): JoinDisposition {
+        if (settled) return JoinDisposition.PROCESS_NOW
+        if (senderHex == ownerIdHex && kind == Kind.WELCOME) return JoinDisposition.WELCOME
+        if (!isTrusted) {
+            if (deferred.size < maxDeferred) {
+                deferred.addLast(frame.copyOf())
+            }
+            return JoinDisposition.DEFERRED
+        }
+        return JoinDisposition.PROCESS_NOW
+    }
+
+    @Synchronized
+    fun settleAndDrain(): List<ByteArray> {
+        settled = true
+        if (deferred.isEmpty()) return emptyList()
+        val frames = deferred.toList()
+        deferred.clear()
+        return frames
+    }
 }
