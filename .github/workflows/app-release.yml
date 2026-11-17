@@ -1,0 +1,239 @@
+name: App release
+
+# Pushing a tag app-vX.Y.Z builds the macOS app and the Android app at
+# version X.Y.Z, and publishes them as the GitHub release of that tag:
+#
+#   Weft-X.Y.Z-mac.zip     the app, ad-hoc signed, zipped with ditto
+#   appcast.xml            Sparkle's feed: the app checks
+#                          releases/latest/download/appcast.xml
+#   weft-X.Y.Z.apk         the Android app, signed with the release key
+#   android-update.json    what the Android app checks:
+#                          releases/latest/download/android-update.json
+#
+# Run by hand (workflow_dispatch), it builds and checks everything, signs
+# with the same secrets, and keeps the files as workflow artifacts: nothing
+# is published.
+#
+# Secrets: SPARKLE_ED_PRIVATE_KEY (the EdDSA private key whose public half
+# is macos/sparkle-public-key.txt), ANDROID_KEYSTORE_BASE64,
+# ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD.
+
+on:
+  push:
+    tags: ["app-v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, X.Y.Z (dry run: nothing is published)"
+        required: true
+        default: "0.0.0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - name: Version
+        id: version
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$EVENT" == push ]]; then
+            version="${REF_NAME#app-v}"
+            publish=true
+          else
+            version="$INPUT_VERSION"
+            publish=false
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::the version must be X.Y.Z, not '$version'"
+            exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "tag=app-v$version"
+            echo "publish=$publish"
+          } >>"$GITHUB_OUTPUT"
+          echo "Weft $version (publish: $publish)"
+
+  mac:
+    needs: meta
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      TAG: ${{ needs.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # CFBundleVersion is the number of commits.
+          fetch-depth: 0
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --target aarch64-apple-darwin --target x86_64-apple-darwin
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install CMake
+        # For mediaremote-adapter; usually already on the runner.
+        run: command -v cmake || brew install cmake
+      - name: Build Weft.app
+        env:
+          WEFT_VERSION: ${{ env.VERSION }}
+        run: macos/scripts/build-app.sh
+      - name: Check Weft.app
+        run: |
+          app=macos/build/Weft.app
+          plist="$app/Contents/Info.plist"
+          codesign --verify --deep --strict "$app"
+          [[ "$(lipo -archs "$app/Contents/MacOS/Weft")" == *arm64* && "$(lipo -archs "$app/Contents/MacOS/Weft")" == *x86_64* ]]
+          [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" == "$VERSION" ]]
+          [[ "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$plist")" == https://github.com/fraustiz/weft/releases/latest/download/appcast.xml ]]
+          [[ -n "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$plist")" ]]
+          echo "build $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")"
+      - name: Zip
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent macos/build/Weft.app "dist/Weft-$VERSION-mac.zip"
+      - name: Appcast
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          [[ -n "$SPARKLE_ED_PRIVATE_KEY" ]] || { echo "::error::the SPARKLE_ED_PRIVATE_KEY secret is not set"; exit 1; }
+          # The private key must be the half of the app's public key, or
+          # every installed copy would refuse the update.
+          app_key="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' macos/build/Weft.app/Contents/Info.plist)"
+          secret_key="$(printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | swift -e 'import CryptoKit
+          import Foundation
+          let seed = Data(base64Encoded: readLine()!.trimmingCharacters(in: .whitespaces))!
+          print(try! Curve25519.Signing.PrivateKey(rawRepresentation: seed.prefix(32)).publicKey.rawRepresentation.base64EncodedString())')"
+          if [[ "$secret_key" != "$app_key" ]]; then
+            echo "::error::SPARKLE_ED_PRIVATE_KEY does not match macos/sparkle-public-key.txt"
+            exit 1
+          fi
+          # generate_appcast reads the versions, minimumSystemVersion
+          # (LSMinimumSystemVersion) and key from the app in the zip; the
+          # private key goes in on stdin, never in a file or the log.
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | macos/.build/artifacts/sparkle/Sparkle/bin/generate_appcast \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/fraustiz/weft/releases/download/$TAG/" \
+            -o dist/appcast.xml dist 2>&1 | tee "$RUNNER_TEMP/appcast.log"
+          if grep -qi 'does not match' "$RUNNER_TEMP/appcast.log"; then exit 1; fi
+          url="https://github.com/fraustiz/weft/releases/download/$TAG/Weft-$VERSION-mac.zip"
+          grep -qF "url=\"$url\"" dist/appcast.xml || { echo "::error::no enclosure $url in the appcast"; exit 1; }
+          grep -q 'sparkle:edSignature="' dist/appcast.xml
+          grep -q '<sparkle:minimumSystemVersion>' dist/appcast.xml
+          grep -q "<sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>" dist/appcast.xml
+          cat dist/appcast.xml
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mac
+          path: |
+            dist/Weft-${{ env.VERSION }}-mac.zip
+            dist/appcast.xml
+          if-no-files-found: error
+
+  android:
+    needs: meta
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      TAG: ${{ needs.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # versionCode is the number of commits.
+          fetch-depth: 0
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v4
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          [[ -n "$ANDROID_KEYSTORE_BASE64" ]] || { echo "::error::the ANDROID_KEYSTORE_BASE64 secret is not set"; exit 1; }
+          (umask 077; printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d >"$RUNNER_TEMP/release.keystore")
+      - name: Build the release APK
+        working-directory: android
+        env:
+          WEFT_KEYSTORE_FILE: ${{ runner.temp }}/release.keystore
+          WEFT_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          WEFT_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          WEFT_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          export WEFT_VERSION_NAME="$VERSION"
+          WEFT_VERSION_CODE="$(git rev-list --count HEAD)"
+          export WEFT_VERSION_CODE
+          echo "versionName $WEFT_VERSION_NAME, versionCode $WEFT_VERSION_CODE"
+          ./gradlew --no-daemon :app:assembleRelease
+      - name: APK and android-update.json
+        run: |
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          [[ -f "$apk" ]] || { echo "::error::no signed APK at $apk"; ls android/app/build/outputs/apk/release; exit 1; }
+          apksigner="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -name apksigner | sort -V | tail -1)"
+          "$apksigner" verify --print-certs "$apk"
+          mkdir -p dist
+          cp "$apk" "dist/weft-$VERSION.apk"
+          sha256="$(sha256sum "dist/weft-$VERSION.apk" | cut -d' ' -f1)"
+          jq -n \
+            --argjson versionCode "$(git rev-list --count HEAD)" \
+            --arg versionName "$VERSION" \
+            --arg url "https://github.com/fraustiz/weft/releases/download/$TAG/weft-$VERSION.apk" \
+            --arg sha256 "$sha256" \
+            '{versionCode: $versionCode, versionName: $versionName, url: $url, sha256: $sha256}' \
+            >dist/android-update.json
+          cat dist/android-update.json
+      - name: Remove the keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.keystore"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android
+          path: |
+            dist/weft-${{ env.VERSION }}.apk
+            dist/android-update.json
+          if-no-files-found: error
+
+  release:
+    needs: [meta, mac, android]
+    if: needs.meta.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      TAG: ${{ needs.meta.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          # --latest: the apps look for releases/latest/download/…
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "Weft $VERSION" \
+            --generate-notes \
+            --latest \
+            "dist/Weft-$VERSION-mac.zip" \
+            dist/appcast.xml \
+            "dist/weft-$VERSION.apk" \
+            dist/android-update.json
