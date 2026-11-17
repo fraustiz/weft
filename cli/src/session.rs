@@ -1268,12 +1268,15 @@ impl Session {
 
         let new_device = self.state.device(&joiner).cloned().expect("trusted above");
         let members: Vec<PeerKeys> = others.iter().map(TrustedDevice::keys).collect();
-        self.send_envelope(&new_device, Kind::Welcome, &encode_welcome(&members)?)
-            .await?;
+        // As with invitations, queue membership changes before welcoming the
+        // new device. Once welcomed it can immediately send its name to every
+        // member, whose incoming relay queue must already contain DeviceAdded.
         for other in &others {
             self.send_envelope(other, Kind::DeviceAdded, &encode_device_added(&keys))
                 .await?;
         }
+        self.send_envelope(&new_device, Kind::Welcome, &encode_welcome(&members)?)
+            .await?;
         self.send_name(&[joiner]).await?;
         self.settle().await?;
         Ok(joiner)
