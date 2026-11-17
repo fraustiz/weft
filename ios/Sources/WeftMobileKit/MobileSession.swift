@@ -133,6 +133,7 @@ public enum PairingFailure: Equatable, Sendable {
     case noGroupForInvite
     case otherRelayForInvite
     case connectionFailed(ConnectionProblem)
+    case storageFailed
 
     public var text: String {
         switch self {
@@ -171,6 +172,8 @@ public enum PairingFailure: Equatable, Sendable {
               "Cet appareil utilise un autre relais. Rejoignez son groupe ou changez d’abord son relais.")
         case .connectionFailed(let problem):
             problem.text
+        case .storageFailed:
+            t("Could not save device trust. Try again.", "Impossible d’enregistrer l’association. Réessayez.")
         }
     }
 }
@@ -816,7 +819,7 @@ public final class MobileSession: ObservableObject {
             pai.timeoutTask?.cancel()
             _ = pai.buffer.settleAndDrain()
             pendingAcceptedInvite = nil
-            try? store.untrustPeer(pai.inviterHex)
+            guard rollbackTrust(pai.inviterHex) else { return }
             pairingState = .failed(.relayError(code))
             publishSnapshot()
             return
@@ -825,7 +828,7 @@ public final class MobileSession: ObservableObject {
             psi.timeoutTask?.cancel()
             pendingSentInvite = nil
             if !psi.wasAlreadyTrusted {
-                try? store.untrustPeer(psi.inviteeHex)
+                guard rollbackTrust(psi.inviteeHex) else { return }
             }
             pairingState = .failed(.relayError(code))
             publishSnapshot()
@@ -867,7 +870,8 @@ public final class MobileSession: ObservableObject {
 
         let connected = await awaitConnected()
         guard activeSlot?.code.pairingID == code.pairingID else { return }
-        if !connected || !(await sendControl(.pairOpen(pairingID: code.pairingID))) {
+        let opened = connected ? await sendControl(.pairOpen(pairingID: code.pairingID)) : false
+        if !opened {
             activeSlot = nil
             pairingState = .failed(.connectionFailed(.timedOut))
             publishSnapshot()
@@ -902,7 +906,7 @@ public final class MobileSession: ObservableObject {
         if let psi = pendingSentInvite {
             psi.timeoutTask?.cancel()
             if !psi.wasAlreadyTrusted {
-                try? store.untrustPeer(psi.inviteeHex)
+                guard rollbackTrust(psi.inviteeHex) else { return }
             }
             pendingSentInvite = nil
         }
@@ -939,7 +943,8 @@ public final class MobileSession: ObservableObject {
         }
 
         activeSlot = nil
-        _ = try? store.trustPeer(joinerKeys, nowMs: nowMs)
+        do { _ = try store.trustPeer(joinerKeys, nowMs: nowMs) }
+        catch { pairingState = .failed(.storageFailed); publishSnapshot(); return }
         _ = await sendControl(.groupAdd(deviceID: joinerKeys.deviceID))
 
         // Notify existing members first so they trust the joiner before its DeviceName arrives.
@@ -988,7 +993,8 @@ public final class MobileSession: ObservableObject {
         activeSlot = nil
         let inviterHex = inviterKeys.deviceID.hexString
         let buffer = JoinFrameBuffer(ownerHex: inviterHex)
-        _ = try? store.trustPeer(inviterKeys, nowMs: nowMs)
+        do { _ = try store.trustPeer(inviterKeys, nowMs: nowMs) }
+        catch { pairingState = .failed(.storageFailed); publishSnapshot(); return }
 
         var context = PendingAcceptedInviteContext(
             inviterKeys: inviterKeys,
@@ -1018,7 +1024,7 @@ public final class MobileSession: ObservableObject {
         pai.timeoutTask?.cancel()
         _ = pai.buffer.settleAndDrain()
         pendingAcceptedInvite = nil
-        try? store.untrustPeer(inviterHex)
+        guard rollbackTrust(inviterHex) else { return }
         _ = await sendControl(.groupRemove(deviceID: store.identity.deviceID))
         pairingState = .failed(.timedOut)
         publishSnapshot()
@@ -1165,7 +1171,8 @@ public final class MobileSession: ObservableObject {
             return
         }
 
-        _ = try? store.trustPeer(inviteeKeys, nowMs: Self.nowMillis())
+        do { _ = try store.trustPeer(inviteeKeys, nowMs: Self.nowMillis()) }
+        catch { pairingState = .failed(.storageFailed); publishSnapshot(); return }
         var context = PendingSentInviteContext(
             inviteeKeys: inviteeKeys,
             inviteeHex: inviteeHex,
@@ -1189,13 +1196,24 @@ public final class MobileSession: ObservableObject {
         psi.timeoutTask?.cancel()
         pendingSentInvite = nil
         if !psi.wasAlreadyTrusted {
-            try? store.untrustPeer(inviteeHex)
+            guard rollbackTrust(inviteeHex) else { return }
         }
         pairingState = .failed(failure)
         publishSnapshot()
     }
 
     // MARK: - Envelope Processing & Deferred Replay
+
+    /// Stop synchronization if cancelling provisional trust cannot be persisted.
+    private func rollbackTrust(_ peerHex: String) -> Bool {
+        do { try store.untrustPeer(peerHex); return true }
+        catch {
+            pairingState = .failed(.storageFailed)
+            lastBanner = BannerNotice(text: PairingFailure.storageFailed.text)
+            stop()
+            return false
+        }
+    }
 
     private func handleEnvelopeFrame(_ frame: Data) async {
         guard frame.count >= Weft.headerLength,
@@ -1825,11 +1843,9 @@ public final class MobileSession: ObservableObject {
     public func removePeer(_ peerHex: String) async -> Bool {
         let clean = peerHex.lowercased()
         guard let peer = store.trustedPeer(clean) else { return false }
-        guard await awaitConnected(),
-              await sendControl(.groupRemove(deviceID: peer.deviceID)) else {
-            return false
-        }
-        try? store.untrustPeer(clean)
+        do { try store.untrustPeer(clean) }
+        catch { return false }
+        _ = await sendControl(.groupRemove(deviceID: peer.deviceID))
         peerRuntime.removeValue(forKey: clean)
         let remaining = store.trustedPeers.map(\.deviceIDHex)
         if !remaining.isEmpty, let removedPlaintext = try? encodeDeviceRemoved(deviceID: peer.deviceID) {
@@ -1845,22 +1861,26 @@ public final class MobileSession: ObservableObject {
         let members = store.trustedPeers.map(\.deviceIDHex)
         guard !members.isEmpty else { return true }
 
-        var toldEveryone = false
-        if await awaitConnected(),
-           let removedSelf = try? encodeDeviceRemoved(deviceID: store.identity.deviceID) {
-            let sent = await sendEnvelope(kind: .deviceRemoved, plaintext: removedSelf, to: members)
-            let relayRemoved = await sendControl(.groupRemove(deviceID: store.identity.deviceID))
-            toldEveryone = sent > 0 && relayRemoved
-        }
-
-        if toldEveryone || evenIfOffline {
-            try? store.clearGroup()
-            peerRuntime.removeAll()
-            stopIncomingRingLocally()
-            outgoingRingingPeerHex = nil
-            publishSnapshot()
-        }
-        return toldEveryone
+        let connected = await awaitConnected()
+        guard connected || evenIfOffline else { return false }
+        // Persist every counter and the trust removal before sending any notice.
+        var notices: [Data] = []
+        do {
+            if connected {
+                let removed = try encodeDeviceRemoved(deviceID: store.identity.deviceID)
+                for member in members {
+                    notices.append(try store.sealEnvelope(to: member, kind: .deviceRemoved, plaintext: removed))
+                }
+            }
+            try store.clearGroup()
+        } catch { return false }
+        peerRuntime.removeAll()
+        stopIncomingRingLocally()
+        outgoingRingingPeerHex = nil
+        publishSnapshot()
+        for notice in notices { _ = await sendRawFrame(notice) }
+        if connected { _ = await sendControl(.groupRemove(deviceID: store.identity.deviceID)) }
+        return true
     }
 
     // MARK: - Snapshot Builder

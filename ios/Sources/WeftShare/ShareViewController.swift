@@ -9,7 +9,7 @@ final class ShareViewController: SLComposeServiceViewController {
     private var french: Bool { Locale.preferredLanguages.first?.hasPrefix("fr") == true }
 
     override func isContentValid() -> Bool {
-        contentText.utf8.count <= 256 * 1024
+        (contentText ?? "").utf8.count <= 256 * 1024
     }
 
     override func viewDidLoad() {
@@ -92,8 +92,28 @@ final class ShareViewController: SLComposeServiceViewController {
                     }
                     if let urlText { text = urlText }
                 }
+                if text.isEmpty, let provider = providers.first(where: {
+                    $0.hasItemConformingToTypeIdentifier(UTType.text.identifier)
+                }) {
+                    let type = provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier)
+                        ? UTType.plainText.identifier : UTType.text.identifier
+                    let suppliedText: String? = await withCheckedContinuation { continuation in
+                        provider.loadItem(forTypeIdentifier: type, options: nil) { value, _ in
+                            let decoded: String?
+                            if let string = value as? String { decoded = string }
+                            else if let attributed = value as? NSAttributedString { decoded = attributed.string }
+                            else if let data = value as? Data { decoded = String(data: data, encoding: .utf8) }
+                            else { decoded = nil }
+                            continuation.resume(returning: decoded)
+                        }
+                    }
+                    if let suppliedText { text = suppliedText }
+                }
                 guard !text.isEmpty, text.utf8.count <= 256 * 1024 else {
                     throw CocoaError(.fileWriteUnknown)
+                }
+                guard total + text.utf8.count <= 200 * 1024 * 1024 else {
+                    throw CocoaError(.fileWriteOutOfSpace)
                 }
                 try Data(text.utf8).write(to: inbox.appendingPathComponent(UUID().uuidString + ".wefttext"), options: .atomic)
                 extensionContext?.completeRequest(returningItems: nil)

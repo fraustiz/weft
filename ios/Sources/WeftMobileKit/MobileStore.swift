@@ -148,13 +148,12 @@ public struct FeatureSwitches: Codable, Equatable, Sendable {
             outgoing.insert("ping")
         }
         if media {
-            let mediaTypes = ["media", "media.art", "media.command"]
-            incoming.formUnion(mediaTypes)
-            outgoing.formUnion(mediaTypes)
+            incoming.formUnion(["media", "media.art"])
+            outgoing.insert("media.command")
         }
         if volume {
-            incoming.formUnion(["volume", "volume.set"])
-            outgoing.formUnion(["volume", "volume.set"])
+            incoming.insert("volume")
+            outgoing.insert("volume.set")
         }
         if remote {
             outgoing.formUnion(["input.pointer", "input.click", "input.key", "presenter"])
@@ -646,7 +645,8 @@ public final class MobileStore: @unchecked Sendable {
         do {
             keys = try sessionKeys(local: identity, peerDeviceID: peer.deviceID, peerKxPublicKey: peer.kxPublicKey)
         } catch {
-            throw MobileStoreError.protocolError(error)
+            if let failure = error as? WeftError { throw MobileStoreError.protocolError(failure) }
+            throw MobileStoreError.ioError(error.localizedDescription)
         }
 
         var next = persisted
@@ -667,7 +667,8 @@ public final class MobileStore: @unchecked Sendable {
             )
             frame = try seal(header: header, plaintext: plaintext, tx: keys.tx)
         } catch {
-            throw MobileStoreError.protocolError(error)
+            if let failure = error as? WeftError { throw MobileStoreError.protocolError(failure) }
+            throw MobileStoreError.ioError(error.localizedDescription)
         }
 
         try Self.writeAtomically(next, to: fileURL)
@@ -687,7 +688,8 @@ public final class MobileStore: @unchecked Sendable {
         do {
             outerHeader = try Header(decoding: frame.prefix(Weft.headerLength))
         } catch {
-            throw MobileStoreError.protocolError(error)
+            if let failure = error as? WeftError { throw MobileStoreError.protocolError(failure) }
+            throw MobileStoreError.ioError(error.localizedDescription)
         }
         guard outerHeader.recipient == identity.deviceID else {
             throw MobileStoreError.wrongRecipient
@@ -708,7 +710,8 @@ public final class MobileStore: @unchecked Sendable {
             keys = try sessionKeys(local: identity, peerDeviceID: senderPeer.deviceID, peerKxPublicKey: senderPeer.kxPublicKey)
             (header, plaintext) = try open(frame: frame, rx: keys.rx)
         } catch {
-            throw MobileStoreError.protocolError(error)
+            if let failure = error as? WeftError { throw MobileStoreError.protocolError(failure) }
+            throw MobileStoreError.ioError(error.localizedDescription)
         }
 
         var next = persisted
@@ -716,7 +719,8 @@ public final class MobileStore: @unchecked Sendable {
         do {
             try counterState.replayWindow.accept(counter: header.counter, messageID: header.messageID)
         } catch {
-            throw MobileStoreError.replayRejected(error)
+            if let failure = error as? ReplayError { throw MobileStoreError.replayRejected(failure) }
+            throw MobileStoreError.ioError(error.localizedDescription)
         }
         next.peers[senderHex] = counterState
 
@@ -776,7 +780,8 @@ public final class MobileStore: @unchecked Sendable {
                 event = .fileChunk(plaintext)
             }
         } catch {
-            throw MobileStoreError.protocolError(error)
+            if let failure = error as? WeftError { throw MobileStoreError.protocolError(failure) }
+            throw MobileStoreError.ioError(error.localizedDescription)
         }
 
         try Self.writeAtomically(next, to: fileURL)
@@ -829,7 +834,8 @@ public final class MobileStore: @unchecked Sendable {
         do {
             try counterState.replayWindow.accept(counter: header.counter, messageID: header.messageID)
         } catch {
-            throw MobileStoreError.replayRejected(error)
+            if let failure = error as? ReplayError { throw MobileStoreError.replayRejected(failure) }
+            throw MobileStoreError.ioError(error.localizedDescription)
         }
 
         let previousByHex = Dictionary(uniqueKeysWithValues: persisted.devices.map { ($0.deviceIDHex, $0) })

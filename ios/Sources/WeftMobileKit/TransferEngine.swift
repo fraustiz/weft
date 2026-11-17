@@ -219,6 +219,8 @@ public final class TransferEngine: @unchecked Sendable {
     public static let partialLifetimeMs: Int64 = 24 * 60 * 60 * 1000
     public static let stallMs: Int64 = 30 * 1000
     public static let giveUpMs: Int64 = 10 * 60 * 1000
+    public static let maxIncomingClipboardBytes: UInt64 = 32 * 1024 * 1024
+    public static let maxIncomingClipboardImages = 4
 
     public let stagingDirectory: URL
     public let destinationDirectory: URL
@@ -268,6 +270,7 @@ public final class TransferEngine: @unchecked Sendable {
     private let lock = NSLock()
     private var outgoing: [String: OutgoingSource] = [:] // keyed by "\(peerHex)/\(id)"
     private var ownedOutgoingFiles: [String: URL] = [:]
+    private var clipboardStartedAt: [String: Int64] = [:]
     private var incoming: [String: IncomingSink] = [:]   // keyed by "\(peerHex)/\(id)"
     private var completedHistory: [(key: String, atMs: Int64)] = []
     private var freeSpaceOverride: UInt64?
@@ -948,8 +951,21 @@ public final class TransferEngine: @unchecked Sendable {
         }
         let id = offer.id.lowercased()
         let k = Self.key(peerHex: peerHex, id: id)
-        var buffer = Data()
-        buffer.reserveCapacity(Int(offer.size))
+        guard PacketConstants.normalizeHex16(id) != nil,
+              PacketConstants.normalizeHash16(offer.hash) != nil,
+              ["image/png", "image/jpeg"].contains(offer.mime), incoming[k] == nil else { return [] }
+        let images = incoming.values.filter { sink in
+            if case .clipboardMemory = sink.backing { return true }
+            return false
+        }
+        guard images.count < Self.maxIncomingClipboardImages,
+              !images.contains(where: { $0.peerHex == peerHex }),
+              images.reduce(UInt64(0), { $0 + $1.size }) + offer.size <= Self.maxIncomingClipboardBytes,
+              incoming.values.filter({ $0.peerHex == peerHex && $0.isActiveState }).count < Self.maxTransfersPerPeer else {
+            return [.sendPacket(peerHex: peerHex, packet: .fileReject(id: id, reason: "busy"))]
+        }
+        let buffer = Data()
+        clipboardStartedAt[k] = nowMs
         incoming[k] = IncomingSink(
             id: id,
             peerHex: peerHex,
@@ -1026,6 +1042,16 @@ public final class TransferEngine: @unchecked Sendable {
 
     private func expireStaleLocked(nowMs: Int64) {
         completedHistory.removeAll { nowMs - $0.atMs >= Self.partialLifetimeMs }
+        for (key, started) in clipboardStartedAt {
+            guard let sink = incoming[key] else {
+                clipboardStartedAt.removeValue(forKey: key)
+                continue
+            }
+            if nowMs - sink.lastActivityAtMs >= Self.stallMs || nowMs - started >= Self.giveUpMs {
+                incoming.removeValue(forKey: key)
+                clipboardStartedAt.removeValue(forKey: key)
+            }
+        }
         let fm = FileManager.default
         guard let urls = try? fm.contentsOfDirectory(at: stagingDirectory, includingPropertiesForKeys: nil) else {
             return
