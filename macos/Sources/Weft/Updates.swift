@@ -22,7 +22,6 @@ final class Updates: NSObject, ObservableObject {
     @Published private(set) var checksAutomatically = false
 
     private var controller: SPUStandardUpdaterController?
-    private var observers: Set<AnyCancellable> = []
 
     override init() {
         available = Self.configured
@@ -33,14 +32,14 @@ final class Updates: NSObject, ObservableObject {
         )
         self.controller = controller
         let updater = controller.updater
+        // `assign`, not `sink` with a closure: Xcode 26's compiler (the
+        // release runner's) crashes on that closure's thunk.
         updater.publisher(for: \.canCheckForUpdates)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] can in self?.canCheck = can }
-            .store(in: &observers)
+            .assign(to: &$canCheck)
         updater.publisher(for: \.automaticallyChecksForUpdates)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] on in self?.checksAutomatically = on }
-            .store(in: &observers)
+            .assign(to: &$checksAutomatically)
         controller.startUpdater()
         if Development.installsUpdateNow {
             updater.checkForUpdatesInBackground()
