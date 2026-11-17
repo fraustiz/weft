@@ -26,7 +26,7 @@ sealed interface WeftError {
     /** The relay url of a pairing code must be 1 to 255 bytes of UTF-8. */
     data class RelayUrlLength(val length: Int) : WeftError
     data object MalformedControlFrame : WeftError
-    /** A reserved byte of the control range (`0xB4`–`0xBD`, `0xBF`). */
+    /** A reserved byte of the control range (`0xB6`–`0xBD`, `0xBF`). */
     data class UnknownControlFrame(val type: UByte) : WeftError
     data class UnknownControlError(val code: UByte) : WeftError
     /** The relay name in the challenge is not the host the client connected to. */

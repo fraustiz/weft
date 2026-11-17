@@ -4,6 +4,7 @@ import fr.frohub.weft.LastSent
 import fr.frohub.weft.core.ConnectionStatus
 import fr.frohub.weft.core.Device
 import fr.frohub.weft.core.GroupChangeResult
+import fr.frohub.weft.core.InviteState
 import fr.frohub.weft.core.JoinState
 import fr.frohub.weft.core.RenameResult
 import fr.frohub.weft.core.WeftCore
@@ -35,6 +36,14 @@ interface WeftModel {
     fun startJoin(code: String)
 
     fun clearJoin()
+
+    /** Progress of the invitation of a computer into this phone's group. */
+    val inviteState: StateFlow<InviteState>
+
+    /** Adds the computer that shows [code] to this phone's group. */
+    fun startInvite(code: String)
+
+    fun clearInvite()
 
     suspend fun remove(deviceId: String): GroupChangeResult
 
@@ -97,6 +106,12 @@ class CoreModel(private val core: WeftCore, private val featureHub: Features) : 
     override fun startJoin(code: String) = core.startJoin(code)
 
     override fun clearJoin() = core.clearJoin()
+
+    override val inviteState: StateFlow<InviteState> get() = core.inviteState
+
+    override fun startInvite(code: String) = core.startInvite(code)
+
+    override fun clearInvite() = core.clearInvite()
 
     // In the core's scope: leaving the screen must not cut a group change in half.
     override suspend fun remove(deviceId: String) = core.scope.async { core.remove(deviceId) }.await()

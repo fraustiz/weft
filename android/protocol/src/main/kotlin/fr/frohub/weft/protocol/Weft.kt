@@ -70,6 +70,10 @@ object Weft {
     const val CONTROL_GROUP_ADD: UByte = 0xB2u
     /** First byte of the frame that removes a device from the group. */
     const val CONTROL_GROUP_REMOVE: UByte = 0xB3u
+    /** First byte of the frame by which the slot owner accepts an invitation. */
+    const val CONTROL_GROUP_JOIN: UByte = 0xB4u
+    /** First byte of the frame a device sends to invite the slot owner into its group. */
+    const val CONTROL_PAIR_INVITE: UByte = 0xB5u
     /** First byte of the relay's error frame. */
     const val CONTROL_ERROR: UByte = 0xBEu
 

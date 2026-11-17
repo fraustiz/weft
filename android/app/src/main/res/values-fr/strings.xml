@@ -141,6 +141,35 @@
     <string name="join_busy">Un appairage est déjà en cours</string>
     <string name="join_busy_body">Attendez qu’il se termine, puis réessayez.</string>
 
+    <string name="action_add_device">Ajouter un appareil</string>
+    <string name="invite_choice_title">Ce téléphone est déjà dans un groupe</string>
+    <plurals name="invite_choice_body">
+        <item quantity="one">Il est appairé avec %d appareil. L’ordinateur peut rejoindre ce groupe, ou ce téléphone peut passer dans le groupe de l’ordinateur.</item>
+        <item quantity="many">Il est appairé avec %d appareils. L’ordinateur peut rejoindre ce groupe, ou ce téléphone peut passer dans le groupe de l’ordinateur.</item>
+        <item quantity="other">Il est appairé avec %d appareils. L’ordinateur peut rejoindre ce groupe, ou ce téléphone peut passer dans le groupe de l’ordinateur.</item>
+    </plurals>
+    <string name="invite_choice_add">Ajouter cet ordinateur à mon groupe</string>
+    <string name="invite_choice_join">Quitter mon groupe et rejoindre le sien</string>
+    <plurals name="invite_choice_join_hint">
+        <item quantity="one">Ce téléphone oublie %d appareil appairé</item>
+        <item quantity="many">Ce téléphone oublie %d appareils appairés</item>
+        <item quantity="other">Ce téléphone oublie %d appareils appairés</item>
+    </plurals>
+    <string name="inviting_title">Ajout de l’ordinateur…</string>
+    <string name="inviting_body">En attente de sa réponse. Laissez %1$s tourner dessus.</string>
+    <string name="invite_added_title">%1$s est dans votre groupe</string>
+    <string name="invite_added_body">Il partage désormais le presse-papiers avec ce téléphone et le reste de votre groupe.</string>
+    <string name="action_done">Terminé</string>
+    <string name="action_add_another">Ajouter un autre appareil</string>
+    <string name="invite_no_group">Ce téléphone n’est encore dans aucun groupe</string>
+    <string name="invite_no_group_body">Appairez-le plutôt à l’ordinateur : celui-ci l’ajoute à son groupe.</string>
+    <string name="action_join_instead">L’appairer</string>
+    <string name="invite_other_relay">Cet ordinateur utilise un autre relais</string>
+    <string name="invite_other_relay_body">Votre groupe est sur un autre relais : l’ordinateur ne peut pas être ajouté d’ici. Lancez weft pair dessus avec le relais de votre groupe, puis scannez le nouveau code.</string>
+    <string name="invite_no_answer">Pas de réponse de l’ordinateur</string>
+    <string name="invite_no_answer_body">Il appartient peut-être déjà à un groupe : ajoutez-le plutôt depuis un appareil de ce groupe. Sinon, vérifiez que weft pair tourne toujours, puis réessayez.</string>
+    <string name="invite_group_full_body">Un groupe compte 10 appareils au plus. Retirez-en un avant d’ajouter cet ordinateur.</string>
+
     <string name="notification_channel">Connexion</string>
     <string name="notification_connected">Connecté</string>
     <string name="notification_reconnecting">Reconnexion…</string>

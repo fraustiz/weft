@@ -144,6 +144,9 @@ private fun isBase64UrlChar(c: Char): Boolean =
 private fun pairRequest(secret: ByteArray): PairRequest =
     PairRequest.create(secret, bytes(16, 0x11), bytes(32, 0x22), bytes(32, 0x33))
 
+private fun inviteRequest(secret: ByteArray): PairRequest =
+    PairRequest.invite(secret, bytes(16, 0x11), bytes(32, 0x22), bytes(32, 0x33))
+
 // endregion
 
 // region Vectors
@@ -226,6 +229,67 @@ class PairingVectorTests {
         // The relayed request still verifies.
         val received = ControlFrame.decode(frames.hexBytes("pair_request")) as ControlFrame.PairRequest
         assertTrue(verifyPairRequest(v.pairing.hexBytes("secret"), received.request))
+    }
+
+    @Test
+    fun invitation() {
+        val v = PairingVectors()
+        val section = v.root.getJSONObject("invitation")
+        assertEquals(
+            setOf("code", "pairing_id", "secret", "shown_by", "inviter", "mac_input", "mac", "control_frames"),
+            section.keys().asSequence().toSet(),
+        )
+        assertEquals("a", section.getString("shown_by"))
+        assertEquals("b", section.getString("inviter"))
+        assertEquals(v.pairing.getString("code"), section.getString("code"))
+
+        // The code A shows, every field.
+        val code = PairingCode.decode(section.getString("code"))
+        assertEquals(section.getString("pairing_id"), toHex(code.pairingId))
+        assertEquals(section.getString("secret"), toHex(code.secret))
+        assertArrayEquals(v.a.signPublicKey, code.signPublicKey)
+        assertArrayEquals(v.a.kxPublicKey, code.kxPublicKey)
+        assertEquals(section.getString("code"), code.encode())
+
+        // B's invitation MAC.
+        val macInput = "weft-invite-v1".toByteArray(Charsets.US_ASCII) + code.pairingId +
+            v.b.signPublicKey + v.b.kxPublicKey
+        assertEquals(section.getString("mac_input"), toHex(macInput))
+        assertEquals(section.getString("mac"), toHex(Sodium.genericHash32Keyed(macInput, code.secret)))
+        val mac = inviteRequestMac(code.secret, code.pairingId, v.b.signPublicKey, v.b.kxPublicKey)
+        assertEquals(section.getString("mac"), toHex(mac))
+        assertNotEquals(v.pairing.getString("mac"), section.getString("mac"))
+
+        val invite = PairRequest.invite(code.secret, code.pairingId, v.b.signPublicKey, v.b.kxPublicKey)
+        assertEquals(section.getString("mac"), toHex(invite.mac))
+        assertTrue(verifyInviteRequest(code.secret, invite))
+        assertFalse(verifyPairRequest(code.secret, invite))
+
+        // The control frames, both ways.
+        val frames = section.getJSONObject("control_frames")
+        assertEquals(setOf("pair_invite", "group_join"), frames.keys().asSequence().toSet())
+        val pairInvite = frames.hexBytes("pair_invite")
+        assertEquals(0xB5, pairInvite[0].toInt() and 0xff)
+        assertEquals(113, pairInvite.size)
+        assertEquals(frames.getString("pair_invite"), toHex(ControlFrame.PairInvite(invite).encode()))
+        val received = ControlFrame.decode(pairInvite) as ControlFrame.PairInvite
+        assertEquals(invite, received.request)
+        assertArrayEquals(code.pairingId, received.request.pairingId)
+        assertArrayEquals(v.b.signPublicKey, received.request.signPublicKey)
+        assertArrayEquals(v.b.kxPublicKey, received.request.kxPublicKey)
+        assertEquals(section.getString("mac"), toHex(received.request.mac))
+        assertTrue(verifyInviteRequest(code.secret, received.request))
+        assertFalse(verifyPairRequest(code.secret, received.request))
+        assertEquals(FrameType.CONTROL, classify(pairInvite))
+
+        // A answers with B's device id.
+        val bId = deviceIdFromSignPublicKey(received.request.signPublicKey)
+        assertArrayEquals(v.b.deviceId, bId)
+        val groupJoin = frames.hexBytes("group_join")
+        assertEquals(17, groupJoin.size)
+        assertEquals(ControlFrame.GroupJoin(bId), ControlFrame.decode(groupJoin))
+        assertEquals(frames.getString("group_join"), toHex(ControlFrame.GroupJoin(bId).encode()))
+        assertEquals(FrameType.CONTROL, classify(groupJoin))
     }
 
     @Test
@@ -759,6 +823,105 @@ class PairRequestTests {
 
 // endregion
 
+// region Invitation MAC
+
+@RunWith(AndroidJUnit4::class)
+class InviteRequestTests {
+    @Test
+    fun macVerifies() {
+        val secret = randomPairingSecret()
+        val request = inviteRequest(secret)
+        assertArrayEquals(inviteRequestMac(secret, bytes(16, 0x11), bytes(32, 0x22), bytes(32, 0x33)), request.mac)
+        assertTrue(verifyInviteRequest(secret, request))
+        // Still valid after a trip through the relay.
+        val received = ControlFrame.decode(ControlFrame.PairInvite(request).encode()) as ControlFrame.PairInvite
+        assertTrue(verifyInviteRequest(secret, received.request))
+    }
+
+    @Test
+    fun joinAndInviteMacsNeverVerifyAsEachOther() {
+        val secret = bytes(32, 0x44)
+        val join = pairRequest(secret)
+        val invite = inviteRequest(secret)
+        assertFalse(join.mac.contentEquals(invite.mac))
+        assertTrue(verifyPairRequest(secret, join))
+        assertTrue(verifyInviteRequest(secret, invite))
+        assertFalse(verifyInviteRequest(secret, join))
+        assertFalse(verifyPairRequest(secret, invite))
+
+        // The relay re-tagging a frame does not change its MAC: the slot
+        // owner checks the MAC with the context of the tag it received.
+        val asInvite = ControlFrame.PairRequest(join).encode().also { it[0] = 0xB5.toByte() }
+        val decodedInvite = ControlFrame.decode(asInvite) as ControlFrame.PairInvite
+        assertFalse(verifyInviteRequest(secret, decodedInvite.request))
+        val asJoin = ControlFrame.PairInvite(invite).encode().also { it[0] = 0xB1.toByte() }
+        val decodedJoin = ControlFrame.decode(asJoin) as ControlFrame.PairRequest
+        assertFalse(verifyPairRequest(secret, decodedJoin.request))
+    }
+
+    @Test
+    fun macRejectsAnyFlippedBit() {
+        val secret = bytes(32, 0x44)
+        val request = inviteRequest(secret)
+        for (byte in 0 until 32) {
+            for (bit in 0 until 8) {
+                val mac = request.mac.also { it[byte] = (it[byte].toInt() xor (1 shl bit)).toByte() }
+                assertFalse("bit $bit of byte $byte", verifyInviteRequest(secret, request.copy(mac = mac)))
+            }
+        }
+        assertFalse(verifyInviteRequest(secret, request.copy(mac = ByteArray(32))))
+        // Any flipped bit in the covered fields too.
+        fun flip(bytes: ByteArray, index: Int, bit: Int) =
+            bytes.also { it[index] = (it[index].toInt() xor (1 shl bit)).toByte() }
+        for (bit in 0 until 8) {
+            for (index in 0 until 16) {
+                assertFalse(verifyInviteRequest(secret, request.copy(pairingId = flip(request.pairingId, index, bit))))
+            }
+            for (index in 0 until 32) {
+                assertFalse(
+                    verifyInviteRequest(secret, request.copy(signPublicKey = flip(request.signPublicKey, index, bit))),
+                )
+                assertFalse(
+                    verifyInviteRequest(secret, request.copy(kxPublicKey = flip(request.kxPublicKey, index, bit))),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun macRejectsWrongSecret() {
+        val secret = bytes(32, 0x44)
+        val request = inviteRequest(secret)
+        for (byte in 0 until 32) {
+            val oneBitOff = secret.copyOf().also { it[byte] = (it[byte].toInt() xor 0x01).toByte() }
+            assertFalse("byte $byte", verifyInviteRequest(oneBitOff, request))
+        }
+        assertFalse(verifyInviteRequest(ByteArray(32), request))
+        assertFalse(verifyInviteRequest(randomPairingSecret(), request))
+        assertWeftError(WeftError.InvalidLength("secret", 32, 31)) { verifyInviteRequest(ByteArray(31), request) }
+        assertWeftError(WeftError.InvalidLength("secret", 32, 33)) {
+            inviteRequestMac(ByteArray(33), bytes(16, 1), bytes(32, 2), bytes(32, 3))
+        }
+    }
+
+    @Test
+    fun macInputLengthsAreExact() {
+        val secret = bytes(32, 0x44)
+        assertEquals(32, inviteRequestMac(secret, bytes(16, 1), bytes(32, 2), bytes(32, 3)).size)
+        assertWeftError(WeftError.InvalidLength("pairingId", 16, 15)) {
+            inviteRequestMac(secret, ByteArray(15), bytes(32, 2), bytes(32, 3))
+        }
+        assertWeftError(WeftError.InvalidLength("signPublicKey", 32, 33)) {
+            inviteRequestMac(secret, bytes(16, 1), ByteArray(33), bytes(32, 3))
+        }
+        assertWeftError(WeftError.InvalidLength("kxPublicKey", 32, 31)) {
+            PairRequest.invite(secret, bytes(16, 1), bytes(32, 2), ByteArray(31))
+        }
+    }
+}
+
+// endregion
+
 // region Control frames, dispatch and host check
 
 @RunWith(AndroidJUnit4::class)
@@ -768,6 +931,8 @@ class ControlFrameTests {
         Triple(ControlFrame.PairRequest(pairRequest(bytes(32, 0x44))), 0xB1, 113),
         Triple(ControlFrame.GroupAdd(bytes(16, 2)), 0xB2, 17),
         Triple(ControlFrame.GroupRemove(bytes(16, 3)), 0xB3, 17),
+        Triple(ControlFrame.GroupJoin(bytes(16, 4)), 0xB4, 17),
+        Triple(ControlFrame.PairInvite(inviteRequest(bytes(32, 0x44))), 0xB5, 113),
         Triple(ControlFrame.Error(ControlError.UNKNOWN_PAIRING), 0xBE, 2),
         Triple(ControlFrame.Error(ControlError.NOT_ALLOWED), 0xBE, 2),
         Triple(ControlFrame.Error(ControlError.RATE_LIMITED), 0xBE, 2),
@@ -793,6 +958,11 @@ class ControlFrameTests {
             byteArrayOf(0xB1.toByte()) + bytes(16, 1) + bytes(32, 2) + bytes(32, 3) + bytes(32, 4),
             ControlFrame.PairRequest(request).encode(),
         )
+        assertArrayEquals(
+            byteArrayOf(0xB5.toByte()) + bytes(16, 1) + bytes(32, 2) + bytes(32, 3) + bytes(32, 4),
+            ControlFrame.PairInvite(request).encode(),
+        )
+        assertArrayEquals(byteArrayOf(0xB4.toByte()) + bytes(16, 5), ControlFrame.GroupJoin(bytes(16, 5)).encode())
         for ((code, byte) in listOf(
             ControlError.UNKNOWN_PAIRING to 1, ControlError.NOT_ALLOWED to 2,
             ControlError.RATE_LIMITED to 3, ControlError.GROUP_FULL to 4,
@@ -819,7 +989,7 @@ class ControlFrameTests {
 
     @Test
     fun decodeRejectsUnknownControlBytes() {
-        for (tag in 0xB4..0xBF) {
+        for (tag in 0xB6..0xBF) {
             if (tag == 0xBE) continue
             // Whatever the body length.
             for (bodyLength in listOf(0, 1, 16, 112)) {
@@ -888,6 +1058,12 @@ class ControlFrameTests {
     fun controlFrameEqualityIsByValue() {
         assertEquals(ControlFrame.GroupAdd(bytes(16, 2)), ControlFrame.GroupAdd(bytes(16, 2)))
         assertNotEquals(ControlFrame.GroupAdd(bytes(16, 2)), ControlFrame.GroupRemove(bytes(16, 2)))
+        assertEquals(ControlFrame.GroupJoin(bytes(16, 2)), ControlFrame.GroupJoin(bytes(16, 2)))
+        assertNotEquals(ControlFrame.GroupJoin(bytes(16, 2)), ControlFrame.GroupAdd(bytes(16, 2)))
+        val request = pairRequest(bytes(32, 0x44))
+        assertEquals(ControlFrame.PairInvite(request), ControlFrame.PairInvite(request.copy()))
+        assertNotEquals(ControlFrame.PairInvite(request) as ControlFrame, ControlFrame.PairRequest(request))
+        assertWeftError(WeftError.InvalidLength("deviceId", 16, 15)) { ControlFrame.GroupJoin(ByteArray(15)) }
         assertWeftError(WeftError.InvalidLength("deviceId", 16, 17)) { ControlFrame.GroupAdd(ByteArray(17)) }
     }
 }

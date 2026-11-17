@@ -24,6 +24,8 @@ import fr.frohub.weft.core.ConnectionProblem
 import fr.frohub.weft.core.ConnectionStatus
 import fr.frohub.weft.core.Device
 import fr.frohub.weft.core.GroupChangeResult
+import fr.frohub.weft.core.InviteResult
+import fr.frohub.weft.core.InviteState
 import fr.frohub.weft.core.JoinResult
 import fr.frohub.weft.core.JoinState
 import fr.frohub.weft.core.RenameResult
@@ -123,6 +125,141 @@ class WeftAppTest {
         compose.onNodeWithTag(STATUS_CARD).assertIsDisplayed()
         compose.onNodeWithText("MacBook Air").performScrollTo().assertIsDisplayed()
         assertEquals(JoinState.Idle, model.joinState.value)
+    }
+
+    @Test
+    fun unpairedPhoneJoinsWithoutBeingAsked() {
+        launch()
+        compose.onNodeWithTag(PAIR_BUTTON).performClick()
+        compose.onNodeWithTag(CODE_FIELD).performTextInput("WEFT1:abc")
+        compose.onNodeWithTag(JOIN_BUTTON).performScrollTo().performClick()
+
+        compose.onNodeWithTag(CHOICE_DIALOG).assertDoesNotExist()
+        assertEquals(listOf("WEFT1:abc"), model.joins)
+        assertTrue(model.invites.isEmpty())
+    }
+
+    @Test
+    fun pairedPhoneIsAskedAndAddingIsTheDefault() {
+        model.devices.value = listOf(LAPTOP, UNNAMED)
+        launch()
+        compose.onNodeWithTag(ADD_DEVICE_ROW).performScrollTo().assertHasClickAction().performClick()
+        compose.onNodeWithText(string(R.string.action_add_device)).assertIsDisplayed()
+        compose.onNodeWithTag(CODE_FIELD).performTextInput(" WEFT1:new ")
+        compose.onNodeWithTag(JOIN_BUTTON).performScrollTo().performClick()
+
+        // Nothing starts before the choice.
+        compose.onNodeWithTag(CHOICE_DIALOG).assertIsDisplayed()
+        assertTrue(model.joins.isEmpty() && model.invites.isEmpty())
+        compose.onNodeWithText(string(R.string.invite_choice_title)).assertIsDisplayed()
+        compose.onNodeWithText(context.resources.getQuantityString(R.plurals.invite_choice_body, 2, 2)).assertIsDisplayed()
+        compose.onNodeWithTag(CHOICE_ADD).assertTextContains(string(R.string.invite_choice_add))
+        compose.onNodeWithTag(CHOICE_JOIN).assertTextContains(string(R.string.invite_choice_join))
+        // Leaving says what it costs.
+        compose.onNodeWithText(context.resources.getQuantityString(R.plurals.invite_choice_join_hint, 2, 2)).assertIsDisplayed()
+
+        model.nextInvite = InviteResult.Added(STUDIO)
+        compose.onNodeWithTag(CHOICE_ADD).performClick()
+
+        assertEquals(listOf("WEFT1:new"), model.invites)
+        assertTrue(model.joins.isEmpty())
+        compose.onNodeWithTag(CHOICE_DIALOG).assertDoesNotExist()
+        compose.onNodeWithTag(INVITE_ADDED).assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.invite_added_title, "Studio iMac")).assertIsDisplayed()
+        compose.onNodeWithText(string(R.string.invite_added_body)).assertIsDisplayed()
+
+        compose.onNodeWithTag(DONE_BUTTON).performClick()
+        compose.onNodeWithTag(STATUS_CARD).assertIsDisplayed()
+        compose.onNodeWithText("Studio iMac").performScrollTo().assertIsDisplayed()
+        assertEquals(InviteState.Idle, model.inviteState.value)
+        // Not a join: the paired callback is for the first pairing.
+        assertEquals(0, pairedCalls)
+    }
+
+    @Test
+    fun pairedPhoneCanStillLeaveForTheComputersGroup() {
+        model.devices.value = listOf(LAPTOP)
+        launch()
+        compose.onNodeWithTag(ADD_DEVICE_ROW).performScrollTo().performClick()
+        compose.onNodeWithTag(CODE_FIELD).performTextInput("WEFT1:theirs")
+        compose.onNodeWithTag(JOIN_BUTTON).performScrollTo().performClick()
+        compose.onNodeWithText(context.resources.getQuantityString(R.plurals.invite_choice_join_hint, 1, 1)).assertIsDisplayed()
+
+        model.nextJoin = JoinResult.Joined(listOf(STUDIO), replacedGroup = true)
+        compose.onNodeWithTag(CHOICE_JOIN).performClick()
+
+        assertEquals(listOf("WEFT1:theirs"), model.joins)
+        assertTrue(model.invites.isEmpty())
+        compose.waitUntil(5_000) { pairedCalls == 1 }
+        compose.onNodeWithText("Studio iMac").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun cancellingTheChoiceStartsNothing() {
+        model.devices.value = listOf(LAPTOP)
+        launch()
+        compose.onNodeWithTag(ADD_DEVICE_ROW).performScrollTo().performClick()
+        compose.onNodeWithTag(CODE_FIELD).performTextInput("WEFT1:abc")
+        compose.onNodeWithTag(JOIN_BUTTON).performScrollTo().performClick()
+        compose.onNodeWithText(string(R.string.action_cancel)).performClick()
+
+        compose.onNodeWithTag(CHOICE_DIALOG).assertDoesNotExist()
+        compose.onNodeWithTag(CODE_FIELD).assertExists()
+        assertTrue(model.joins.isEmpty() && model.invites.isEmpty())
+        // Submitted by hand, the same code asks again.
+        compose.onNodeWithTag(JOIN_BUTTON).performScrollTo().performClick()
+        compose.onNodeWithTag(CHOICE_DIALOG).assertIsDisplayed()
+    }
+
+    @Test
+    fun eachInvitationFailureIsExplained() {
+        model.devices.value = listOf(LAPTOP)
+        launch()
+        compose.onNodeWithTag(ADD_DEVICE_ROW).performScrollTo().performClick()
+        val failures = listOf(
+            InviteResult.InvalidCode,
+            InviteResult.OwnCode,
+            InviteResult.OtherRelay,
+            InviteResult.GroupFull,
+            InviteResult.NoAnswer,
+            InviteResult.Busy,
+        ) + ConnectionProblem.entries.map { InviteResult.ConnectionFailed("test", it) } +
+            ControlError.entries.map { InviteResult.Refused(it) }
+        for ((index, failure) in failures.withIndex()) {
+            model.nextInvite = failure
+            val code = "WEFT1:code$index"
+            compose.onNodeWithTag(CODE_FIELD).performScrollTo().performTextClearance()
+            compose.onNodeWithTag(CODE_FIELD).performTextInput(code)
+            compose.onNodeWithTag(JOIN_BUTTON).performScrollTo().performClick()
+            compose.onNodeWithTag(CHOICE_ADD).performClick()
+
+            assertEquals(code, model.invites.last())
+            val (title, body) = inviteErrorText(failure)
+            compose.onNodeWithTag(JOIN_ERROR).assertIsDisplayed()
+            compose.onNodeWithText(string(title)).assertIsDisplayed()
+            compose.onNodeWithText(string(body)).assertIsDisplayed()
+            compose.onNodeWithTag(RETRY_BUTTON).performClick()
+            compose.onNodeWithTag(CODE_FIELD).assertExists()
+        }
+        assertTrue(model.joins.isEmpty())
+    }
+
+    @Test
+    fun noGroupOffersToPairInstead() {
+        model.devices.value = listOf(LAPTOP)
+        launch()
+        compose.onNodeWithTag(ADD_DEVICE_ROW).performScrollTo().performClick()
+        model.nextInvite = InviteResult.NoGroup
+        compose.onNodeWithTag(CODE_FIELD).performTextInput("WEFT1:abc")
+        compose.onNodeWithTag(JOIN_BUTTON).performScrollTo().performClick()
+        compose.onNodeWithTag(CHOICE_ADD).performClick()
+
+        compose.onNodeWithText(string(R.string.invite_no_group)).assertIsDisplayed()
+        model.nextJoin = JoinResult.Joined(listOf(STUDIO), replacedGroup = false)
+        compose.onNodeWithTag(JOIN_INSTEAD_BUTTON).assertTextContains(string(R.string.action_join_instead)).performClick()
+
+        assertEquals(listOf("WEFT1:abc"), model.joins)
+        compose.waitUntil(5_000) { pairedCalls == 1 }
     }
 
     @Test
@@ -287,6 +424,7 @@ class WeftAppTest {
         override val devices = MutableStateFlow<List<Device>?>(emptyList())
         override val lastSent = MutableStateFlow<LastSent?>(null)
         override val joinState = MutableStateFlow<JoinState>(JoinState.Idle)
+        override val inviteState = MutableStateFlow<InviteState>(InviteState.Idle)
         override val name = MutableStateFlow("Pixel 8")
         override val peers = MutableStateFlow<Map<String, PeerInfo>>(emptyMap())
         val joins = CopyOnWriteArrayList<String>()
@@ -295,6 +433,8 @@ class WeftAppTest {
         val removed = CopyOnWriteArrayList<String>()
         val leaves = CopyOnWriteArrayList<Boolean>()
         var nextJoin: JoinResult = JoinResult.InvalidCode
+        val invites = CopyOnWriteArrayList<String>()
+        var nextInvite: InviteResult = InviteResult.NoAnswer
         var removeResult: GroupChangeResult = GroupChangeResult.Done
 
         override fun startJoin(code: String) {
@@ -305,6 +445,16 @@ class WeftAppTest {
 
         override fun clearJoin() {
             if (joinState.value is JoinState.Done) joinState.value = JoinState.Idle
+        }
+
+        override fun startInvite(code: String) {
+            invites += code
+            (nextInvite as? InviteResult.Added)?.let { devices.value = devices.value.orEmpty() + it.device }
+            inviteState.value = InviteState.Done(nextInvite)
+        }
+
+        override fun clearInvite() {
+            if (inviteState.value is InviteState.Done) inviteState.value = InviteState.Idle
         }
 
         override suspend fun remove(deviceId: String): GroupChangeResult {
@@ -329,5 +479,6 @@ class WeftAppTest {
     private companion object {
         val LAPTOP = Device("3f9a0c12d4e5f60718293a4b5c6d7e8f", "MacBook Air", 1_763_000_000_000)
         val UNNAMED = Device("b7e14c09aa21f3d4e5f60718293a4b5c", null)
+        val STUDIO = Device("0c1d2e3f405162738495a6b7c8d9eaf0", "Studio iMac")
     }
 }

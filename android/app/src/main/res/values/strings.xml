@@ -152,6 +152,36 @@
     <string name="join_busy">A pairing is already running</string>
     <string name="join_busy_body">Wait for it to finish, then try again.</string>
 
+    <!-- Adding a computer to this phone's group (invitation). -->
+    <string name="action_add_device">Add a device</string>
+    <string name="invite_choice_title">This phone is already in a group</string>
+    <plurals name="invite_choice_body">
+        <item quantity="one">It is paired with %d device. The computer can join that group, or this phone can move to the computer’s group.</item>
+        <item quantity="other">It is paired with %d devices. The computer can join that group, or this phone can move to the computer’s group.</item>
+    </plurals>
+    <string name="invite_choice_add">Add this computer to my group</string>
+    <string name="invite_choice_join">Leave my group and join its group</string>
+    <plurals name="invite_choice_join_hint">
+        <item quantity="one">This phone forgets %d paired device</item>
+        <item quantity="other">This phone forgets %d paired devices</item>
+    </plurals>
+    <string name="inviting_title">Adding the computer…</string>
+    <!-- %1$s: the command, set in monospace. -->
+    <string name="inviting_body">Waiting for it to answer. Keep %1$s running on it.</string>
+    <!-- %1$s: the device name or short id. -->
+    <string name="invite_added_title">%1$s is in your group</string>
+    <string name="invite_added_body">It now shares the clipboard with this phone and the rest of your group.</string>
+    <string name="action_done">Done</string>
+    <string name="action_add_another">Add another device</string>
+    <string name="invite_no_group">This phone is in no group yet</string>
+    <string name="invite_no_group_body">Pair with the computer instead: it adds this phone to its group.</string>
+    <string name="action_join_instead">Pair with it</string>
+    <string name="invite_other_relay">This computer uses another relay</string>
+    <string name="invite_other_relay_body">Your group is on another relay, so the computer can’t be added from here. Run weft pair on it with your group’s relay, then scan the new code.</string>
+    <string name="invite_no_answer">No answer from the computer</string>
+    <string name="invite_no_answer_body">It may already belong to a group: add it from a device of that group instead. Otherwise, make sure weft pair is still running, then try again.</string>
+    <string name="invite_group_full_body">A group holds 10 devices at most. Remove one before adding this computer.</string>
+
     <string name="notification_channel">Connection</string>
     <string name="notification_connected">Connected</string>
     <string name="notification_reconnecting">Reconnecting…</string>

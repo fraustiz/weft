@@ -56,6 +56,7 @@ fun WeftApp(
     val devices by model.devices.collectAsStateWithLifecycle()
     val lastSent by model.lastSent.collectAsStateWithLifecycle()
     val joinState by model.joinState.collectAsStateWithLifecycle()
+    val inviteState by model.inviteState.collectAsStateWithLifecycle()
     val name by model.name.collectAsStateWithLifecycle()
     val peers by model.peers.collectAsStateWithLifecycle()
     val features by model.features.collectAsStateWithLifecycle()
@@ -85,12 +86,19 @@ fun WeftApp(
             current == Route.PAIR -> PairScreen(
                 joinState = joinState,
                 onJoin = model::startJoin,
-                onRetry = model::clearJoin,
+                onRetry = {
+                    model.clearJoin()
+                    model.clearInvite()
+                },
                 onBack = {
                     model.clearJoin()
+                    model.clearInvite()
                     goMain()
                 },
                 scanner = scanner,
+                deviceCount = devices?.size ?: 0,
+                inviteState = inviteState,
+                onInvite = model::startInvite,
             )
             current == Route.SETTINGS -> SettingsScreen(
                 enabled = features,
@@ -179,6 +187,7 @@ fun WeftApp(
                 lastSent = lastSent,
                 onPair = {
                     model.clearJoin()
+                    model.clearInvite()
                     route = Route.PAIR
                 },
                 onSendClipboard = onSendClipboard,

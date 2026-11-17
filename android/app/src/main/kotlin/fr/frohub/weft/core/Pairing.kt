@@ -71,3 +71,52 @@ sealed interface GroupChangeResult {
     /** A pairing or another group change is running. */
     data object Busy : GroupChangeResult
 }
+
+/**
+ * How [fr.frohub.weft.core.WeftCore.invite] ended: this phone, already in a group, added the
+ * device that showed the code to it (docs/protocol.md section 5, « Invitation »).
+ */
+sealed interface InviteResult {
+    /** [device] is in the group now, with the name it announced. */
+    data class Added(val device: Device) : InviteResult
+
+    /** Not a valid `WEFT1:` code. */
+    data object InvalidCode : InviteResult
+
+    /** The code was shown by this device. */
+    data object OwnCode : InviteResult
+
+    /** This phone trusts no device: there is no group to add to, join the other device instead. */
+    data object NoGroup : InviteResult
+
+    /** The code is for another relay than this phone's group: it cannot be added from there. */
+    data object OtherRelay : InviteResult
+
+    /** The group already has [fr.frohub.weft.protocol.Weft.MAX_GROUP_SIZE] devices. */
+    data object GroupFull : InviteResult
+
+    /**
+     * The device did not answer within 30 s. It may already belong to a group, and then
+     * ignores invitations: it has to be paired from that group instead. It is not trusted.
+     */
+    data object NoAnswer : InviteResult
+
+    /** Could not reach the relay in time. [reason] is for logs, [problem] for display. */
+    data class ConnectionFailed(
+        val reason: String,
+        val problem: ConnectionProblem = ConnectionProblem.UNREACHABLE,
+    ) : InviteResult
+
+    /** The relay refused the invitation (expired code, rate limit…). */
+    data class Refused(val error: ControlError) : InviteResult
+
+    /** A pairing or a group change is already running. */
+    data object Busy : InviteResult
+}
+
+/** Progress of the invitation started with [fr.frohub.weft.core.WeftCore.startInvite], for the UI. */
+sealed interface InviteState {
+    data object Idle : InviteState
+    data object Inviting : InviteState
+    data class Done(val result: InviteResult) : InviteState
+}

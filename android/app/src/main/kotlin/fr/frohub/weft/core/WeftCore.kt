@@ -21,8 +21,10 @@ import fr.frohub.weft.protocol.decodeDeviceAdded
 import fr.frohub.weft.protocol.decodeDeviceName
 import fr.frohub.weft.protocol.decodeDeviceRemoved
 import fr.frohub.weft.protocol.decodeWelcome
+import fr.frohub.weft.protocol.encodeDeviceAdded
 import fr.frohub.weft.protocol.encodeDeviceName
 import fr.frohub.weft.protocol.encodeDeviceRemoved
+import fr.frohub.weft.protocol.encodeWelcome
 import fr.frohub.weft.protocol.open
 import fr.frohub.weft.protocol.sessionKeys
 import java.io.File
@@ -48,10 +50,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Everything behind the screens: identity, device state, the relay connection, pairing (joining
- * side), sending and receiving. One instance per process, owned by the application.
+ * a computer's group, or inviting a computer into this phone's), sending and receiving. One instance per process, owned by the application.
  *
- * The relay stays connected while [WeftService] runs (see [keepConnected]) or a join is in
- * progress. Frames are handled one at a time on the relay client's coroutine; every state
+ * The relay stays connected while [WeftService] runs (see [keepConnected]) or a join or an
+ * invitation is in progress. Frames are handled one at a time on the relay client's coroutine; every state
  * change goes through [StateRepository.update], so it is on disk before anything depends on it.
  */
 class WeftCore internal constructor(
@@ -66,6 +68,8 @@ class WeftCore internal constructor(
     private val clock: () -> Long = System::currentTimeMillis,
     /** This phone's name until the user picks one. */
     private val defaultName: String = defaultDeviceName(),
+    /** How long an invitation waits for the invited device's name. */
+    private val inviteTimeout: Duration = JOIN_TIMEOUT,
 ) {
     constructor(context: Context) : this(context.applicationContext, context.applicationContext.noBackupFilesDir)
 
@@ -113,11 +117,19 @@ class WeftCore internal constructor(
     /** Progress of the join started with [startJoin]. */
     val joinState: StateFlow<JoinState> = _joinState.asStateFlow()
 
+    private val _inviteState = MutableStateFlow<InviteState>(InviteState.Idle)
+
+    /** Progress of the invitation started with [startInvite]. */
+    val inviteState: StateFlow<InviteState> = _inviteState.asStateFlow()
+
     /** One pairing or group change at a time. */
     private val groupMutex = Mutex()
 
     @Volatile
     private var pendingJoin: PendingJoin? = null
+
+    @Volatile
+    private var pendingInvite: PendingInvite? = null
 
     /** Relay url a join or group change keeps connected, whether the service runs or not. */
     @Volatile
@@ -293,6 +305,120 @@ class WeftCore internal constructor(
             heldUrl = null
             updateTarget()
         }
+    }
+
+    // endregion
+
+    // region Invitation (docs/protocol.md section 5, « Invitation », device B)
+
+    /** Starts [invite] in the background; follow it with [inviteState]. */
+    fun startInvite(code: String) {
+        _inviteState.value = InviteState.Inviting
+        scope.launch {
+            _inviteState.value = InviteState.Done(invite(code))
+        }
+    }
+
+    /** Forgets the result of the last invitation, once the UI has shown it. */
+    fun clearInvite() {
+        if (_inviteState.value is InviteState.Done) _inviteState.value = InviteState.Idle
+    }
+
+    /**
+     * Adds the device that showed [code] to this phone's group, instead of leaving the group to
+     * join that device's, as `weft invite` does: trusts the code's device, sends the invitation
+     * (`0xB5`), and waits up to 30 s for its Device name, the sign that it accepted and is in
+     * the group. Then tells the other members (Device added) first, so they trust it by the
+     * time it writes to them, sends it the Welcome listing them, and this phone's name with
+     * the capabilities.
+     *
+     * This phone must already be in a group ([InviteResult.NoGroup] otherwise: join instead),
+     * on the code's relay. A device that already belongs to a group ignores invitations: then
+     * nothing answers, the device is no longer trusted and the result is [InviteResult.NoAnswer].
+     */
+    suspend fun invite(code: String): InviteResult {
+        if (!groupMutex.tryLock()) return InviteResult.Busy
+        try {
+            return inviteLocked(code)
+        } finally {
+            groupMutex.unlock()
+        }
+    }
+
+    private suspend fun inviteLocked(code: String): InviteResult {
+        val pairing = try {
+            PairingCode.decode(code.trim())
+        } catch (_: WeftException) {
+            return InviteResult.InvalidCode
+        }
+        val local = identity()
+        if (pairing.signPublicKey.contentEquals(local.signPublicKey)) return InviteResult.OwnCode
+        val state = repository.load()
+        val url = state.relayUrl
+        if (url == null || state.devices.isEmpty()) return InviteResult.NoGroup
+        if (pairing.relayUrl != url) return InviteResult.OtherRelay
+        val keys = PeerKeys(pairing.signPublicKey, pairing.kxPublicKey)
+        val inviteeHex = keys.deviceId.toHex()
+        val wasTrusted = state.device(inviteeHex) != null
+        // This phone, its devices and the new one.
+        if (!wasTrusted && state.devices.size + 1 >= Weft.MAX_GROUP_SIZE) return InviteResult.GroupFull
+
+        heldUrl = url
+        updateTarget()
+        val pending = PendingInvite(inviteeHex)
+        // Once its name came, the device is in the group: it stays trusted whatever happens.
+        var named = false
+        try {
+            if (!relay.isConnected && !awaitConnected(connectWait)) {
+                val error = relay.status.value as? ConnectionStatus.Error
+                return InviteResult.ConnectionFailed(
+                    error?.reason ?: "timed out",
+                    error?.problem ?: ConnectionProblem.TIMED_OUT,
+                )
+            }
+            // Trusted first, so its name can be read.
+            repository.update { s -> s.trust(keys, addedAt = clock()) to Unit }
+            pendingInvite = pending
+            val request = PairRequest.invite(pairing.secret, pairing.pairingId, local.signPublicKey, local.kxPublicKey)
+            if (!relay.send(ControlFrame.PairInvite(request).encode())) {
+                return InviteResult.ConnectionFailed("connection lost", ConnectionProblem.LOST)
+            }
+            val outcome = withTimeoutOrNull(inviteTimeout) { pending.result.await() } ?: return InviteResult.NoAnswer
+            if (outcome is InviteOutcome.Refused) return InviteResult.Refused(outcome.error)
+            pendingInvite = null
+            named = true
+
+            val current = repository.load()
+            val invited = current.device(inviteeHex) ?: return InviteResult.NoAnswer
+            val others = current.devices.filter { it.deviceIdHex != inviteeHex }
+            // Device added first: the relay then queues it for each member before the invited
+            // device can read the Welcome and send them its name.
+            sender.sendEnvelope(others.map { it.deviceIdHex }, Kind.DEVICE_ADDED, encodeDeviceAdded(keys))
+            if (sender.sendEnvelope(listOf(inviteeHex), Kind.WELCOME, encodeWelcome(others.map { it.keys() })) == 0) {
+                return InviteResult.ConnectionFailed("connection lost", ConnectionProblem.LOST)
+            }
+            sendName(listOf(inviteeHex))
+            if (!relay.flush(FLUSH_TIMEOUT)) Log.w(TAG, "the relay connection closed before every frame left")
+            Log.i(TAG, "added ${shortId(inviteeHex)} to the group: ${current.devices.size} trusted device(s)")
+            return InviteResult.Added(invited.toDevice())
+        } finally {
+            pendingInvite = null
+            if (!named && !wasTrusted) {
+                repository.update { s -> s.untrust(inviteeHex) to Unit }
+            }
+            heldUrl = null
+            updateTarget()
+        }
+    }
+
+    private class PendingInvite(val inviteeIdHex: String) {
+        val result = CompletableDeferred<InviteOutcome>()
+    }
+
+    private sealed interface InviteOutcome {
+        /** The invited device's name arrived (and is saved). */
+        data object Named : InviteOutcome
+        class Refused(val error: ControlError) : InviteOutcome
     }
 
     // endregion
@@ -483,6 +609,8 @@ class WeftCore internal constructor(
         }
         val pending = pendingJoin
         if (pending != null && pending.result.complete(JoinOutcome.Refused(control.code))) return
+        val invite = pendingInvite
+        if (invite != null && invite.result.complete(InviteOutcome.Refused(control.code))) return
         Log.w(TAG, "relay error: ${control.code}")
     }
 
@@ -511,6 +639,11 @@ class WeftCore internal constructor(
                 Log.i(TAG, "${event.what} from ${shortId(senderHex)}")
                 // Every device this one just started trusting gets its name.
                 sendName(event.newlyTrusted)
+                // The invited device's name: it accepted and is in the group.
+                val invite = pendingInvite
+                if (invite != null && header.kind == Kind.DEVICE_NAME && senderHex == invite.inviteeIdHex) {
+                    invite.result.complete(InviteOutcome.Named)
+                }
             }
             Received.Ping -> Unit
             is Received.Packet -> packetListener?.onPacket(senderHex, event.plaintext)

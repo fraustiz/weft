@@ -66,7 +66,7 @@ import java.text.DateFormat
 
 /**
  * The main screen. Not paired: what Weft does and how to pair. Paired: the connection, the
- * send action, the devices of the group and the tile hint.
+ * send action, the devices of the group with a way to add one, and the tile hint.
  *
  * [devices] is null while the state loads. [onAddTile] is null where the system cannot add
  * the tile for us (below API 33).
@@ -84,6 +84,7 @@ fun MainScreen(
     onAddTile: (() -> Unit)?,
     onRename: () -> Unit = {},
     onSettings: () -> Unit = {},
+    onAddDevice: () -> Unit = onPair,
 ) {
     val paired = !devices.isNullOrEmpty()
     Scaffold(
@@ -115,7 +116,7 @@ fun MainScreen(
             when {
                 devices == null -> Unit
                 devices.isEmpty() -> NotPaired(onPair)
-                else -> Paired(status, devices, lastSent, onSendClipboard, onOpenDevice, onAddTile)
+                else -> Paired(status, devices, lastSent, onSendClipboard, onOpenDevice, onAddDevice, onAddTile)
             }
         }
     }
@@ -233,6 +234,7 @@ private fun Paired(
     lastSent: LastSent?,
     onSendClipboard: () -> Unit,
     onOpenDevice: (Device) -> Unit,
+    onAddDevice: () -> Unit,
     onAddTile: (() -> Unit)?,
 ) {
     StatusCard(status, devices.size)
@@ -262,6 +264,8 @@ private fun Paired(
             if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             DeviceRow(device, onClick = { onOpenDevice(device) })
         }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        AddDeviceRow(onAddDevice)
     }
     Spacer(Modifier.height(32.dp))
     TileHintCard(onAddTile)
@@ -348,6 +352,25 @@ private fun DeviceRow(device: Device, onClick: () -> Unit) {
     )
 }
 
+/** The last row of the device list: scan another computer's code to add it to this group. */
+@Composable
+private fun AddDeviceRow(onClick: () -> Unit) {
+    ListItem(
+        headlineContent = { Text(stringResource(R.string.action_add_device)) },
+        leadingContent = {
+            Icon(painterResource(R.drawable.ic_add), contentDescription = null)
+        },
+        colors = ListItemDefaults.colors(
+            containerColor = MaterialTheme.colorScheme.surface,
+            leadingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        ),
+        modifier = Modifier
+            .heightIn(min = 56.dp)
+            .clickable(role = Role.Button, onClick = onClick)
+            .testTag(ADD_DEVICE_ROW),
+    )
+}
+
 @Composable
 private fun LastSentLine(lastSent: LastSent?) {
     val style = MaterialTheme.typography.bodyMedium.merge(TextStyle(fontFeatureSettings = "tnum"))
@@ -427,6 +450,7 @@ const val PAIR_BUTTON = "pair_button"
 const val STATUS_CARD = "status_card"
 const val DEVICE_ROW_PREFIX = "device_"
 const val SETTINGS_MENU_ITEM = "settings_menu_item"
+const val ADD_DEVICE_ROW = "add_device_row"
 
 private val previewDevices = listOf(
     Device("3f9a0c12d4e5f60718293a4b5c6d7e8f", "MacBook Air"),

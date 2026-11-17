@@ -5,12 +5,13 @@
 package fr.frohub.weft.protocol
 
 private val PAIR_CONTEXT = "weft-pair-v1".toByteArray(Charsets.US_ASCII)
+private val INVITE_CONTEXT = "weft-invite-v1".toByteArray(Charsets.US_ASCII)
 
 /** `pairing_id (16) || sign_pk (32) || kx_pk (32) || secret (32)`. */
 private const val PAIRING_CODE_FIXED_LENGTH =
     Weft.PAIRING_ID_LENGTH + Sodium.SIGN_PK_BYTES + Sodium.KX_PK_BYTES + Weft.PAIRING_SECRET_LENGTH
 
-/** `0xB1 || pairing_id || sign_pk || kx_pk || mac`. */
+/** `0xB1 (or 0xB5) || pairing_id || sign_pk || kx_pk || mac`. */
 private const val PAIR_REQUEST_FRAME_LENGTH =
     1 + Weft.PAIRING_ID_LENGTH + Sodium.SIGN_PK_BYTES + Sodium.KX_PK_BYTES + Weft.PAIR_REQUEST_MAC_LENGTH
 
@@ -157,10 +158,31 @@ fun pairRequestMac(
     pairingId: ByteArray,
     signPublicKey: ByteArray,
     kxPublicKey: ByteArray,
+): ByteArray = requestMac(PAIR_CONTEXT, secret, pairingId, signPublicKey, kxPublicKey)
+
+/**
+ * MAC of an invitation (`0xB5`): the same as [pairRequestMac] with the
+ * context `"weft-invite-v1"`, so a join request can never pass for an
+ * invitation or the other way round. The keys are those of the inviting
+ * device.
+ */
+fun inviteRequestMac(
+    secret: ByteArray,
+    pairingId: ByteArray,
+    signPublicKey: ByteArray,
+    kxPublicKey: ByteArray,
+): ByteArray = requestMac(INVITE_CONTEXT, secret, pairingId, signPublicKey, kxPublicKey)
+
+private fun requestMac(
+    context: ByteArray,
+    secret: ByteArray,
+    pairingId: ByteArray,
+    signPublicKey: ByteArray,
+    kxPublicKey: ByteArray,
 ): ByteArray {
     val key = fixed(secret, Weft.PAIRING_SECRET_LENGTH, "secret")
     try {
-        val input = PAIR_CONTEXT +
+        val input = context +
             fixed(pairingId, Weft.PAIRING_ID_LENGTH, "pairingId") +
             fixed(signPublicKey, Sodium.SIGN_PK_BYTES, "signPublicKey") +
             fixed(kxPublicKey, Sodium.KX_PK_BYTES, "kxPublicKey")
@@ -170,7 +192,11 @@ fun pairRequestMac(
     }
 }
 
-/** Body of the `0xB1` frame: a device asking to join a group. */
+/**
+ * Body of the `0xB1` frame (a device asking to join a group) and of the
+ * `0xB5` frame (a device inviting the slot owner into its group). Only the
+ * MAC context tells them apart.
+ */
 class PairRequest(
     pairingId: ByteArray,
     signPublicKey: ByteArray,
@@ -188,7 +214,7 @@ class PairRequest(
     val signPublicKey: ByteArray get() = signPublicKeyBytes.copyOf()
     /** Key exchange public key of the device asking to join. */
     val kxPublicKey: ByteArray get() = kxPublicKeyBytes.copyOf()
-    /** 32-byte MAC, see [pairRequestMac]. */
+    /** 32-byte MAC, see [pairRequestMac] and [inviteRequestMac]. */
     val mac: ByteArray get() = macBytes.copyOf()
 
     fun copy(
@@ -235,6 +261,21 @@ class PairRequest(
             pairingId, signPublicKey, kxPublicKey,
             pairRequestMac(secret, pairingId, signPublicKey, kxPublicKey),
         )
+
+        /**
+         * Builds the invitation of the inviting device, computing the MAC
+         * with the invitation context and the secret read from the pairing
+         * code.
+         */
+        fun invite(
+            secret: ByteArray,
+            pairingId: ByteArray,
+            signPublicKey: ByteArray,
+            kxPublicKey: ByteArray,
+        ): PairRequest = PairRequest(
+            pairingId, signPublicKey, kxPublicKey,
+            inviteRequestMac(secret, pairingId, signPublicKey, kxPublicKey),
+        )
     }
 }
 
@@ -248,6 +289,19 @@ class PairRequest(
  */
 fun verifyPairRequest(secret: ByteArray, request: PairRequest): Boolean {
     val expected = pairRequestMac(secret, request.pairingId, request.signPublicKey, request.kxPublicKey)
+    return request.hasMac(expected)
+}
+
+/**
+ * Checks the MAC of a received invitation (`0xB5`) in constant time
+ * (`sodium_memcmp`), with the invitation context. A join request's MAC never
+ * verifies here.
+ *
+ * As for [verifyPairRequest], the caller must also check that
+ * `request.pairingId` is the id of the code it is showing.
+ */
+fun verifyInviteRequest(secret: ByteArray, request: PairRequest): Boolean {
+    val expected = inviteRequestMac(secret, request.pairingId, request.signPublicKey, request.kxPublicKey)
     return request.hasMac(expected)
 }
 
@@ -336,6 +390,41 @@ sealed class ControlFrame {
         override fun toString(): String = "GroupRemove(deviceId=${deviceIdBytes.toHex()})"
     }
 
+    /**
+     * `0xB4`, slot owner → relay: accepts the invitation of that device,
+     * moving the sender into its group.
+     */
+    class GroupJoin(deviceId: ByteArray) : ControlFrame() {
+        private val deviceIdBytes = fixed(deviceId, Weft.DEVICE_ID_LENGTH, "deviceId")
+
+        /** 16-byte device id. */
+        val deviceId: ByteArray get() = deviceIdBytes.copyOf()
+
+        override fun encode(): ByteArray = byteArrayOf(Weft.CONTROL_GROUP_JOIN.toByte()) + deviceIdBytes
+
+        override fun equals(other: Any?): Boolean =
+            other is GroupJoin && deviceIdBytes.contentEquals(other.deviceIdBytes)
+
+        override fun hashCode(): Int = deviceIdBytes.contentHashCode()
+
+        override fun toString(): String = "GroupJoin(deviceId=${deviceIdBytes.toHex()})"
+    }
+
+    /**
+     * `0xB5`, inviting device → relay → slot owner: invites the slot owner
+     * into the sender's group. Same body as `0xB1`, MAC with the invitation
+     * context.
+     */
+    class PairInvite(val request: fr.frohub.weft.protocol.PairRequest) : ControlFrame() {
+        override fun encode(): ByteArray = byteArrayOf(Weft.CONTROL_PAIR_INVITE.toByte()) + request.body()
+
+        override fun equals(other: Any?): Boolean = other is PairInvite && request == other.request
+
+        override fun hashCode(): Int = request.hashCode()
+
+        override fun toString(): String = "PairInvite($request)"
+    }
+
     /** `0xBE`, relay → device. */
     data class Error(val code: ControlError) : ControlFrame() {
         override fun encode(): ByteArray = byteArrayOf(Weft.CONTROL_ERROR.toByte(), code.value.toByte())
@@ -350,21 +439,11 @@ sealed class ControlFrame {
             if (frame.isEmpty()) fail(WeftError.MalformedControlFrame)
             return when (val tag = frame.u8(0)) {
                 Weft.CONTROL_PAIR_OPEN -> PairOpen(body(frame, ID_FRAME_LENGTH))
-                Weft.CONTROL_PAIR_REQUEST -> {
-                    val body = body(frame, PAIR_REQUEST_FRAME_LENGTH)
-                    var offset = 0
-                    fun take(count: Int): ByteArray = body.copyOfRange(offset, offset + count).also { offset += count }
-                    PairRequest(
-                        fr.frohub.weft.protocol.PairRequest(
-                            pairingId = take(Weft.PAIRING_ID_LENGTH),
-                            signPublicKey = take(Sodium.SIGN_PK_BYTES),
-                            kxPublicKey = take(Sodium.KX_PK_BYTES),
-                            mac = take(Weft.PAIR_REQUEST_MAC_LENGTH),
-                        ),
-                    )
-                }
+                Weft.CONTROL_PAIR_REQUEST -> PairRequest(decodeRequest(frame))
                 Weft.CONTROL_GROUP_ADD -> GroupAdd(body(frame, ID_FRAME_LENGTH))
                 Weft.CONTROL_GROUP_REMOVE -> GroupRemove(body(frame, ID_FRAME_LENGTH))
+                Weft.CONTROL_GROUP_JOIN -> GroupJoin(body(frame, ID_FRAME_LENGTH))
+                Weft.CONTROL_PAIR_INVITE -> PairInvite(decodeRequest(frame))
                 Weft.CONTROL_ERROR -> {
                     val code = body(frame, ERROR_FRAME_LENGTH)[0].toUByte()
                     Error(ControlError.fromValue(code) ?: fail(WeftError.UnknownControlError(code)))
@@ -375,8 +454,21 @@ sealed class ControlFrame {
             }
         }
 
-        private const val RESERVED_FIRST: UByte = 0xB4u
+        private const val RESERVED_FIRST: UByte = 0xB6u
         private const val RESERVED_LAST: UByte = 0xBDu
+
+        /** The body of a `0xB1` or `0xB5` frame. */
+        private fun decodeRequest(frame: ByteArray): fr.frohub.weft.protocol.PairRequest {
+            val body = body(frame, PAIR_REQUEST_FRAME_LENGTH)
+            var offset = 0
+            fun take(count: Int): ByteArray = body.copyOfRange(offset, offset + count).also { offset += count }
+            return fr.frohub.weft.protocol.PairRequest(
+                pairingId = take(Weft.PAIRING_ID_LENGTH),
+                signPublicKey = take(Sodium.SIGN_PK_BYTES),
+                kxPublicKey = take(Sodium.KX_PK_BYTES),
+                mac = take(Weft.PAIR_REQUEST_MAC_LENGTH),
+            )
+        }
 
         /** The body of [frame], or an error if the frame is not exactly [length] bytes. */
         private fun body(frame: ByteArray, length: Int): ByteArray {

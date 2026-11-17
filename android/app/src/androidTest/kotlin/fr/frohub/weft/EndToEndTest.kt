@@ -8,6 +8,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import fr.frohub.weft.core.ConnectionStatus
+import fr.frohub.weft.core.InviteResult
 import fr.frohub.weft.core.JoinResult
 import fr.frohub.weft.core.RenameResult
 import kotlinx.coroutines.flow.first
@@ -55,6 +56,28 @@ class EndToEndTest {
                 val name = poll(15_000) { app.core.devices.value.singleOrNull()?.name?.takeIf { it == expected } }
                 assertEquals(expected, name)
             }
+        }
+    }
+
+    /**
+     * `-e weftInviteCode WEFT1:…`: adds the CLI that printed the code to this phone's group
+     * (invitation). With `-e weftExpectPeerName …`, the added device must have announced that
+     * name. `-e weftExpectDevices n`: how many devices this phone trusts afterwards.
+     */
+    @Test
+    fun invite() {
+        val code = args.getString("weftInviteCode")
+        assumeTrue("no weftInviteCode argument", code != null)
+        ActivityScenario.launch(MainActivity::class.java).use {
+            awaitConnected()
+            val result = runBlocking { app.core.invite(code!!) }
+            assertTrue("invitation failed: $result", result is InviteResult.Added)
+            val added = (result as InviteResult.Added).device
+            args.getString("weftExpectPeerName")?.let { assertEquals(it, added.name) }
+            args.getString("weftExpectDevices")?.let { assertEquals(it.toInt(), app.core.repository.state.value.devices.size) }
+            // This process ends with the test, unlike the app's: give the last envelopes (this
+            // phone's name, its capabilities) time to cross the relay before the socket goes.
+            Thread.sleep(3_000)
         }
     }
 
