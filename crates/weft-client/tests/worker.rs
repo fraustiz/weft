@@ -1383,7 +1383,10 @@ async fn received_names_are_sanitised() {
             ("../../etc/passwd", "passwd"),
             ("..", "file"),
             ("tab\there?.txt. . ", "tabhere_.txt"),
-            ("con.txt", "_con (1).txt"),
+            // Reuse the exact spelling so this is a collision on both
+            // case-sensitive and case-insensitive filesystems. Lowercase
+            // reserved names are also covered by transfer's pure unit tests.
+            ("CON.txt", "_CON (1).txt"),
         ] {
             phone.send_file(pc, offered, b"data").await;
             let path = tested.received().await;
