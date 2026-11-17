@@ -169,7 +169,7 @@ private struct UpdateSettings: View {
             }
             if updates.available {
                 Toggle(t("Automatically check for updates", "Rechercher automatiquement les mises à jour"),
-                       isOn: Binding(get: { updates.checksAutomatically }, set: updates.setChecksAutomatically))
+                       isOn: Binding(get: { updates.checksAutomatically }, set: { updates.setChecksAutomatically($0) }))
                 HStack {
                     Spacer()
                     Button(t("Check for Updates…", "Rechercher les mises à jour…"), action: updates.check)
