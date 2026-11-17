@@ -97,6 +97,42 @@ pub const MAC_IMPLEMENTED: Implemented = Implemented {
     outgoing: MAC_OUTGOING,
 };
 
+/// The switches the first Mac version forced, as it had no settings for
+/// them; `features.json` kept them.
+const FIRST_VERSION: Features = Features {
+    files: false,
+    links: false,
+    ring: false,
+    battery: true,
+    notifications: false,
+    calls: false,
+    media: false,
+    volume: false,
+    sms: false,
+    commands: false,
+};
+
+/// Marks a state directory whose switches were checked by [`upgraded`].
+const UPGRADED_MARK: &str = "features-upgraded";
+
+/// `features`, or the defaults if they are the ones the first Mac version
+/// forced: its user never chose them. Checked once per state directory, so
+/// the same choice made later in Settings stays.
+fn upgraded(dir: &std::path::Path, features: Features) -> Features {
+    let mark = dir.join(UPGRADED_MARK);
+    if mark.exists() {
+        return features;
+    }
+    if let Err(err) = std::fs::write(&mark, b"") {
+        tracing::warn!(error = %err, "could not mark the feature switches as checked");
+    }
+    if features == FIRST_VERSION && dir.join("features.json").exists() {
+        Features::default()
+    } else {
+        features
+    }
+}
+
 /// `features` with the switches the Mac does not have turned off.
 fn supported(features: Features) -> Features {
     Features {
@@ -283,8 +319,8 @@ impl WeftCore {
             .map_err(|err| CoreError::Start {
                 message: err.to_string(),
             })?;
-        let features = handle.snapshot().features;
-        if supported(features) != features {
+        let features = upgraded(self.dir.path(), handle.snapshot().features);
+        if supported(features) != features || features != handle.snapshot().features {
             handle.send(Command::SetFeatures(supported(features)));
         }
         let watcher = handle.clone();
@@ -733,5 +769,36 @@ fn placeholder() -> worker::Snapshot {
         last_activity: None,
         ringing: None,
         transfers: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_first_versions_switches_become_the_defaults_once() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("features.json"), b"{}").unwrap();
+        assert_eq!(upgraded(dir.path(), FIRST_VERSION), Features::default());
+        // Chosen again later in Settings, they stay.
+        assert_eq!(upgraded(dir.path(), FIRST_VERSION), FIRST_VERSION);
+    }
+
+    #[test]
+    fn other_switches_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("features.json"), b"{}").unwrap();
+        let chosen = Features {
+            ring: false,
+            ..Features::default()
+        };
+        assert_eq!(upgraded(dir.path(), chosen), chosen);
+    }
+
+    #[test]
+    fn a_new_install_keeps_its_switches() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(upgraded(dir.path(), FIRST_VERSION), FIRST_VERSION);
     }
 }
