@@ -38,6 +38,9 @@ struct MenuContent: View {
             Text(t("Settings…", "Réglages…"))
         }
         .keyboardShortcut(",")
+        if model.updates.available {
+            CheckForUpdates(updates: model.updates)
+        }
         Divider()
         Button(t("Quit Weft", "Quitter Weft")) {
             NSApp.terminate(nil)
@@ -101,6 +104,16 @@ struct MenuContent: View {
     private func label(_ device: DeviceInfo) -> String {
         guard let battery = device.battery else { return device.displayName }
         return "\(device.displayName) — \(Words.battery(level: battery.level))"
+    }
+}
+
+/// « Check for Updates… »: its own view, so it follows the updater.
+struct CheckForUpdates: View {
+    @ObservedObject var updates: Updates
+
+    var body: some View {
+        Button(t("Check for Updates…", "Rechercher les mises à jour…"), action: updates.check)
+            .disabled(!updates.canCheck)
     }
 }
 

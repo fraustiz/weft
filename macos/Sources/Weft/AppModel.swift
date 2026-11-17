@@ -28,6 +28,8 @@ final class AppModel: ObservableObject {
     let ringer = Ringer()
     let volume = SystemVolume()
     let nowPlaying = NowPlaying()
+    /// Sparkle, started at once: it checks on its own schedule.
+    let updates = Updates()
     /// The covers of the other devices' players, by device and art id,
     /// decoded once: the last `coverLimit` looked up (a failed one too).
     private var covers: [String: NSImage?] = [:]

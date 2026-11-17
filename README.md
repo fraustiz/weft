@@ -52,6 +52,22 @@ No app stores for now. Builds will be published on GitHub Releases:
 - the macOS app is not notarized: open it with right-click → Open;
 - the Windows build is unsigned, so SmartScreen will warn on first launch.
 
+### Releases and updates
+
+The macOS and Android apps update themselves from GitHub Releases. The Mac app uses [Sparkle](https://sparkle-project.org) and reads `releases/latest/download/appcast.xml`; the Android app reads `releases/latest/download/android-update.json`.
+
+To cut a release, push a tag `app-vX.Y.Z`:
+
+```sh
+git tag app-v1.2.0 && git push origin app-v1.2.0
+```
+
+[`.github/workflows/app-release.yml`](.github/workflows/app-release.yml) builds both apps at version `X.Y.Z` (build number and `versionCode`: the commit count), and publishes the release with `Weft-X.Y.Z-mac.zip`, `appcast.xml`, `weft-X.Y.Z.apk` and `android-update.json`. Run it by hand (Actions › App release › Run workflow) for a dry run that builds and signs without publishing.
+
+Repository secrets it needs: `SPARKLE_ED_PRIVATE_KEY`, `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
+
+Mac updates are checked with an EdDSA key: Sparkle installs an update only if its archive is signed with the private key matching the public key built into the app. That public key is [`macos/sparkle-public-key.txt`](macos/sparkle-public-key.txt). The private key, and the Android keystore with its passwords, stay with the maintainer, in a keychain or password manager, and in the repository secrets: never in the repository. Lose the Sparkle private key and installed Macs can no longer update themselves; leak it and anyone can ship them an update. `macos/scripts/update-e2e.sh` checks the whole update locally, with a temporary key.
+
 ## Brand
 
 The logo is hand-drawn SVG in two colours: sunset orange `#F26A21` on ink `#17130F` or cream `#F6EFE6`. No AI-generated images. See [`brand/`](brand/).

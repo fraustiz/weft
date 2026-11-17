@@ -1,5 +1,5 @@
-// The Settings window: this Mac's name, opening at login and the group in
-// General; the feature switches in Features; the relay in Advanced.
+// The Settings window: this Mac's name, opening at login, the group and
+// updates in General; the feature switches in Features; the relay in Advanced.
 
 import AppKit
 import SwiftUI
@@ -70,6 +70,7 @@ private struct GeneralSettings: View {
             Section(t("Startup", "Démarrage")) {
                 loginToggle
             }
+            UpdateSettings(updates: model.updates)
             Section {
                 LabeledContent(t("Paired devices", "Appareils associés"),
                                value: Words.deviceCount(model.devices.count))
@@ -154,6 +155,39 @@ private struct GeneralSettings: View {
 
     private func saveName() {
         model.rename(name.value)
+    }
+}
+
+/// The version, and Sparkle's daily check.
+private struct UpdateSettings: View {
+    @ObservedObject var updates: Updates
+
+    var body: some View {
+        Section {
+            LabeledContent(t("Version", "Version")) {
+                Text(Updates.version).textSelection(.enabled)
+            }
+            if updates.available {
+                Toggle(t("Automatically check for updates", "Rechercher automatiquement les mises à jour"),
+                       isOn: Binding(get: { updates.checksAutomatically }, set: updates.setChecksAutomatically))
+                HStack {
+                    Spacer()
+                    Button(t("Check for Updates…", "Rechercher les mises à jour…"), action: updates.check)
+                        .disabled(!updates.canCheck)
+                }
+            }
+        } header: {
+            Text(t("Updates", "Mises à jour"))
+        } footer: {
+            if !updates.available {
+                Text(t(
+                    "This build does not update itself.",
+                    "Cette version ne se met pas à jour toute seule."
+                ))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
     }
 }
 

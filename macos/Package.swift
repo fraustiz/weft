@@ -25,6 +25,12 @@ let package = Package(
     products: [
         .executable(name: "Weft", targets: ["Weft"]),
     ],
+    dependencies: [
+        // In-app updates (MIT). Pinned: scripts/build-app.sh embeds and
+        // signs the framework, .github/workflows/app-release.yml signs the
+        // appcast with the tools of the same release.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
+    ],
     targets: [
         // The C side of the generated bindings; its module map links
         // libweft_ffi.a.
@@ -43,7 +49,15 @@ let package = Package(
         .target(name: "WeftKit"),
         .executableTarget(
             name: "Weft",
-            dependencies: ["WeftFFI", "WeftKit"]
+            dependencies: [
+                "WeftFFI",
+                "WeftKit",
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
+            // Sparkle.framework sits in Weft.app/Contents/Frameworks.
+            linkerSettings: [
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
+            ]
         ),
         .testTarget(
             name: "WeftKitTests",

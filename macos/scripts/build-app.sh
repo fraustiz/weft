@@ -16,8 +16,14 @@
 #    Contents/Frameworks/MediaRemoteAdapter.framework,
 #    Contents/Helpers/MediaRemoteAdapterTestClient and
 #    Contents/Resources/MediaRemoteAdapter/ (its Perl script and licence);
-# 5. an ad-hoc signature (codesign -s -), inside out: not signed by a
+# 5. Sparkle.framework (in-app updates, MIT, pinned in Package.swift), with
+#    its Autoupdate tool, Updater.app and XPC services, in
+#    Contents/Frameworks; Info.plist gets the appcast's URL and the EdDSA
+#    public key updates are checked with (Weft.app only, see below);
+# 6. an ad-hoc signature (codesign -s -), inside out: not signed by a
 #    developer, so the first launch from Finder needs right-click › Open.
+#    Sparkle accepts an ad-hoc signed update because the archive is signed
+#    with the EdDSA key: the key, not the code signature, carries the trust.
 #
 # Idempotent: run it again after any change. The icons are rendered again
 # only when their SVG changed. Prints the path of the app.
@@ -29,7 +35,17 @@
 # build/Weft Dev.app instead, a development copy with its own identifier
 # (fr.frohub.weft.mac.dev): it shares no notification permission,
 # preferences or Launch Services entry with an installed Weft, so it can
-# run next to it (scripts/e2e.sh uses it).
+# run next to it (scripts/e2e.sh uses it). It never updates itself.
+#
+# Versions: CFBundleShortVersionString is WEFT_VERSION if set (the release
+# workflow passes X.Y.Z from the tag app-vX.Y.Z), otherwise the version of
+# crates/weft-ffi; CFBundleVersion is the number of commits, which only
+# grows: Sparkle compares it to pick the newer build.
+#
+# Updates: the EdDSA public key is SPARKLE_PUBLIC_ED_KEY if set, otherwise
+# macos/sparkle-public-key.txt. Without one the app is built without
+# SUFeedURL and does not update itself; a release build (WEFT_VERSION set)
+# without one fails.
 set -euo pipefail
 
 macos="$(cd "$(dirname "$0")/.." && pwd)"
@@ -48,6 +64,24 @@ fi
 icons="$build/icons"
 chrome="${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
 read -r -a rust_archs <<<"${WEFT_ARCHS:-aarch64-apple-darwin x86_64-apple-darwin}"
+feed_url=https://github.com/fraustiz/weft/releases/latest/download/appcast.xml
+
+if [[ -n "${WEFT_VERSION:-}" && ! "$WEFT_VERSION" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+    echo "WEFT_VERSION must look like 1.2.3, not $WEFT_VERSION" >&2
+    exit 1
+fi
+public_key="${SPARKLE_PUBLIC_ED_KEY:-}"
+if [[ -z "$public_key" && -s "$macos/sparkle-public-key.txt" ]]; then
+    public_key="$(tr -d '[:space:]' <"$macos/sparkle-public-key.txt")"
+fi
+if [[ -n "$public_key" && ! "$public_key" =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
+    echo "the Sparkle public key is not a base64 Ed25519 key: $public_key" >&2
+    exit 1
+fi
+if [[ -n "${WEFT_VERSION:-}" && -z "$public_key" && "${WEFT_DEV_BUNDLE:-}" != 1 ]]; then
+    echo "a release build needs the Sparkle public key (macos/sparkle-public-key.txt or SPARKLE_PUBLIC_ED_KEY)" >&2
+    exit 1
+fi
 
 "$macos/scripts/build-rust.sh" release
 
@@ -99,6 +133,12 @@ for file in "$adapter_framework/MediaRemoteAdapter" "$adapter_test_client"; do
     [[ -x "$file" ]] || { echo "the adapter build made no $file" >&2; exit 1; }
 done
 
+# Sparkle.framework, universal, from the XCFramework SwiftPM fetched for the
+# version pinned in Package.swift.
+sparkle_framework="$macos/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+[[ -x "$sparkle_framework/Versions/B/Sparkle" ]] \
+    || { echo "no Sparkle.framework at $sparkle_framework (swift package resolve)" >&2; exit 1; }
+
 # Renders an HTML page with headless Chrome into a PNG of size $3.
 render() {
     "$chrome" --headless --disable-gpu --hide-scrollbars --allow-file-access-from-files \
@@ -148,7 +188,7 @@ EOF
 fi
 
 echo "==> ${app##*/}"
-version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/crates/weft-ffi/Cargo.toml" | head -1)"
+version="${WEFT_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/crates/weft-ffi/Cargo.toml" | head -1)}"
 build_number="$(git -C "$root" rev-list --count HEAD 2>/dev/null || echo 1)"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
@@ -159,6 +199,20 @@ mkdir -p "$app/Contents/Frameworks" "$app/Contents/Helpers" "$app/Contents/Resou
 ditto "$adapter_framework" "$app/Contents/Frameworks/MediaRemoteAdapter.framework"
 cp "$adapter_test_client" "$app/Contents/Helpers/"
 cp "$adapter_src/bin/mediaremote-adapter.pl" "$adapter_src/LICENSE" "$app/Contents/Resources/MediaRemoteAdapter/"
+# Sparkle, linked by the app (@rpath = @executable_path/../Frameworks).
+ditto "$sparkle_framework" "$app/Contents/Frameworks/Sparkle.framework"
+# Updates: the release app only. The development copy has no feed, so it
+# never replaces itself, let alone an installed Weft.
+updates_plist=""
+if [[ "${WEFT_DEV_BUNDLE:-}" != 1 && -n "$public_key" ]]; then
+    updates_plist="    <key>SUFeedURL</key><string>$feed_url</string>
+    <key>SUPublicEDKey</key><string>$public_key</string>
+    <key>SUEnableAutomaticChecks</key><true/>
+    <key>SUScheduledCheckInterval</key><integer>86400</integer>
+"
+elif [[ "${WEFT_DEV_BUNDLE:-}" != 1 ]]; then
+    echo "warning: no Sparkle public key, this build will not update itself" >&2
+fi
 cp "$macos/THIRD_PARTY_NOTICES.md" "$app/Contents/Resources/"
 # The languages of the interface (WeftKit/Language.swift), so the system's
 # own menus and panels follow them too.
@@ -187,13 +241,23 @@ cat >"$app/Contents/Info.plist" <<EOF
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Fraustiz. MIT License.</string>
-</dict>
+$updates_plist</dict>
 </plist>
 EOF
 plutil -lint -s "$app/Contents/Info.plist"
 
 echo "==> codesign (ad hoc)"
-# Inside out: what the app holds first, the app last.
+# Inside out: what the app holds first, the app last. Sparkle in the order
+# its documentation gives for signing it again (Documentation › Sandboxing
+# and Code Signing): XPC services, Autoupdate, Updater.app, the framework;
+# the Downloader keeps its entitlements.
+sparkle="$app/Contents/Frameworks/Sparkle.framework"
+codesign --force --sign - --timestamp=none -o runtime "$sparkle/Versions/B/XPCServices/Installer.xpc"
+codesign --force --sign - --timestamp=none -o runtime --preserve-metadata=entitlements \
+    "$sparkle/Versions/B/XPCServices/Downloader.xpc"
+codesign --force --sign - --timestamp=none -o runtime "$sparkle/Versions/B/Autoupdate"
+codesign --force --sign - --timestamp=none -o runtime "$sparkle/Versions/B/Updater.app"
+codesign --force --sign - --timestamp=none -o runtime "$sparkle"
 codesign --force --sign - --timestamp=none "$app/Contents/Frameworks/MediaRemoteAdapter.framework"
 codesign --force --sign - --timestamp=none "$app/Contents/Helpers/MediaRemoteAdapterTestClient"
 codesign --force --sign - --timestamp=none "$app"
@@ -205,4 +269,5 @@ codesign --verify --deep --strict "$app"
 
 echo "==> $(lipo -archs "$app/Contents/MacOS/Weft"), version $version ($build_number)"
 echo "    adapter: $(lipo -archs "$app/Contents/Frameworks/MediaRemoteAdapter.framework/MediaRemoteAdapter")"
+echo "    Sparkle: $(lipo -archs "$sparkle/Versions/B/Sparkle"), $([[ -n "$updates_plist" ]] && echo "updates from $feed_url" || echo "no updates")"
 echo "$app"

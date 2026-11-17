@@ -16,6 +16,7 @@
 // | `WEFT_DEV_LOG`            | File the kind of each notice is appended to (no content) |
 // | `WEFT_DEV_NO_OPEN`        | `1`: received links are not opened in the browser        |
 // | `WEFT_DEV_SEND_FILE`      | Offered once to each device that takes files, as soon as this file exists |
+// | `WEFT_DEV_UPDATE`         | `now`: checks for updates at launch, installs one at once and relaunches |
 // | `WEFT_LANG`               | `en` or `fr`: forces the interface language              |
 // | `WEFT_LOG`                | Level of the core's logs on stderr (`info` by default)   |
 
@@ -68,6 +69,12 @@ enum Development {
     static var fileToSend: URL? {
         environment["WEFT_DEV_SEND_FILE"].map { URL(fileURLWithPath: $0) }
     }
+
+    /// `WEFT_DEV_UPDATE=now`: checks for updates at launch, and installs a
+    /// downloaded one at once, relaunching the app, instead of when it
+    /// quits (Updates.swift). For the end-to-end test of updates only: it
+    /// still takes an appcast and an archive signed with the app's key.
+    static var installsUpdateNow: Bool { environment["WEFT_DEV_UPDATE"] == "now" }
 
     /// Appends `line` to the `WEFT_DEV_LOG` file, if set. Only what kind of
     /// thing happened goes there: never a text, a link or a name.
