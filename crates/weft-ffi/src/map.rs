@@ -6,13 +6,15 @@
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use weft_cli::{hex, short_id};
-use weft_client::features::Features;
+use weft_client::features::{Features, UserCommand};
+use weft_client::input::{Button, Input, Key, Press};
 use weft_client::media::Cover;
 use weft_client::packets::{MediaAction, Player, RejectReason};
+use weft_client::sms::{SendState, Sms};
 use weft_client::transfer::{Failure, Stage};
 use weft_client::worker::{
-    Direction, Notice, PairingFailure, PairingState, PeerInfo, PeerMedia, Published, Snapshot,
-    Status, TransferView,
+    Direction, Notice, PairingFailure, PairingKind, PairingState, PeerInfo, PeerMedia, Published,
+    Snapshot, Status, TransferView,
 };
 
 /// The state of the connection to the relay.
@@ -141,6 +143,187 @@ pub struct FeatureSwitches {
     pub calls: bool,
     pub media: bool,
     pub volume: bool,
+    pub sms: bool,
+    pub commands: bool,
+}
+
+/// A shortcut this Mac offers its devices (`docs/features.md` section 8).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CommandItem {
+    pub id: String,
+    pub name: String,
+    pub line: String,
+}
+
+/// An SMS conversation of a phone (`docs/features.md` section 7).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ConversationInfo {
+    pub thread: i64,
+    pub addresses: Vec<String>,
+    pub names: Vec<Option<String>>,
+    pub title: String,
+    pub snippet: Option<String>,
+    pub time_ms: i64,
+    pub unread: bool,
+}
+
+/// One SMS message in a thread.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SmsMessageInfo {
+    pub id: i64,
+    pub address: Option<String>,
+    pub sender: Option<String>,
+    pub body: String,
+    pub time_ms: i64,
+    pub outgoing: bool,
+    pub status: Option<String>,
+}
+
+/// The loaded messages of one thread, oldest first.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ThreadMessages {
+    pub thread: i64,
+    pub messages: Vec<SmsMessageInfo>,
+    /// True once the phone reported there are no older messages.
+    pub complete: bool,
+}
+
+/// A contact of the phone.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ContactInfo {
+    pub name: String,
+    pub numbers: Vec<String>,
+}
+
+/// Where an SMS sent from this Mac stands.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum SmsSendState {
+    Pending,
+    Sent,
+    Failed { error: Option<String> },
+}
+
+/// An SMS sent from this Mac, kept until its thread includes it.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SendingSmsInfo {
+    pub request_id: String,
+    pub addresses: Vec<String>,
+    pub text: String,
+    pub thread: Option<i64>,
+    pub state: SmsSendState,
+    pub at_ms: i64,
+}
+
+/// What this Mac loaded of a phone's SMS and contacts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, uniffi::Record)]
+pub struct SmsInfo {
+    /// Whether the phone has answered `sms.conversations.request`.
+    pub loaded: bool,
+    pub conversations: Vec<ConversationInfo>,
+    pub threads: Vec<ThreadMessages>,
+    pub contacts: Vec<ContactInfo>,
+    pub sending: Vec<SendingSmsInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ClickPhase {
+    Click,
+    Double,
+    Down,
+    Up,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SpecialKeyKind {
+    Enter,
+    Backspace,
+    Tab,
+    Escape,
+    Left,
+    Right,
+    Up,
+    Down,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Delete,
+}
+
+impl SpecialKeyKind {
+    /// The wire name of the key in an `input.key` packet.
+    pub(crate) fn wire_name(self) -> &'static str {
+        match self {
+            SpecialKeyKind::Enter => "enter",
+            SpecialKeyKind::Backspace => "backspace",
+            SpecialKeyKind::Tab => "tab",
+            SpecialKeyKind::Escape => "escape",
+            SpecialKeyKind::Left => "left",
+            SpecialKeyKind::Right => "right",
+            SpecialKeyKind::Up => "up",
+            SpecialKeyKind::Down => "down",
+            SpecialKeyKind::Home => "home",
+            SpecialKeyKind::End => "end",
+            SpecialKeyKind::PageUp => "pageUp",
+            SpecialKeyKind::PageDown => "pageDown",
+            SpecialKeyKind::Delete => "delete",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PresenterCommand {
+    Next,
+    Previous,
+    Start,
+    Stop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
+pub struct SpotPoint {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// What an allowed device asks of this Mac's pointer, keyboard or
+/// presenter (`docs/features.md` section 8).
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum RemoteInput {
+    Move {
+        dx: f64,
+        dy: f64,
+    },
+    Scroll {
+        dx: f64,
+        dy: f64,
+    },
+    Click {
+        button: MouseButton,
+        phase: ClickPhase,
+    },
+    KeyText {
+        text: String,
+    },
+    SpecialKey {
+        key: SpecialKeyKind,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        meta: bool,
+    },
+    Presenter {
+        action: PresenterCommand,
+    },
+    PresenterSpot {
+        point: Option<SpotPoint>,
+    },
 }
 
 /// Why a transfer failed.
@@ -232,6 +415,10 @@ pub struct DeviceInfo {
     pub media: Option<MediaInfo>,
     /// Its volume, once it sent it and while the volume switch is on.
     pub volume: Option<VolumeInfo>,
+    /// Whether this device is allowed to control this Mac.
+    pub allowed_control: bool,
+    /// Its SMS and contacts, while the SMS switch is on.
+    pub sms: SmsInfo,
 }
 
 /// Why a pairing failed.
@@ -259,9 +446,11 @@ pub enum Pairing {
         expires_at_ms: i64,
     },
     Joining,
-    /// Paired with this device id.
+    /// Paired with this device id. `invited` is true when this Mac joined
+    /// that device's group, rather than adding it to this Mac's own group.
     Paired {
         device_id: String,
+        invited: bool,
     },
     Failed {
         failure: PairingFailureKind,
@@ -300,6 +489,8 @@ pub struct CoreSnapshot {
     pub last_activity: Option<LastActivity>,
     /// The feature switches, as saved.
     pub features: FeatureSwitches,
+    /// The shortcuts this Mac offers its devices.
+    pub commands: Vec<CommandItem>,
     /// The device ringing this Mac, in hex, while it rings.
     pub ringing: Option<String>,
     /// Transfers under way, then the last finished ones.
@@ -477,7 +668,7 @@ fn failure(failure: &PairingFailure) -> PairingFailureKind {
     }
 }
 
-fn pairing(pairing: &PairingState, now: Now) -> Pairing {
+fn pairing(pairing: &PairingState, paired: Option<PairingKind>, now: Now) -> Pairing {
     match pairing {
         PairingState::Idle => Pairing::Idle,
         PairingState::ShowingCode { code, expires_at } => Pairing::ShowingCode {
@@ -487,9 +678,164 @@ fn pairing(pairing: &PairingState, now: Now) -> Pairing {
         PairingState::Joining => Pairing::Joining,
         PairingState::Success { device } => Pairing::Paired {
             device_id: hex(device),
+            invited: matches!(
+                paired,
+                Some(PairingKind::Invited | PairingKind::JoinedOther)
+            ),
         },
         PairingState::Failed(reason) => Pairing::Failed {
             failure: failure(reason),
+        },
+    }
+}
+
+fn sms_info(sms: &Sms) -> SmsInfo {
+    let conversations = sms
+        .conversations
+        .as_ref()
+        .map(|list| {
+            list.iter()
+                .map(|conversation| {
+                    let people: Vec<String> = conversation
+                        .addresses
+                        .iter()
+                        .map(|address| {
+                            sms.name_of(conversation.thread, address)
+                                .unwrap_or_else(|| address.clone())
+                        })
+                        .collect();
+                    let title = if people.is_empty() {
+                        conversation.title()
+                    } else {
+                        people.join(", ")
+                    };
+                    ConversationInfo {
+                        thread: conversation.thread,
+                        addresses: conversation.addresses.clone(),
+                        names: conversation.names.clone(),
+                        title,
+                        snippet: conversation.snippet.clone(),
+                        time_ms: conversation.time,
+                        unread: conversation.unread,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let threads = sms
+        .threads
+        .iter()
+        .map(|(&thread, messages)| ThreadMessages {
+            thread,
+            messages: messages
+                .iter()
+                .map(|message| SmsMessageInfo {
+                    id: message.id,
+                    sender: message
+                        .address
+                        .as_deref()
+                        .and_then(|address| sms.name_of(thread, address)),
+                    address: message.address.clone(),
+                    body: message.body.clone(),
+                    time_ms: message.time,
+                    outgoing: message.outgoing,
+                    status: message.status.clone(),
+                })
+                .collect(),
+            complete: sms.complete.contains(&thread),
+        })
+        .collect();
+    let contacts = sms
+        .contacts
+        .iter()
+        .map(|contact| ContactInfo {
+            name: contact.name.clone(),
+            numbers: contact.numbers.clone(),
+        })
+        .collect();
+    let sending = sms
+        .outbox
+        .iter()
+        .map(|sent| SendingSmsInfo {
+            request_id: sent.request_id.clone(),
+            addresses: sent.addresses.clone(),
+            text: sent.text.clone(),
+            thread: sent.thread,
+            state: match &sent.state {
+                SendState::Pending => SmsSendState::Pending,
+                SendState::Sent => SmsSendState::Sent,
+                SendState::Failed(error) => SmsSendState::Failed {
+                    error: error.clone(),
+                },
+            },
+            at_ms: sent.at,
+        })
+        .collect();
+    SmsInfo {
+        loaded: sms.conversations.is_some(),
+        conversations,
+        threads,
+        contacts,
+        sending,
+    }
+}
+
+fn command_item(command: &UserCommand) -> CommandItem {
+    CommandItem {
+        id: command.id.clone(),
+        name: command.name.clone(),
+        line: command.line.clone(),
+    }
+}
+
+pub(crate) fn remote_input(input: Input) -> RemoteInput {
+    match input {
+        Input::Move { dx, dy } => RemoteInput::Move { dx, dy },
+        Input::Scroll { x, y } => RemoteInput::Scroll { dx: x, dy: y },
+        Input::Click { button, press } => RemoteInput::Click {
+            button: match button {
+                Button::Left => MouseButton::Left,
+                Button::Right => MouseButton::Right,
+                Button::Middle => MouseButton::Middle,
+            },
+            phase: match press {
+                Press::Click => ClickPhase::Click,
+                Press::Double => ClickPhase::Double,
+                Press::Down => ClickPhase::Down,
+                Press::Up => ClickPhase::Up,
+            },
+        },
+        Input::Text { text, .. } => RemoteInput::KeyText { text },
+        Input::Key {
+            key: Key::F5,
+            modifiers: _,
+        } => RemoteInput::Presenter {
+            action: PresenterCommand::Start,
+        },
+        Input::Key { key, modifiers } => RemoteInput::SpecialKey {
+            key: match key {
+                Key::Enter => SpecialKeyKind::Enter,
+                Key::Backspace => SpecialKeyKind::Backspace,
+                Key::Tab => SpecialKeyKind::Tab,
+                Key::Escape => SpecialKeyKind::Escape,
+                Key::Left => SpecialKeyKind::Left,
+                Key::Right => SpecialKeyKind::Right,
+                Key::Up => SpecialKeyKind::Up,
+                Key::Down => SpecialKeyKind::Down,
+                Key::Home => SpecialKeyKind::Home,
+                Key::End => SpecialKeyKind::End,
+                Key::PageUp => SpecialKeyKind::PageUp,
+                Key::PageDown => SpecialKeyKind::PageDown,
+                Key::Delete => SpecialKeyKind::Delete,
+                Key::F5 => unreachable!(),
+            },
+            ctrl: modifiers.ctrl,
+            alt: modifiers.alt,
+            shift: modifiers.shift,
+            meta: modifiers.meta,
+        },
+        Input::Spot(point) => RemoteInput::PresenterSpot {
+            point: point.map(|(x, y)| SpotPoint { x, y }),
         },
     }
 }
@@ -532,6 +878,11 @@ pub(crate) fn snapshot(published: &Published, now: Now) -> CoreSnapshot {
                     level: volume.level.map(|level| level.min(100)),
                     muted: volume.muted,
                 });
+            let sms = if view.features.sms {
+                sms_info(&peer.sms)
+            } else {
+                SmsInfo::default()
+            };
             let (handles, sends) = peer
                 .capabilities
                 .as_ref()
@@ -551,6 +902,8 @@ pub(crate) fn snapshot(published: &Published, now: Now) -> CoreSnapshot {
                 sends,
                 media,
                 volume,
+                allowed_control: view.control.contains(&device.id),
+                sms,
             }
         })
         .collect();
@@ -563,7 +916,7 @@ pub(crate) fn snapshot(published: &Published, now: Now) -> CoreSnapshot {
         status: status(&view.status, now),
         paused: view.pause.all,
         devices,
-        pairing: pairing(&view.pairing, now),
+        pairing: pairing(&view.pairing, published.paired, now),
         last_activity: view.last_activity.map(|activity| LastActivity {
             direction: match activity.direction {
                 Direction::Sent => TextDirection::Sent,
@@ -572,6 +925,7 @@ pub(crate) fn snapshot(published: &Published, now: Now) -> CoreSnapshot {
             at_ms: system_ms(activity.at),
         }),
         features: switches(&view.features),
+        commands: view.commands.iter().map(command_item).collect(),
         ringing: view.ringing.as_ref().map(|device| hex(device)),
         transfers: view.transfers.iter().map(transfer).collect(),
     }
@@ -678,6 +1032,8 @@ pub(crate) fn switches(features: &Features) -> FeatureSwitches {
         calls: features.calls,
         media: features.media,
         volume: features.volume,
+        sms: features.sms,
+        commands: features.commands,
     }
 }
 
@@ -978,7 +1334,32 @@ mod tests {
         assert_eq!(
             snapshot(&published(view.clone()), fixed_now()).pairing,
             Pairing::Paired {
-                device_id: "ab".repeat(16)
+                device_id: "ab".repeat(16),
+                invited: false,
+            }
+        );
+        let invited = Published {
+            generation: 8,
+            snapshot: Arc::new(view.clone()),
+            paired: Some(PairingKind::Invited),
+        };
+        assert_eq!(
+            snapshot(&invited, fixed_now()).pairing,
+            Pairing::Paired {
+                device_id: "ab".repeat(16),
+                invited: true,
+            }
+        );
+        let joined_other = Published {
+            generation: 9,
+            snapshot: Arc::new(view.clone()),
+            paired: Some(PairingKind::JoinedOther),
+        };
+        assert_eq!(
+            snapshot(&joined_other, fixed_now()).pairing,
+            Pairing::Paired {
+                device_id: "ab".repeat(16),
+                invited: true,
             }
         );
         view.pairing = PairingState::Failed(PairingFailure::Other("boom".into()));

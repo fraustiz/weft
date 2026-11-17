@@ -70,10 +70,25 @@ struct MainWindow: View {
         }
         .toolbar {
             ToolbarItem {
-                Button(action: model.pair) {
+                Button {
+                    model.pair()
+                } label: {
                     Label(t("Pair a Device…", "Associer un appareil…"), systemImage: "plus")
                 }
                 .help(t("Pair a device", "Associer un appareil"))
+            }
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { model.messagesDevice != nil },
+                set: { presented in
+                    if !presented { model.closeMessagesSheet() }
+                }
+            )
+        ) {
+            if let deviceId = model.messagesDevice {
+                MessagesSheet(model: model, deviceId: deviceId)
+                    .tint(.weftOrange)
             }
         }
     }

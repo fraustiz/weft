@@ -200,6 +200,45 @@ public enum PhoneNotifications {
         )
     }
 
+    /// An incoming SMS on the phone: « <sender> · <device> » with an inline
+    /// reply action.
+    public static func smsReceived(
+        deviceId: String,
+        device: String,
+        thread: Int64,
+        sender: String,
+        text: String,
+        language: Language = .current
+    ) -> NotificationPlan {
+        let sender = sender.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reply = NotificationButton(
+            identifier: replyIdentifier,
+            title: language == .french ? "Répondre" : "Reply",
+            kind: .reply
+        )
+        return NotificationPlan(
+            identifier: "sms.\(deviceId).\(thread).\(UUID().uuidString)",
+            title: sender.isEmpty ? device : "\(sender) · \(device)",
+            subtitle: "",
+            body: text,
+            threadIdentifier: "sms.\(deviceId).\(thread)",
+            categoryIdentifier: category(for: [reply]),
+            buttons: [reply],
+            sound: true,
+            banner: true
+        )
+    }
+
+    /// A shortcut triggered by another device.
+    public static func commandRan(
+        device: String,
+        name: String,
+        language: Language = .current
+    ) -> NotificationPlan {
+        let title = language == .french ? "Raccourci lancé : \(name)" : "Shortcut ran: \(name)"
+        return plain(title: title, body: device)
+    }
+
     /// A plain notice of this Mac: a ping, a link, a failed transfer.
     public static func plain(title: String, body: String) -> NotificationPlan {
         NotificationPlan(

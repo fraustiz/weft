@@ -17,6 +17,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var startError: String?
     @Published var showingPairing = false
     @Published var selection: String?
+    /// The device whose SMS sheet is open, if any, and its active thread.
+    @Published var messagesDevice: String?
+    @Published var selectedThread: Int64?
     /// A blocking change (relay, leaving the group) is under way.
     @Published private(set) var busy = false
     /// The device this Mac rings, and until when, to show « Stop ».
@@ -28,6 +31,7 @@ final class AppModel: ObservableObject {
     let ringer = Ringer()
     let volume = SystemVolume()
     let nowPlaying = NowPlaying()
+    let remoteInput = RemoteInputController()
     /// Sparkle, started at once: it checks on its own schedule.
     let updates = Updates()
     /// The covers of the other devices' players, by device and art id,
@@ -91,6 +95,7 @@ final class AppModel: ObservableObject {
 
     func stop() {
         timer?.invalidate()
+        remoteInput.stop()
         nowPlaying.stop()
         core?.stop()
     }
@@ -104,6 +109,10 @@ final class AppModel: ObservableObject {
         }
         if selection == nil {
             selection = snapshot.devices.first?.id
+        }
+        if let messagesDevice, !snapshot.features.sms || snapshot.device(messagesDevice) == nil {
+            self.messagesDevice = nil
+            self.selectedThread = nil
         }
         // Right after a first pairing: the moment to ask for notifications.
         if !hadDevices, !snapshot.devices.isEmpty {

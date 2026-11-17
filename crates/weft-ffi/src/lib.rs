@@ -25,15 +25,14 @@ mod core;
 mod group;
 mod map;
 
-pub use crate::core::{
-    CoreDelegate, MAC_IMPLEMENTED, MAC_INCOMING, MAC_OUTGOING, Pasteboard, PasteboardContent,
-    WeftCore,
-};
+pub use crate::core::{CoreDelegate, Pasteboard, PasteboardContent, WeftCore};
 pub use crate::map::{
-    BatteryInfo, ConnectionStatus, ConnectivityInfo, CoreNotice, CoreSnapshot, CoverImage,
-    DeviceInfo, FeatureSwitches, LastActivity, LocalPlayer, MediaControl, MediaInfo, Pairing,
-    PairingFailureKind, PlayerInfo, PollOutcome, SendOutcome, TextDirection, TransferFailureKind,
-    TransferInfo, TransferStage, VolumeInfo,
+    BatteryInfo, ClickPhase, CommandItem, ConnectionStatus, ConnectivityInfo, ContactInfo,
+    ConversationInfo, CoreNotice, CoreSnapshot, CoverImage, DeviceInfo, FeatureSwitches,
+    LastActivity, LocalPlayer, MediaControl, MediaInfo, MouseButton, Pairing, PairingFailureKind,
+    PlayerInfo, PollOutcome, PresenterCommand, RemoteInput, SendOutcome, SendingSmsInfo, SmsInfo,
+    SmsMessageInfo, SmsSendState, SpecialKeyKind, SpotPoint, TextDirection, ThreadMessages,
+    TransferFailureKind, TransferInfo, TransferStage, VolumeInfo,
 };
 
 uniffi::setup_scaffolding!();

@@ -2,28 +2,28 @@
 //! behind one object.
 
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use weft_cli::{StateDir, short_id, unhex};
-use weft_client::features::{Features, Implemented};
-use weft_client::packets::{MediaAction, MediaCommand, Packet, Volume, VolumeSet};
+use weft_client::features::{Features, UserCommand};
+use weft_client::packets::{InputKey, MediaAction, MediaCommand, Packet, Volume, VolumeSet};
 use weft_client::sync::{self, Clipboard, Content, Incoming, Outgoing, Sync};
 use weft_client::worker::{self, Command, DEFAULT_RELAY_URL, Handle, Hooks, Published};
-use weft_protocol::MAX_CLIPBOARD_TEXT_LEN;
+use weft_protocol::{MAX_CLIPBOARD_TEXT_LEN, random_message_id};
 
 use crate::map::{
-    self, CoreNotice, CoreSnapshot, CoverImage, FeatureSwitches, LocalPlayer, MediaControl, Now,
-    PollOutcome, SendOutcome,
+    self, CommandItem, CoreNotice, CoreSnapshot, CoverImage, FeatureSwitches, LocalPlayer,
+    MediaControl, Now, PollOutcome, RemoteInput, SendOutcome, SpecialKeyKind,
 };
 use crate::{CoreConfig, CoreError, check_device_name, check_relay_url, group};
 
 /// How long the worker gets to close its connection politely.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 
-/// The feature switches the Mac app has. The others (SMS and contacts,
-/// commands) are always off, whatever `features.json` says.
+/// The feature switches the Mac app supports: all of `weft-client`.
 const SUPPORTED: Features = Features {
     files: true,
     links: true,
@@ -33,76 +33,8 @@ const SUPPORTED: Features = Features {
     calls: true,
     media: true,
     volume: true,
-    sms: false,
-    commands: false,
-};
-
-/// The packet types the Mac app acts on: its capabilities list only
-/// these, less the switched-off features (`docs/features.md` sections 2
-/// and 10). Its own players are read by the app (through
-/// mediaremote-adapter) and given with [`WeftCore::set_local_media`]; the
-/// commands for them come back as [`CoreNotice::MediaCommand`]. No remote
-/// input, presenter, SMS or commands.
-///
-/// A later version that implements a packet adds it here (and to
-/// [`MAC_OUTGOING`] if it sends it), with its switch in [`SUPPORTED`].
-pub const MAC_INCOMING: &[&str] = &[
-    "state.request",
-    "ping",
-    "ring",
-    "ring.stop",
-    "share.url",
-    "file.offer",
-    "file.accept",
-    "file.reject",
-    "file.ack",
-    "file.done",
-    "file.cancel",
-    "battery",
-    "connectivity",
-    "notification",
-    "notification.removed",
-    "call",
-    // The players of the other devices, shown with their covers, and the
-    // commands for this Mac's players.
-    "media",
-    "media.art",
-    "media.command",
-    "volume",
-    "volume.set",
-];
-
-/// The packet types the Mac app sends; see [`MAC_INCOMING`].
-pub const MAC_OUTGOING: &[&str] = &[
-    "state.request",
-    "ping",
-    "ring",
-    "ring.stop",
-    "share.url",
-    "file.offer",
-    "file.accept",
-    "file.reject",
-    "file.ack",
-    "file.done",
-    "file.cancel",
-    "notification.dismiss",
-    "notification.action",
-    "notification.reply",
-    "notification.request",
-    "call.mute",
-    // This Mac's players with their covers, and control of the other
-    // devices' players.
-    "media",
-    "media.art",
-    "media.command",
-    "volume",
-    "volume.set",
-];
-
-/// What the Mac app implements, for the worker.
-pub const MAC_IMPLEMENTED: Implemented = Implemented {
-    incoming: MAC_INCOMING,
-    outgoing: MAC_OUTGOING,
+    sms: true,
+    commands: true,
 };
 
 /// The switches the first Mac version forced, as it had no settings for
@@ -165,6 +97,8 @@ pub trait CoreDelegate: Send + std::marker::Sync {
     fn snapshot_changed(&self, generation: u64);
     /// Something the user should see or hear.
     fn notice(&self, notice: CoreNotice);
+    /// Pointer, keyboard or presenter input from an allowed device.
+    fn input(&self, input: RemoteInput);
     /// A received text waits: call [`WeftCore::poll_pasteboard`] on the
     /// main thread to write it.
     fn clipboard_waiting(&self);
@@ -279,11 +213,52 @@ fn init_logging() {
     });
 }
 
+/// Spawns a shortcut asynchronously, never logging the command line itself.
+fn run_shell_command(line: &str) {
+    let line = line.trim();
+    if line.is_empty() {
+        return;
+    }
+    #[cfg(unix)]
+    let spawned = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(line)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+
+    #[cfg(windows)]
+    let spawned = {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let shell = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
+        std::process::Command::new(shell)
+            .arg("/C")
+            .raw_arg(line)
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+    };
+
+    match spawned {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        Err(err) => tracing::warn!(error = %err, "could not run a command"),
+    }
+}
+
 impl WeftCore {
     fn hooks(&self) -> Hooks {
         let received = self.received.clone();
         let text_delegate = self.delegate.clone();
         let notice_delegate = self.delegate.clone();
+        let input_delegate = self.delegate.clone();
         Hooks {
             on_text: Box::new(move |text| {
                 // Only the latest counts, as on the clipboard itself.
@@ -292,10 +267,9 @@ impl WeftCore {
             }),
             on_notice: Arc::new(move |notice| notice_delegate.notice(map::notice(notice))),
             downloads: self.downloads.clone(),
-            // Not announced (see MAC_INCOMING): nothing should come.
-            on_input: Box::new(|_| tracing::debug!("remote input ignored: not handled")),
-            run_command: Box::new(|_| tracing::debug!("command ignored: not handled")),
-            implemented: Some(MAC_IMPLEMENTED),
+            on_input: Box::new(move |input| input_delegate.input(map::remote_input(input))),
+            run_command: Box::new(run_shell_command),
+            implemented: None,
         }
     }
 
@@ -610,7 +584,7 @@ impl WeftCore {
     }
 
     /// Turns features on or off: saved, and new capabilities go to every
-    /// device. Switches this Mac does not have stay off.
+    /// device.
     pub fn set_features(&self, switches: FeatureSwitches) {
         let features = supported(Features {
             files: switches.files,
@@ -621,8 +595,8 @@ impl WeftCore {
             calls: switches.calls,
             media: switches.media,
             volume: switches.volume,
-            sms: false,
-            commands: false,
+            sms: switches.sms,
+            commands: switches.commands,
         });
         tracing::info!(?switches, "feature switches changed");
         self.send(Command::SetFeatures(features));
@@ -780,6 +754,109 @@ impl WeftCore {
         let snapshot = self.published().snapshot;
         let peer = snapshot.peers.get(&device)?;
         peer.covers.get(&art).map(map::cover_image)
+    }
+
+    /// Asks a phone for its conversations, and for its contacts while none
+    /// have arrived yet.
+    pub fn open_messages(&self, device_id: String) -> Result<(), CoreError> {
+        let device = self.device(&device_id)?;
+        self.send(Command::OpenMessages(device));
+        Ok(())
+    }
+
+    /// Asks a phone for the newest messages of `thread`, or for those
+    /// older than `before` (ms since the epoch).
+    pub fn load_messages(
+        &self,
+        device_id: String,
+        thread: i64,
+        before: Option<i64>,
+    ) -> Result<(), CoreError> {
+        let device = self.device(&device_id)?;
+        self.send(Command::LoadMessages {
+            device,
+            thread,
+            before,
+        });
+        Ok(())
+    }
+
+    /// Sends an SMS through a phone, in `thread` or to start a new one.
+    pub fn send_sms(
+        &self,
+        device_id: String,
+        addresses: Vec<String>,
+        text: String,
+        thread: Option<i64>,
+    ) -> Result<(), CoreError> {
+        let device = self.device(&device_id)?;
+        let addresses: Vec<String> = addresses
+            .into_iter()
+            .map(|address| address.trim().to_owned())
+            .filter(|address| !address.is_empty())
+            .collect();
+        let text = text.trim().to_owned();
+        if addresses.is_empty() || text.is_empty() {
+            return Ok(());
+        }
+        self.send(Command::SendSms {
+            device,
+            addresses,
+            text,
+            thread,
+        });
+        Ok(())
+    }
+
+    /// Allows or forbids a device to control this Mac's pointer, keyboard
+    /// and presenter, saved and announced at once.
+    pub fn set_device_control(&self, device_id: String, allowed: bool) -> Result<(), CoreError> {
+        let device = self.device(&device_id)?;
+        tracing::info!(device = %short_id(&device), allowed, "remote control changed");
+        self.send(Command::SetControl(device, allowed));
+        Ok(())
+    }
+
+    /// Types `text` on a device, line breaks sent as Enter.
+    pub fn type_text(&self, device_id: String, text: String) -> Result<(), CoreError> {
+        let device = self.device(&device_id)?;
+        for packet in weft_client::input::typed("", &text) {
+            self.send(Command::SendPacket(device, packet));
+        }
+        Ok(())
+    }
+
+    /// Sends a special key (`enter`, `backspace`, arrows…) to a device.
+    pub fn send_special_key(
+        &self,
+        device_id: String,
+        key: SpecialKeyKind,
+    ) -> Result<(), CoreError> {
+        let packet = Packet::InputKey(InputKey::key(key.wire_name()));
+        self.send_packet(&device_id, packet)
+    }
+
+    /// Replaces the shortcuts this Mac offers its devices, saved and
+    /// announced at once. Never logs a command line.
+    pub fn set_commands(&self, commands: Vec<CommandItem>) {
+        let commands: Vec<UserCommand> = commands
+            .into_iter()
+            .filter_map(|command| {
+                let name = command.name.trim().to_owned();
+                let line = command.line.trim().to_owned();
+                if name.is_empty() || line.is_empty() {
+                    return None;
+                }
+                let id = if command.id.trim().is_empty() {
+                    weft_cli::hex(&random_message_id()[..8])
+                } else {
+                    command.id.trim().to_owned()
+                };
+                Some(UserCommand { id, name, line })
+            })
+            .collect();
+        tracing::info!(count = commands.len(), "shortcuts updated");
+        self.send(Command::SetCommands(commands));
     }
 
     /// Stops the worker. The core does nothing afterwards.

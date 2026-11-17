@@ -34,8 +34,8 @@ struct PairingSheet: View {
         case .joining:
             waiting(t("Waiting for the other device to answer…",
                       "En attente de la réponse de l’autre appareil…"))
-        case .paired(let deviceId):
-            paired(model.snapshot?.device(deviceId))
+        case .paired(let deviceId, let invited):
+            paired(model.snapshot?.device(deviceId), invited: invited)
         case .failed(let failure):
             failed(failure)
         case .idle:
@@ -78,7 +78,7 @@ struct PairingSheet: View {
                 Button(t("Copy Code", "Copier le code")) { copy(code) }
                     .help(t("For a computer without a camera", "Pour un ordinateur sans caméra"))
                 Spacer()
-                Button(t("Cancel", "Annuler"), action: model.closePairing)
+                Button(t("Cancel", "Annuler")) { model.closePairing() }
                     .keyboardShortcut(.cancelAction)
             }
             .padding(.top, 20)
@@ -94,8 +94,8 @@ struct PairingSheet: View {
             HStack {
                 TextField(t("Code", "Code"), text: $typedCode.value, prompt: Text("WEFT1:…"))
                     .textFieldStyle(.roundedBorder)
-                    .onSubmit(join)
-                Button(t("Join", "Rejoindre"), action: join)
+                    .onSubmit { join() }
+                Button(t("Join", "Rejoindre")) { join() }
                     .disabled(typedCode.value.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             .padding(.top, 8)
@@ -107,27 +107,38 @@ struct PairingSheet: View {
         VStack(spacing: 16) {
             ProgressView().controlSize(.small)
             Text(text).foregroundStyle(.secondary)
-            Button(t("Cancel", "Annuler"), action: model.closePairing)
+            Button(t("Cancel", "Annuler")) { model.closePairing() }
                 .keyboardShortcut(.cancelAction)
         }
         .frame(maxWidth: .infinity, minHeight: 200)
     }
 
-    private func paired(_ device: DeviceInfo?) -> some View {
-        VStack(spacing: 12) {
+    private func paired(_ device: DeviceInfo?, invited: Bool) -> some View {
+        let heading: String = if invited {
+            device.map {
+                Language.current == .french
+                    ? "Ajouté au groupe de \($0.displayName)"
+                    : "Joined \($0.displayName)’s group"
+            } ?? t("Joined the group", "Ajouté au groupe")
+        } else {
+            device.map {
+                Language.current == .french
+                    ? "Associé à \($0.displayName)"
+                    : "Paired with \($0.displayName)"
+            } ?? t("Paired with a new device", "Associé à un nouvel appareil")
+        }
+        return VStack(spacing: 12) {
             Image(systemName: "checkmark.circle")
                 .font(.system(size: 40, weight: .light))
                 .foregroundStyle(.green)
-            Text(device.map {
-                Language.current == .french ? "Associé à \($0.displayName)" : "Paired with \($0.displayName)"
-            } ?? t("Paired with a new device", "Associé à un nouvel appareil"))
-            .font(.title3)
+            Text(heading)
+                .font(.title3)
             Text(t(
                 "What you copy on one now reaches the other.",
                 "Ce que vous copiez sur l’un arrive maintenant sur l’autre."
             ))
             .foregroundStyle(.secondary)
-            Button(t("Done", "Terminé"), action: model.closePairing)
+            Button(t("Done", "Terminé")) { model.closePairing() }
                 .keyboardShortcut(.defaultAction)
                 .padding(.top, 8)
         }
@@ -145,9 +156,9 @@ struct PairingSheet: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
-                Button(t("Cancel", "Annuler"), action: model.closePairing)
+                Button(t("Cancel", "Annuler")) { model.closePairing() }
                     .keyboardShortcut(.cancelAction)
-                Button(t("Try Again", "Réessayer"), action: model.pair)
+                Button(t("Try Again", "Réessayer")) { model.pair() }
                     .keyboardShortcut(.defaultAction)
             }
             .padding(.top, 8)

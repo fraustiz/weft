@@ -314,6 +314,25 @@ private extension Result {
         #expect(plan.body == "From Pixel 8, in Downloads")
         #expect(plan.buttons.map(\.kind) == [.showInFinder])
     }
+
+    @Test func smsNotificationsOfferInlineReplyAndShortcutNoticesStayPlain() {
+        let sms = PhoneNotifications.smsReceived(
+            deviceId: "ab12", device: "Pixel 8", thread: 42, sender: "Alice", text: "On my way", language: .english
+        )
+        #expect(sms.title == "Alice · Pixel 8")
+        #expect(sms.body == "On my way")
+        #expect(sms.threadIdentifier == "sms.ab12.42")
+        #expect(sms.buttons.map(\.kind) == [.reply])
+        #expect(sms.sound && sms.banner)
+
+        let ranEn = PhoneNotifications.commandRan(device: "Pixel 8", name: "Lock Screen", language: .english)
+        #expect(ranEn.title == "Shortcut ran: Lock Screen")
+        #expect(ranEn.body == "Pixel 8")
+        #expect(ranEn.buttons.isEmpty)
+
+        let ranFr = PhoneNotifications.commandRan(device: "Pixel 8", name: "Verrouiller l’écran", language: .french)
+        #expect(ranFr.title == "Raccourci lancé : Verrouiller l’écran")
+    }
 }
 
 @Suite struct NetworkWordsTests {
@@ -327,5 +346,127 @@ private extension Result {
         #expect(Words.signalFraction(2) == 0.5)
         #expect(Words.signalFraction(9) == 1)
         #expect(Words.signalFraction(nil) == 1)
+    }
+}
+
+@Suite struct ShortcutPresetTests {
+    @Test func presetsMatchMacCommands() {
+        let presetsEn = ShortcutPresets.all(language: .english)
+        #expect(presetsEn.count == 3)
+        #expect(presetsEn.map(\.name) == ["Lock Screen", "Sleep", "Mute / Unmute"])
+        #expect(presetsEn.map(\.line) == [
+            "pmset displaysleepnow",
+            "pmset sleepnow",
+            "osascript -e 'set volume output muted not (output muted of (get volume settings))'",
+        ])
+        let presetsFr = ShortcutPresets.all(language: .french)
+        #expect(presetsFr.count == 3)
+        #expect(presetsFr[0].name == "Verrouiller l’écran")
+    }
+
+    @Test func validatesAndMakesHexIds() {
+        #expect(ShortcutPresets.clean(name: "  Lock ", line: " pmset displaysleepnow\n") == CleanedShortcut(
+            name: "Lock",
+            line: "pmset displaysleepnow"
+        ))
+        #expect(ShortcutPresets.clean(name: " ", line: "pmset sleepnow") == nil)
+        #expect(ShortcutPresets.clean(name: "Sleep", line: "   ") == nil)
+        let id = ShortcutPresets.makeId()
+        #expect(id.count == 16)
+        #expect(id.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) })
+    }
+}
+
+@Suite struct SmsFormattingTests {
+    @Test func matchesPhoneNumbersAcrossFormats() {
+        #expect(SmsFormatting.sameAddress("+33 6 12 34 56 78", "06.12.34.56.78"))
+        #expect(SmsFormatting.sameAddress("0612345678", "+33612345678"))
+        #expect(!SmsFormatting.sameAddress("+33 6 12 34 56 78", "+33 6 12 34 56 79"))
+        #expect(SmsFormatting.sameAddress("36179", "36179"))
+        #expect(!SmsFormatting.sameAddress("3617", "36179"))
+        #expect(SmsFormatting.sameAddress("Bank", "bank"))
+        #expect(SmsFormatting.samePeople(["+33612345678", "0700000001"], ["07 00 00 00 01", "06 12 34 56 78"]))
+        #expect(!SmsFormatting.samePeople(["0612345678"], []))
+    }
+
+    @Test func suggestsAndResolvesRecipients() {
+        let contacts = [
+            SmsContact(name: "Alice Martin", numbers: ["+33 6 12 34 56 78", "01 23 45 67 89"]),
+            SmsContact(name: "Bruno", numbers: ["07 00 00 00 01"]),
+        ]
+        #expect(SmsFormatting.suggestions(contacts: contacts, query: "ali").map(\.label) == [
+            "Alice Martin · +33 6 12 34 56 78",
+            "Alice Martin · 01 23 45 67 89",
+        ])
+        #expect(SmsFormatting.suggestions(contacts: contacts, query: "0700").map(\.label) == [
+            "Bruno · 07 00 00 00 01",
+        ])
+        #expect(SmsFormatting.suggestions(contacts: contacts, query: " ").isEmpty)
+        #expect(SmsFormatting.recipient(contacts: contacts, text: "Bruno · 07 00 00 00 01") == "07 00 00 00 01")
+        #expect(SmsFormatting.recipient(contacts: contacts, text: " +33 (0)6 12 ") == "+33 (0)6 12")
+        #expect(SmsFormatting.recipient(contacts: contacts, text: "Bruno") == nil)
+    }
+
+    @Test func formatsTimestampsAndFailures() {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(secondsFromGMT: 0)!
+        let nowMs: Int64 = 1_794_852_000_000 // 2026-11-16 18:00:00 UTC
+        let morningMs: Int64 = 1_794_819_900_000 // 2026-11-16 09:05:00 UTC
+        let earlierMonthMs: Int64 = 1_793_610_300_000 // 2026-11-02 09:05:00 UTC
+        let lastYearMs: Int64 = 1_756_544_700_000 // 2025-08-30 09:05:00 UTC
+
+        #expect(SmsFormatting.timestamp(ms: morningMs, nowMs: nowMs, calendar: utc, language: .english) == "09:05")
+        #expect(SmsFormatting.timestamp(ms: earlierMonthMs, nowMs: nowMs, calendar: utc, language: .english) == "2 Nov")
+        #expect(SmsFormatting.timestamp(ms: earlierMonthMs, nowMs: nowMs, calendar: utc, language: .french, alwaysIncludeTime: true) == "2 nov. 09:05")
+        #expect(SmsFormatting.timestamp(ms: lastYearMs, nowMs: nowMs, calendar: utc, language: .english) == "30 Aug 2025")
+        #expect(SmsFormatting.timestamp(ms: 0, nowMs: nowMs, calendar: utc, language: .english).isEmpty)
+
+        #expect(SmsFormatting.failureText("noService", language: .english) == "No mobile service")
+        #expect(SmsFormatting.failureText("radioOff", language: .french) == "Le réseau mobile du téléphone est coupé")
+        #expect(SmsFormatting.isLastOfRun(timeMs: 1_000, outgoing: true, nextTimeMs: 2_000, nextOutgoing: true) == false)
+        #expect(SmsFormatting.isLastOfRun(timeMs: 1_000, outgoing: true, nextTimeMs: 2_000, nextOutgoing: false) == true)
+    }
+}
+
+@Suite struct RemoteControlTests {
+    @Test func keycodesCoverEverySpecialKey() {
+        let codes = Dictionary(uniqueKeysWithValues: MacKey.allCases.map { ($0, $0.keyCode) })
+        #expect(codes[.enter] == 36)
+        #expect(codes[.backspace] == 51)
+        #expect(codes[.tab] == 48)
+        #expect(codes[.escape] == 53)
+        #expect(codes[.left] == 123)
+        #expect(codes[.right] == 124)
+        #expect(codes[.down] == 125)
+        #expect(codes[.up] == 126)
+        #expect(codes[.home] == 115)
+        #expect(codes[.end] == 119)
+        #expect(codes[.pageUp] == 116)
+        #expect(codes[.pageDown] == 121)
+        #expect(codes[.delete] == 117)
+        #expect(codes[.f5] == 96)
+        #expect(Set(codes.values).count == MacKey.allCases.count)
+    }
+
+    @Test func pointerRemainderAccumulatesFractions() {
+        var remainder = PointerRemainder()
+        #expect(remainder.take(dx: 0.4, dy: -0.4) == PointerStep(dx: 0, dy: 0))
+        #expect(remainder.take(dx: 0.4, dy: -0.4) == PointerStep(dx: 0, dy: 0))
+        #expect(remainder.take(dx: 0.4, dy: -0.4) == PointerStep(dx: 1, dy: -1))
+    }
+
+    @Test func spotGeometryMapsNormalizedCoordinatesToAppKitScreen() {
+        let frame = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        #expect(SpotGeometry.origin(x: 0, y: 0, in: frame, diameter: 24) == CGPoint(x: 708, y: 438))
+        #expect(SpotGeometry.origin(x: -1, y: -1, in: frame, diameter: 24) == CGPoint(x: -12, y: 888))
+        #expect(SpotGeometry.origin(x: 1, y: 1, in: frame, diameter: 24) == CGPoint(x: 1428, y: -12))
+    }
+
+    @Test func remoteTypingDiffsTextAndLineBreaks() {
+        #expect(RemoteTyping.diff(from: "", to: "Hello") == [.text("Hello")])
+        #expect(RemoteTyping.diff(from: "Hello", to: "Hel") == [.backspace(2)])
+        #expect(RemoteTyping.diff(from: "café", to: "cafe") == [.backspace(1), .text("e")])
+        #expect(RemoteTyping.diff(from: "Hi", to: "Hi\r\nthere\n") == [.enter, .text("there"), .enter])
+        #expect(RemoteTyping.diff(from: "same", to: "same").isEmpty)
     }
 }

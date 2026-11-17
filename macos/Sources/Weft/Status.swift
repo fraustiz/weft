@@ -138,6 +138,8 @@ extension TransferFailureKind {
 }
 
 extension TransferInfo: Identifiable {}
+extension CommandItem: Identifiable {}
+extension SmsMessageInfo: Identifiable {}
 
 extension TransferInfo {
     var isActive: Bool {
@@ -178,5 +180,23 @@ extension DeviceInfo {
     var currentPlayer: PlayerInfo? {
         guard let media, let index = media.current, Int(index) < media.players.count else { return nil }
         return media.players[Int(index)]
+    }
+
+    /// Whether SMS conversations or sending are available on this device.
+    var canMessage: Bool {
+        gives("sms.conversations") || takes("sms.conversations.request") || takes("sms.send")
+    }
+
+    /// Whether this device can send remote pointer, keyboard or presenter packets.
+    var sendsRemoteInput: Bool {
+        ["input.pointer", "input.click", "input.key", "presenter"].contains { gives($0) }
+    }
+
+    func smsThread(_ id: Int64) -> ThreadMessages? {
+        sms.threads.first { $0.thread == id }
+    }
+
+    func smsConversation(_ id: Int64) -> ConversationInfo? {
+        sms.conversations.first { $0.thread == id }
     }
 }

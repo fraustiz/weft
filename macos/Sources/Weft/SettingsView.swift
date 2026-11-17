@@ -1,5 +1,6 @@
 // The Settings window: this Mac's name, opening at login, the group and
-// updates in General; the feature switches in Features; the relay in Advanced.
+// updates in General; the feature switches in Features; shell shortcuts in
+// Shortcuts; the relay in Advanced.
 
 import AppKit
 import SwiftUI
@@ -17,11 +18,14 @@ struct SettingsView: View {
             FeatureSettings(model: model, notifier: model.notifier, nowPlaying: model.nowPlaying)
                 .tabItem { Label(t("Features", "Fonctions"), systemImage: "switch.2") }
                 .tag("features")
+            ShortcutSettings(model: model)
+                .tabItem { Label(t("Shortcuts", "Raccourcis"), systemImage: "terminal") }
+                .tag("shortcuts")
             AdvancedSettings(model: model)
                 .tabItem { Label(t("Advanced", "Avancé"), systemImage: "network") }
                 .tag("advanced")
         }
-        .frame(width: 500, height: 560)
+        .frame(width: 520, height: 560)
         .onAppear { NSApp.activate() }
     }
 }
@@ -229,6 +233,12 @@ private struct FeatureSettings: View {
         Switch(path: \.volume, title: t("Volume", "Volume"),
                caption: t("Change the volume of your devices, and let them change this Mac’s.",
                           "Changez le volume de vos appareils, et laissez-les changer celui de ce Mac.")),
+        Switch(path: \.sms, title: t("Messages", "Messages"),
+               caption: t("Read and send your phone’s SMS on this Mac. The phone asks for its own permission first.",
+                          "Lisez et envoyez les SMS du téléphone sur ce Mac. Le téléphone demande d’abord sa propre autorisation.")),
+        Switch(path: \.commands, title: t("Shortcuts", "Raccourcis"),
+               caption: t("Let your devices run the shortcuts configured in the Shortcuts tab.",
+                          "Laissez vos appareils lancer les raccourcis configurés dans l’onglet Raccourcis.")),
     ]
 
     var body: some View {
@@ -236,7 +246,7 @@ private struct FeatureSettings: View {
             if let features = model.snapshot?.features {
                 // A problem first: without permission, half of these
                 // cannot show anything.
-                if features.notifications || features.calls || features.files {
+                if features.notifications || features.calls || features.files || features.sms || features.commands {
                     notificationPermission
                 }
                 Section {
@@ -290,7 +300,9 @@ private struct FeatureSettings: View {
                     "Les notifications sont coupées pour Weft : celles du téléphone, ses appels et les fichiers reçus ne peuvent pas s’afficher. Activez-les dans Réglages Système › Notifications."
                 ))
                 .foregroundStyle(.secondary)
-                Button(t("Open System Settings", "Ouvrir Réglages Système"), action: notifier.openSystemSettings)
+                Button(t("Open System Settings", "Ouvrir Réglages Système")) {
+                    notifier.openSystemSettings()
+                }
             }
         case .notAsked:
             Section(t("macOS Notifications", "Notifications de macOS")) {
@@ -299,10 +311,206 @@ private struct FeatureSettings: View {
                     "Weft a besoin de votre accord pour afficher des notifications."
                 ))
                 .foregroundStyle(.secondary)
-                Button(t("Allow Notifications…", "Autoriser les notifications…"), action: notifier.askIfNeeded)
+                Button(t("Allow Notifications…", "Autoriser les notifications…")) {
+                    notifier.askIfNeeded()
+                }
             }
         case .allowed, .unknown:
             EmptyView()
+        }
+    }
+}
+
+/// Shell commands the other devices may trigger by id (`command.list` and
+/// `command.run`, docs/features.md section 8).
+private struct ShortcutSettings: View {
+    @ObservedObject var model: AppModel
+    /// `nil`: idle; `""`: adding a new shortcut; otherwise the `id` being edited.
+    @StateObject private var editingId = Local<String?>(nil)
+    @StateObject private var draftName = Local("")
+    @StateObject private var draftLine = Local("")
+
+    private var commands: [CommandItem] { model.snapshot?.commands ?? [] }
+    private var canSave: Bool {
+        ShortcutPresets.clean(name: draftName.value, line: draftLine.value) != nil
+    }
+
+    var body: some View {
+        let availablePresets = ShortcutPresets.all().filter { preset in
+            !commands.contains { $0.line == preset.line }
+        }
+        Form {
+            if let features = model.snapshot?.features, !features.commands {
+                Section {
+                    HStack(spacing: 12) {
+                        Text(t(
+                            "Shortcuts are turned off in Features.",
+                            "Les raccourcis sont désactivés dans Fonctions."
+                        ))
+                        .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                        Button(t("Turn On", "Activer")) {
+                            var updated = features
+                            updated.commands = true
+                            model.setFeatures(updated)
+                        }
+                    }
+                }
+            }
+            Section {
+                if commands.isEmpty && editingId.value == nil {
+                    Text(t("No shortcuts configured.", "Aucun raccourci configuré."))
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(commands) { command in
+                    if editingId.value == command.id {
+                        editor(isNew: false)
+                    } else {
+                        shortcutRow(command)
+                    }
+                }
+                if editingId.value == "" {
+                    editor(isNew: true)
+                } else if editingId.value == nil {
+                    Button(t("Add Shortcut…", "Ajouter un raccourci…")) {
+                        editingId.value = ""
+                        draftName.value = ""
+                        draftLine.value = ""
+                    }
+                }
+            } header: {
+                Text(t("Shortcuts", "Raccourcis"))
+            } footer: {
+                Text(t(
+                    "Your devices only see the shortcut’s name, never its command line. Commands run with /bin/sh -c.",
+                    "Vos appareils ne voient que le nom du raccourci, jamais sa ligne de commande. Les commandes sont lancées par /bin/sh -c."
+                ))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if !availablePresets.isEmpty {
+                Section(t("Presets", "Prêts à l’emploi")) {
+                    ForEach(availablePresets) { preset in
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(preset.name)
+                                Text(preset.line)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                            Spacer(minLength: 0)
+                            Button(t("Add", "Ajouter")) {
+                                addPreset(preset)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func shortcutRow(_ command: CommandItem) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(command.name)
+                Text(command.line)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+            Button {
+                editingId.value = command.id
+                draftName.value = command.name
+                draftLine.value = command.line
+            } label: {
+                Image(systemName: "pencil")
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help(t("Edit", "Modifier"))
+            .accessibilityLabel(Language.current == .french ? "Modifier \(command.name)" : "Edit \(command.name)")
+
+            Button {
+                remove(command.id)
+            } label: {
+                Image(systemName: "trash")
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help(t("Remove", "Supprimer"))
+            .accessibilityLabel(Language.current == .french ? "Supprimer \(command.name)" : "Remove \(command.name)")
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func editor(isNew: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField(
+                t("Name", "Nom"),
+                text: $draftName.value,
+                prompt: Text(t("Name shown on your devices", "Nom affiché sur vos appareils"))
+            )
+            TextField(
+                t("Command", "Commande"),
+                text: $draftLine.value,
+                prompt: Text(t("Shell command (/bin/sh -c)", "Commande shell (/bin/sh -c)"))
+            )
+            .font(.body.monospaced())
+            .onSubmit {
+                if canSave { save() }
+            }
+            HStack {
+                Spacer(minLength: 0)
+                Button(t("Cancel", "Annuler")) {
+                    editingId.value = nil
+                }
+                Button(isNew ? t("Add", "Ajouter") : t("Save", "Enregistrer")) {
+                    save()
+                }
+                .buttonStyle(WeftProminentButtonStyle())
+                .disabled(!canSave)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func save() {
+        guard let currentId = editingId.value,
+              let cleaned = ShortcutPresets.clean(name: draftName.value, line: draftLine.value) else {
+            return
+        }
+        var updated = commands
+        if currentId.isEmpty {
+            updated.append(CommandItem(id: ShortcutPresets.makeId(), name: cleaned.name, line: cleaned.line))
+        } else if let index = updated.firstIndex(where: { $0.id == currentId }) {
+            updated[index] = CommandItem(id: currentId, name: cleaned.name, line: cleaned.line)
+        }
+        model.setCommands(updated)
+        editingId.value = nil
+    }
+
+    private func addPreset(_ preset: ShortcutPreset) {
+        var updated = commands
+        guard !updated.contains(where: { $0.line == preset.line }) else { return }
+        updated.append(CommandItem(id: ShortcutPresets.makeId(), name: preset.name, line: preset.line))
+        model.setCommands(updated)
+    }
+
+    private func remove(_ id: String) {
+        var updated = commands
+        updated.removeAll { $0.id == id }
+        model.setCommands(updated)
+        if editingId.value == id {
+            editingId.value = nil
         }
     }
 }

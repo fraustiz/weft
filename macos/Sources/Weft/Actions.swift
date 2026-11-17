@@ -83,6 +83,67 @@ extension AppModel {
         core?.setFeatures(switches: switches)
     }
 
+    func setCommands(_ commands: [CommandItem]) {
+        core?.setCommands(commands: commands)
+    }
+
+    func openMessagesSheet(for device: DeviceInfo, thread: Int64? = nil) {
+        attempt("open messages") { try core?.openMessages(deviceId: device.id) }
+        if let thread {
+            attempt("load messages") { try core?.loadMessages(deviceId: device.id, thread: thread, before: nil) }
+        }
+        selectedThread = thread
+        messagesDevice = device.id
+    }
+
+    func closeMessagesSheet() {
+        messagesDevice = nil
+        selectedThread = nil
+    }
+
+    func openThread(_ thread: Int64, on device: DeviceInfo) {
+        selectedThread = thread
+        attempt("load messages") { try core?.loadMessages(deviceId: device.id, thread: thread, before: nil) }
+    }
+
+    func loadEarlierMessages(thread: Int64, before: Int64?, on device: DeviceInfo) {
+        attempt("load earlier messages") { try core?.loadMessages(deviceId: device.id, thread: thread, before: before) }
+    }
+
+    func sendSms(addresses: [String], text: String, thread: Int64?, on device: DeviceInfo) {
+        attempt("send sms") { try core?.sendSms(deviceId: device.id, addresses: addresses, text: text, thread: thread) }
+    }
+
+    func setControl(_ allowed: Bool, for device: DeviceInfo) {
+        attempt("set control") { try core?.setDeviceControl(deviceId: device.id, allowed: allowed) }
+        if allowed && !RemoteInputController.isTrusted {
+            RemoteInputController.promptAccessibility()
+        }
+    }
+
+    func sendTypedDiff(from old: String, to new: String, on device: DeviceInfo) {
+        for step in RemoteTyping.diff(from: old, to: new) {
+            switch step {
+            case .backspace(let count):
+                for _ in 0..<count {
+                    attempt("backspace") { try core?.sendSpecialKey(deviceId: device.id, key: .backspace) }
+                }
+            case .text(let chunk):
+                attempt("type text") { try core?.typeText(deviceId: device.id, text: chunk) }
+            case .enter:
+                attempt("enter") { try core?.sendSpecialKey(deviceId: device.id, key: .enter) }
+            }
+        }
+    }
+
+    func sendSpecialKey(_ key: SpecialKeyKind, on device: DeviceInfo) {
+        attempt("special key") { try core?.sendSpecialKey(deviceId: device.id, key: key) }
+    }
+
+    func handleInput(_ input: RemoteInput) {
+        remoteInput.apply(input)
+    }
+
     // MARK: Notices
 
     private func named(_ device: String?) -> String {
@@ -155,9 +216,22 @@ extension AppModel {
             if snapshot?.features.media ?? false {
                 nowPlaying.command(control, player: player)
             }
-        case .smsReceived, .commandRan:
-            // Not announced by the Mac either.
-            break
+        case .smsReceived(let from, let device, let thread, let sender, let text, let addresses):
+            let plan = PhoneNotifications.smsReceived(
+                deviceId: from,
+                device: named(device),
+                thread: thread,
+                sender: sender,
+                text: text
+            )
+            notifier.post(plan, info: [
+                "kind": "sms",
+                "device": from,
+                "thread": thread,
+                "addresses": addresses,
+            ])
+        case .commandRan(_, let device, let name):
+            notifier.post(PhoneNotifications.commandRan(device: named(device), name: name))
         }
     }
 
@@ -168,8 +242,13 @@ extension AppModel {
         switch response {
         case .open:
             if let device { selection = device }
-            if info["kind"] as? String == "file", let path = info["path"] as? String {
+            let kind = info["kind"] as? String
+            if kind == "file", let path = info["path"] as? String {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+            } else if kind == "sms", let deviceId = device, let peer = snapshot?.device(deviceId) {
+                let thread = (info["thread"] as? NSNumber)?.int64Value ?? (info["thread"] as? Int64)
+                showMainWindow()
+                openMessagesSheet(for: peer, thread: thread)
             } else {
                 showMainWindow()
             }
@@ -179,6 +258,14 @@ extension AppModel {
                 try core?.notificationAction(deviceId: device, id: id, action: label)
             }
         case .reply(let text):
+            if info["kind"] as? String == "sms" {
+                guard let device, let addresses = info["addresses"] as? [String], !addresses.isEmpty else { return }
+                let thread = (info["thread"] as? NSNumber)?.int64Value ?? (info["thread"] as? Int64)
+                attempt("sms reply") {
+                    try core?.sendSms(deviceId: device, addresses: addresses, text: text, thread: thread)
+                }
+                return
+            }
             guard let device, let id else { return }
             attempt("notification reply") {
                 try core?.replyToNotification(deviceId: device, id: id, text: text)

@@ -10,9 +10,10 @@ use tokio::net::TcpListener;
 use weft_cli::{Event, Session, State, StateDir, unhex};
 use weft_client::packets::{self, Packet, Parsed};
 use weft_ffi::{
-    ConnectionStatus, ConnectivityInfo, CoreConfig, CoreDelegate, CoreError, CoreNotice,
-    CoreSnapshot, CoverImage, FeatureSwitches, LocalPlayer, MediaControl, Pairing, Pasteboard,
-    PasteboardContent, SendOutcome, TransferStage, VolumeInfo, WeftCore,
+    ClickPhase, CommandItem, ConnectionStatus, ConnectivityInfo, CoreConfig, CoreDelegate,
+    CoreError, CoreNotice, CoreSnapshot, CoverImage, FeatureSwitches, LocalPlayer, MediaControl,
+    MouseButton, Pairing, Pasteboard, PasteboardContent, PresenterCommand, RemoteInput,
+    SendOutcome, SmsSendState, SpecialKeyKind, SpotPoint, TransferStage, VolumeInfo, WeftCore,
 };
 use weft_protocol::PairingCode;
 use weft_relay::Config;
@@ -100,6 +101,7 @@ impl Pasteboard for FakePasteboard {
 struct Recorder {
     generations: Mutex<Vec<u64>>,
     notices: Mutex<Vec<CoreNotice>>,
+    inputs: Mutex<Vec<RemoteInput>>,
     waiting: Mutex<u32>,
 }
 
@@ -110,6 +112,10 @@ impl CoreDelegate for Recorder {
 
     fn notice(&self, notice: CoreNotice) {
         self.notices.lock().unwrap().push(notice);
+    }
+
+    fn input(&self, input: RemoteInput) {
+        self.inputs.lock().unwrap().push(input);
     }
 
     fn clipboard_waiting(&self) {
@@ -196,6 +202,23 @@ impl Tested {
         tokio::time::timeout(STEP, found)
             .await
             .expect("no such notice")
+    }
+
+    async fn expect_input(&self, wanted: impl Fn(&RemoteInput) -> bool) -> RemoteInput {
+        let found = async {
+            loop {
+                {
+                    let mut inputs = self.recorder.inputs.lock().unwrap();
+                    if let Some(index) = inputs.iter().position(&wanted) {
+                        return inputs.remove(index);
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(STEP, found)
+            .await
+            .expect("no such input")
     }
 
     /// Runs a blocking call of the core off the test's runtime, as the
@@ -291,9 +314,8 @@ fn sorted_str(kinds: &[&str]) -> Vec<String> {
     )
 }
 
-/// What the Mac acts on, spelled out: a change to `MAC_INCOMING` or
-/// `MAC_OUTGOING` must change these too.
-const MAC_INCOMING: &[&str] = &[
+/// What the Mac acts on by default (before per-device remote control).
+const DEFAULT_INCOMING: &[&str] = &[
     "state.request",
     "ping",
     "ring",
@@ -315,11 +337,18 @@ const MAC_INCOMING: &[&str] = &[
     "media.command",
     "volume",
     "volume.set",
+    "sms.conversations",
+    "sms.messages",
+    "sms.sent",
+    "sms.received",
+    "contacts",
+    "command.run",
 ];
 
-const MAC_OUTGOING: &[&str] = &[
+const DEFAULT_OUTGOING: &[&str] = &[
     "state.request",
     "ping",
+    "input.key",
     "ring",
     "ring.stop",
     "share.url",
@@ -339,6 +368,11 @@ const MAC_OUTGOING: &[&str] = &[
     "media.command",
     "volume",
     "volume.set",
+    "sms.conversations.request",
+    "sms.messages.request",
+    "sms.send",
+    "contacts.request",
+    "command.list",
 ];
 
 /// A connected core named "Studio Mac", paired with a peer named "Pixel".
@@ -377,6 +411,7 @@ async fn paired(relay_url: &str) -> (Tested, Peer) {
             snapshot.pairing
                 == Pairing::Paired {
                     device_id: peer_hex.clone(),
+                    invited: false,
                 }
                 && snapshot
                     .devices
@@ -452,8 +487,8 @@ async fn pairs_and_syncs_the_pasteboard_both_ways() {
             unreachable!();
         };
         assert_eq!(capabilities.platform, packets::PLATFORM);
-        assert_eq!(sorted(&capabilities.incoming), sorted_str(MAC_INCOMING));
-        assert_eq!(sorted(&capabilities.outgoing), sorted_str(MAC_OUTGOING));
+        assert_eq!(sorted(&capabilities.incoming), sorted_str(DEFAULT_INCOMING));
+        assert_eq!(sorted(&capabilities.outgoing), sorted_str(DEFAULT_OUTGOING));
 
         // What the pasteboard held at start is never sent.
         assert!(!tested.core.poll_pasteboard().sent);
@@ -615,38 +650,20 @@ async fn leaves_the_group_and_changes_the_relay() {
 }
 
 #[tokio::test]
-async fn announces_only_what_the_mac_implements() {
+async fn announces_capabilities_matching_the_switches() {
     timed(async {
-        assert_eq!(sorted_str(weft_ffi::MAC_INCOMING), sorted_str(MAC_INCOMING));
-        assert_eq!(sorted_str(weft_ffi::MAC_OUTGOING), sorted_str(MAC_OUTGOING));
-        for kind in [
-            "media",
-            "media.art",
-            "media.command",
-            "input.key",
-            "input.pointer",
-            "presenter",
-            "sms.send",
-            "contacts",
-            "command.run",
-            "command.list",
-        ] {
-            let incoming = weft_ffi::MAC_INCOMING.contains(&kind);
-            let outgoing = weft_ffi::MAC_OUTGOING.contains(&kind);
-            match kind {
-                // The phone's players are shown with their covers and
-                // controlled; the Mac's own are shared the same way.
-                "media" | "media.art" | "media.command" => assert!(incoming && outgoing),
-                _ => assert!(!incoming && !outgoing, "{kind}"),
-            }
-        }
-
         let url = start_relay().await;
         let (tested, mut peer) = paired(&url).await;
-        peer.expect_packet(|packet| matches!(packet, Packet::Capabilities(_)))
-            .await;
-        // SMS and commands stay off whatever is asked; the others follow
-        // the switches, and new capabilities go out at once.
+        let Packet::Capabilities(initial) = peer
+            .expect_packet(|packet| matches!(packet, Packet::Capabilities(_)))
+            .await
+        else {
+            unreachable!();
+        };
+        assert!(initial.handles("sms.conversations") && initial.sends("sms.send"));
+        assert!(initial.handles("command.run") && initial.sends("command.list"));
+        assert!(initial.sends("input.key") && !initial.handles("input.pointer"));
+
         let snapshot = tested.core.snapshot();
         assert_eq!(
             snapshot.features,
@@ -659,11 +676,15 @@ async fn announces_only_what_the_mac_implements() {
                 calls: true,
                 media: true,
                 volume: true,
+                sms: true,
+                commands: true,
             }
         );
         tested.core.set_features(FeatureSwitches {
             media: false,
             ring: false,
+            sms: false,
+            commands: false,
             ..snapshot.features
         });
         let Packet::Capabilities(capabilities) = peer
@@ -672,7 +693,18 @@ async fn announces_only_what_the_mac_implements() {
         else {
             unreachable!();
         };
-        for kind in ["media", "media.art", "media.command", "ring", "ring.stop"] {
+        for kind in [
+            "media",
+            "media.art",
+            "media.command",
+            "ring",
+            "ring.stop",
+            "sms.conversations",
+            "sms.send",
+            "contacts",
+            "command.run",
+            "command.list",
+        ] {
             assert!(
                 !capabilities.handles(kind) && !capabilities.sends(kind),
                 "{kind}"
@@ -680,7 +712,12 @@ async fn announces_only_what_the_mac_implements() {
         }
         assert!(capabilities.handles("file.offer") && capabilities.sends("volume"));
         tested
-            .wait(|snapshot| !snapshot.features.media && !snapshot.features.ring)
+            .wait(|snapshot| {
+                !snapshot.features.media
+                    && !snapshot.features.ring
+                    && !snapshot.features.sms
+                    && !snapshot.features.commands
+            })
             .await;
         tested.blocking(|core| core.stop()).await;
     })
@@ -1218,6 +1255,429 @@ async fn sends_and_receives_files() {
                     .any(|transfer| transfer.stage == TransferStage::Cancelled)
             })
             .await;
+        tested.blocking(|core| core.stop()).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn joins_another_devices_group_and_marks_pairing_invited() {
+    timed(async {
+        let url = start_relay().await;
+        let tested = Tested::start(&url);
+        tested
+            .wait(|snapshot| snapshot.status == ConnectionStatus::Connected)
+            .await;
+
+        let mut peer = Peer::connect(&url, "Pixel").await;
+        let code = peer.session.open_pairing().await.unwrap();
+        let encoded = code.encode().unwrap();
+        let peer_hex = weft_cli::hex(&peer.id());
+
+        tested.core.join(format!("  {encoded}  "));
+        peer.session.wait_pair_request(&code, STEP).await.unwrap();
+        tested
+            .wait(|snapshot| {
+                snapshot.pairing
+                    == Pairing::Paired {
+                        device_id: peer_hex.clone(),
+                        invited: true,
+                    }
+                    && snapshot.devices.iter().any(|device| device.id == peer_hex)
+            })
+            .await;
+        tested.blocking(|core| core.stop()).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn allows_remote_control_and_types_on_the_phone() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut peer) = paired(&url).await;
+        let mac = tested.id();
+        let phone = weft_cli::hex(&peer.id());
+        peer.expect_packet(|packet| matches!(packet, Packet::Capabilities(_)))
+            .await;
+
+        // Disallowed by default: remote input from the phone is ignored.
+        assert!(!tested.core.snapshot().devices[0].allowed_control);
+        peer.session
+            .send_packet(mac, r#"{"type":"input.pointer","dx":5.0,"dy":-3.0}"#)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(tested.recorder.inputs.lock().unwrap().is_empty());
+
+        // Allowing control updates capabilities at once and lets input through.
+        assert_eq!(
+            tested.core.set_device_control("00".repeat(16), true),
+            Err(CoreError::UnknownDevice)
+        );
+        tested
+            .core
+            .set_device_control(phone.clone(), true)
+            .unwrap();
+        let Packet::Capabilities(allowed) = peer
+            .expect_packet(|packet| matches!(packet, Packet::Capabilities(_)))
+            .await
+        else {
+            unreachable!();
+        };
+        for kind in ["input.pointer", "input.click", "input.key", "presenter"] {
+            assert!(allowed.handles(kind), "{kind}");
+        }
+        tested
+            .wait(|snapshot| snapshot.devices[0].allowed_control)
+            .await;
+
+        for packet in [
+            r#"{"type":"input.pointer","dx":4.5,"dy":-2.0,"scrollX":0.5,"scrollY":-1.0}"#,
+            r#"{"type":"input.click","button":"left","double":true}"#,
+            r#"{"type":"input.key","text":"Bonjour"}"#,
+            r#"{"type":"input.key","key":"pageDown","shift":true,"meta":true}"#,
+            r#"{"type":"presenter","action":"start"}"#,
+            r#"{"type":"presenter","pointer":{"x":0.25,"y":-0.5}}"#,
+        ] {
+            peer.session.send_packet(mac, packet).await.unwrap();
+        }
+        assert_eq!(
+            tested
+                .expect_input(|input| matches!(input, RemoteInput::Move { .. }))
+                .await,
+            RemoteInput::Move { dx: 4.5, dy: -2.0 }
+        );
+        assert_eq!(
+            tested
+                .expect_input(|input| matches!(input, RemoteInput::Scroll { .. }))
+                .await,
+            RemoteInput::Scroll { dx: 0.5, dy: -1.0 }
+        );
+        assert_eq!(
+            tested
+                .expect_input(|input| matches!(input, RemoteInput::Click { .. }))
+                .await,
+            RemoteInput::Click {
+                button: MouseButton::Left,
+                phase: ClickPhase::Double,
+            }
+        );
+        assert_eq!(
+            tested
+                .expect_input(|input| matches!(input, RemoteInput::KeyText { .. }))
+                .await,
+            RemoteInput::KeyText {
+                text: "Bonjour".into(),
+            }
+        );
+        assert_eq!(
+            tested
+                .expect_input(|input| matches!(input, RemoteInput::SpecialKey { .. }))
+                .await,
+            RemoteInput::SpecialKey {
+                key: SpecialKeyKind::PageDown,
+                ctrl: false,
+                alt: false,
+                shift: true,
+                meta: true,
+            }
+        );
+        assert_eq!(
+            tested
+                .expect_input(|input| matches!(input, RemoteInput::Presenter { .. }))
+                .await,
+            RemoteInput::Presenter {
+                action: PresenterCommand::Start,
+            }
+        );
+        assert_eq!(
+            tested
+                .expect_input(|input| matches!(input, RemoteInput::PresenterSpot { .. }))
+                .await,
+            RemoteInput::PresenterSpot {
+                point: Some(SpotPoint { x: 0.25, y: -0.5 }),
+            }
+        );
+
+        // Revoking control clears the presenter spot and withdraws input capabilities.
+        tested
+            .core
+            .set_device_control(phone.clone(), false)
+            .unwrap();
+        assert_eq!(
+            tested
+                .expect_input(|input| matches!(input, RemoteInput::PresenterSpot { point: None }))
+                .await,
+            RemoteInput::PresenterSpot { point: None }
+        );
+        let Packet::Capabilities(revoked) = peer
+            .expect_packet(|packet| matches!(packet, Packet::Capabilities(_)))
+            .await
+        else {
+            unreachable!();
+        };
+        assert!(!revoked.handles("input.pointer") && !revoked.handles("presenter"));
+
+        // Typing on the phone works independently of incoming remote control.
+        peer.session
+            .send_packet(
+                mac,
+                r#"{"type":"capabilities","platform":"android","incoming":["input.key"],"outgoing":[]}"#,
+            )
+            .await
+            .unwrap();
+        tested
+            .wait(|snapshot| snapshot.devices[0].handles.iter().any(|k| k == "input.key"))
+            .await;
+        tested
+            .core
+            .type_text(phone.clone(), "Hi\nthere".into())
+            .unwrap();
+        peer.expect_packet(|packet| {
+            matches!(packet, Packet::InputKey(k) if k.text.as_deref() == Some("Hi"))
+        })
+        .await;
+        peer.expect_packet(|packet| {
+            matches!(packet, Packet::InputKey(k) if k.key.as_deref() == Some("enter"))
+        })
+        .await;
+        peer.expect_packet(|packet| {
+            matches!(packet, Packet::InputKey(k) if k.text.as_deref() == Some("there"))
+        })
+        .await;
+        tested
+            .core
+            .send_special_key(phone.clone(), SpecialKeyKind::Backspace)
+            .unwrap();
+        peer.expect_packet(|packet| {
+            matches!(packet, Packet::InputKey(k) if k.key.as_deref() == Some("backspace"))
+        })
+        .await;
+        tested.blocking(|core| core.stop()).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn loads_and_sends_sms_with_contacts() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut peer) = paired(&url).await;
+        let mac = tested.id();
+        let phone = weft_cli::hex(&peer.id());
+        peer.expect_packet(|packet| matches!(packet, Packet::Capabilities(_)))
+            .await;
+
+        peer.session
+            .send_packet(
+                mac,
+                r#"{"type":"capabilities","platform":"android","incoming":["sms.conversations.request","sms.messages.request","sms.send","contacts.request"],"outgoing":["sms.conversations","sms.messages","sms.sent","sms.received","contacts"]}"#,
+            )
+            .await
+            .unwrap();
+        tested
+            .wait(|snapshot| {
+                snapshot.devices[0]
+                    .handles
+                    .iter()
+                    .any(|k| k == "sms.conversations.request")
+            })
+            .await;
+
+        tested.core.open_messages(phone.clone()).unwrap();
+        peer.expect_packet(|packet| matches!(packet, Packet::SmsConversationsRequest {}))
+            .await;
+        peer.expect_packet(|packet| matches!(packet, Packet::ContactsRequest {}))
+            .await;
+
+        peer.session
+            .send_packet(
+                mac,
+                r#"{"type":"contacts","contacts":[{"name":"Alice","numbers":["+33 6 00 00 00 01"]}],"part":1,"parts":1}"#,
+            )
+            .await
+            .unwrap();
+        peer.session
+            .send_packet(
+                mac,
+                r#"{"type":"sms.conversations","conversations":[{"thread":42,"addresses":["0600000001"],"names":[null],"snippet":"See you soon","time":1000,"unread":true}]}"#,
+            )
+            .await
+            .unwrap();
+        let snapshot = tested
+            .wait(|snapshot| {
+                snapshot.devices[0].sms.loaded && !snapshot.devices[0].sms.contacts.is_empty()
+            })
+            .await;
+        let sms = &snapshot.devices[0].sms;
+        assert_eq!(sms.contacts[0].name, "Alice");
+        assert_eq!(sms.conversations[0].thread, 42);
+        assert_eq!(sms.conversations[0].title, "Alice");
+        assert!(sms.conversations[0].unread);
+
+        // Load thread messages and check older paging.
+        tested.core.load_messages(phone.clone(), 42, None).unwrap();
+        peer.expect_packet(|packet| {
+            matches!(packet, Packet::SmsMessagesRequest(req) if req.thread == 42 && req.before.is_none())
+        })
+        .await;
+        peer.session
+            .send_packet(
+                mac,
+                r#"{"type":"sms.messages","thread":42,"messages":[{"id":1,"address":"0600000001","body":"See you soon","time":1000,"outgoing":false}]}"#,
+            )
+            .await
+            .unwrap();
+        let snapshot = tested
+            .wait(|snapshot| !snapshot.devices[0].sms.threads.is_empty())
+            .await;
+        let thread = &snapshot.devices[0].sms.threads[0];
+        assert_eq!(thread.thread, 42);
+        assert!(!thread.complete);
+        assert_eq!(thread.messages[0].sender.as_deref(), Some("Alice"));
+
+        // Incoming SMS triggers notice and updates conversation/thread.
+        peer.session
+            .send_packet(
+                mac,
+                r#"{"type":"sms.received","thread":42,"id":2,"address":"0600000001","body":"At the door","time":2000,"outgoing":false}"#,
+            )
+            .await
+            .unwrap();
+        let notice = tested
+            .expect_notice(|notice| matches!(notice, CoreNotice::SmsReceived { .. }))
+            .await;
+        assert_eq!(
+            notice,
+            CoreNotice::SmsReceived {
+                from: phone.clone(),
+                device: Some("Pixel".into()),
+                thread: 42,
+                sender: "Alice".into(),
+                text: "At the door".into(),
+                addresses: vec!["0600000001".into()],
+            }
+        );
+
+        // Sending an SMS tracks pending -> failed / sent in `sending`.
+        tested
+            .core
+            .send_sms(
+                phone.clone(),
+                vec!["0600000001".into()],
+                "Coming down".into(),
+                Some(42),
+            )
+            .unwrap();
+        let Packet::SmsSend(sent_packet) = peer
+            .expect_packet(|packet| matches!(packet, Packet::SmsSend(_)))
+            .await
+        else {
+            unreachable!();
+        };
+        assert_eq!(sent_packet.text, "Coming down");
+        tested
+            .wait(|snapshot| {
+                snapshot.devices[0]
+                    .sms
+                    .sending
+                    .iter()
+                    .any(|s| s.state == SmsSendState::Pending)
+            })
+            .await;
+        let failed = format!(
+            r#"{{"type":"sms.sent","requestId":"{}","ok":false,"error":"noService"}}"#,
+            sent_packet.request_id
+        );
+        peer.session.send_packet(mac, &failed).await.unwrap();
+        tested
+            .wait(|snapshot| {
+                snapshot.devices[0].sms.sending.iter().any(|s| {
+                    s.state
+                        == SmsSendState::Failed {
+                            error: Some("noService".into()),
+                        }
+                })
+            })
+            .await;
+
+        tested.blocking(|core| core.stop()).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn announces_and_runs_shortcuts() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut peer) = paired(&url).await;
+        let mac = tested.id();
+        let phone = weft_cli::hex(&peer.id());
+        peer.expect_packet(|packet| matches!(packet, Packet::Capabilities(_)))
+            .await;
+
+        peer.session
+            .send_packet(
+                mac,
+                r#"{"type":"capabilities","platform":"android","incoming":["command.list"],"outgoing":["command.run"]}"#,
+            )
+            .await
+            .unwrap();
+        tested
+            .wait(|snapshot| {
+                snapshot.devices[0]
+                    .handles
+                    .iter()
+                    .any(|k| k == "command.list")
+            })
+            .await;
+
+        let marker = tested.temp.path().join("shortcut-ran.txt");
+        let line = format!("echo ok > \"{}\"", marker.display());
+        tested.core.set_commands(vec![CommandItem {
+            id: "c1".into(),
+            name: "Mark".into(),
+            line: line.clone(),
+        }]);
+        let Packet::CommandList { commands } = peer
+            .expect_packet(|packet| {
+                matches!(packet, Packet::CommandList { commands } if !commands.is_empty())
+            })
+            .await
+        else {
+            unreachable!();
+        };
+        assert_eq!(commands.len(), 1);
+        assert_eq!((commands[0].id.as_str(), commands[0].name.as_str()), ("c1", "Mark"));
+        tested
+            .wait(|snapshot| snapshot.commands.len() == 1 && snapshot.commands[0].line == line)
+            .await;
+
+        peer.session
+            .send_packet(mac, r#"{"type":"command.run","id":"c1"}"#)
+            .await
+            .unwrap();
+        let notice = tested
+            .expect_notice(|notice| matches!(notice, CoreNotice::CommandRan { .. }))
+            .await;
+        assert_eq!(
+            notice,
+            CoreNotice::CommandRan {
+                from: phone,
+                device: Some("Pixel".into()),
+                name: "Mark".into(),
+            }
+        );
+
+        let waited = async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(STEP, waited)
+            .await
+            .expect("shortcut did not create the marker file");
         tested.blocking(|core| core.stop()).await;
     })
     .await;

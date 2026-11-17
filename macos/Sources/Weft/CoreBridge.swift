@@ -80,6 +80,12 @@ final class CoreEvents: CoreDelegate, @unchecked Sendable {
         }
     }
 
+    func input(input: RemoteInput) {
+        Task { @MainActor [weak self] in
+            self?.model?.handleInput(input)
+        }
+    }
+
     func clipboardWaiting() {
         Task { @MainActor [weak self] in
             self?.model?.pollPasteboard()

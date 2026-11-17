@@ -33,6 +33,9 @@ struct DeviceDetail: View {
             if (features?.links ?? false) && device.takes("share.url") {
                 LinkSection(model: model, device: device)
             }
+            if device.sendsRemoteInput || device.allowedControl || device.takes("input.key") {
+                RemoteControlSection(model: model, device: device)
+            }
             let transfers = model.snapshot?.transfers.filter { $0.deviceId == device.id } ?? []
             if !transfers.isEmpty {
                 Section(t("Files", "Fichiers")) {
@@ -97,6 +100,7 @@ struct DeviceDetail: View {
     private var actions: some View {
         let ring = (features?.ring ?? false) && device.takes("ring")
         let ping = device.takes("ping")
+        let messages = (features?.sms ?? false) && device.canMessage
         if device.platform == nil {
             Section {
                 Text(Language.current == .french
@@ -104,12 +108,15 @@ struct DeviceDetail: View {
                      : "Actions show once \(device.displayName) is online.")
                     .foregroundStyle(.secondary)
             }
-        } else if takesFiles || ring || ping {
+        } else if takesFiles || ring || ping || messages {
             Section {
                 HStack(spacing: 8) {
                     if takesFiles {
                         Button(t("Send File…", "Envoyer un fichier…")) { model.pickFiles(for: device) }
                             .buttonStyle(WeftProminentButtonStyle())
+                    }
+                    if messages {
+                        Button(t("Messages…", "Messages…")) { model.openMessagesSheet(for: device) }
                     }
                     if ring {
                         if model.rang?.device == device.id {
@@ -468,7 +475,9 @@ private struct TransferRow: View {
             }
             Spacer(minLength: 0)
             if transfer.isActive {
-                Button(action: cancel) {
+                Button {
+                    cancel()
+                } label: {
                     Image(systemName: "xmark.circle.fill")
                 }
                 .buttonStyle(.borderless)
@@ -478,5 +487,92 @@ private struct TransferRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+/// Allowing the device to control this Mac's pointer, keyboard and
+/// presenter, and typing on the phone from this Mac.
+private struct RemoteControlSection: View {
+    @ObservedObject var model: AppModel
+    let device: DeviceInfo
+    @StateObject private var accessibilityTrusted = Local(RemoteInputController.isTrusted)
+    @StateObject private var typedText = Local("")
+    @StateObject private var sentText = Local("")
+
+    var body: some View {
+        Section(t("Remote Control", "Contrôle à distance")) {
+            if device.sendsRemoteInput || device.allowedControl {
+                Toggle(isOn: Binding(
+                    get: { device.allowedControl },
+                    set: { allowed in
+                        model.setControl(allowed, for: device)
+                        accessibilityTrusted.value = RemoteInputController.isTrusted
+                    }
+                )) {
+                    Text(Language.current == .french
+                         ? "Autoriser \(device.displayName) à contrôler ce Mac"
+                         : "Allow \(device.displayName) to control this Mac")
+                    Text(t("Pointer, keyboard and presentation controls.",
+                           "Pointeur, clavier et contrôle de présentation."))
+                }
+                if device.allowedControl && !accessibilityTrusted.value {
+                    HStack(spacing: 12) {
+                        Text(t(
+                            "Allow Weft in Privacy & Security › Accessibility so it can move the pointer and type keys.",
+                            "Autorisez Weft dans Confidentialité et sécurité › Accessibilité pour déplacer le pointeur et saisir des touches."
+                        ))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                        Button(t("Open System Settings", "Ouvrir Réglages Système")) {
+                            RemoteInputController.openAccessibilitySettings()
+                        }
+                    }
+                }
+            }
+            if device.takes("input.key") {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .bottom, spacing: 8) {
+                        TextField(
+                            t("Type on Phone", "Saisir sur le téléphone"),
+                            text: $typedText.value,
+                            prompt: Text(Language.current == .french
+                                ? "Saisir sur \(device.displayName)…"
+                                : "Type on \(device.displayName)…"),
+                            axis: .vertical
+                        )
+                        .lineLimit(1...4)
+                        .labelsHidden()
+                        .onChange(of: typedText.value) { _, updated in
+                            guard updated != sentText.value else { return }
+                            model.sendTypedDiff(from: sentText.value, to: updated, on: device)
+                            sentText.value = updated
+                        }
+                        Button(t("Clear", "Effacer")) {
+                            sentText.value = ""
+                            typedText.value = ""
+                        }
+                        .disabled(typedText.value.isEmpty)
+                    }
+                    Text(t(
+                        "Requires the Weft keyboard to be selected on the phone. Clear empties this field only.",
+                        "Nécessite que le clavier Weft soit sélectionné sur le téléphone. Effacer ne vide que ce champ."
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .onAppear {
+            accessibilityTrusted.value = RemoteInputController.isTrusted
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            accessibilityTrusted.value = RemoteInputController.isTrusted
+        }
+        .onChange(of: device.id) { _, _ in
+            sentText.value = ""
+            typedText.value = ""
+        }
     }
 }
