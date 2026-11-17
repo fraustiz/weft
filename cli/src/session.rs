@@ -59,6 +59,16 @@ pub const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// in-flight live envelopes still decrypt cleanly.
 pub const REKEY_GRACE: Duration = Duration::from_secs(30);
 
+/// Ensures an error while reserving a persisted counter also clears the
+/// temporary encryption key. This buffer is never logged or persisted.
+struct SecretKey([u8; 32]);
+
+impl Drop for SecretKey {
+    fn drop(&mut self) {
+        zero_key(&mut self.0);
+    }
+}
+
 /// Per-peer ephemeral forward-secrecy session state (in memory only).
 #[derive(Default)]
 struct PeerEpoch {
@@ -479,7 +489,7 @@ impl Session {
     /// activation) into `prev_rx` for [`REKEY_GRACE`]. Returns `true` if
     /// `epoch` was staged and activated.
     pub fn activate_epoch(&mut self, peer_id: [u8; 16], epoch: u64) -> Result<bool> {
-        let static_rx = self.static_session_keys(&peer_id)?.rx;
+        let static_keys = self.static_session_keys(&peer_id)?;
         let now = Instant::now();
         let entry = self.ephemeral.entry(peer_id).or_default();
         let matches = entry
@@ -496,7 +506,7 @@ impl Session {
                 old_keys.zero();
                 rx
             }
-            None => static_rx,
+            None => static_keys.rx,
         };
         if let Some((mut old_prev, _)) = entry.prev_rx.take() {
             zero_key(&mut old_prev);
@@ -579,7 +589,7 @@ impl Session {
     ) -> Result<Vec<u8>> {
         let peer_id = peer.device_id();
         let mut static_keys = session_keys(&self.identity, &peer_id, &peer.kx_pk)?;
-        let mut tx = static_keys.tx;
+        let mut tx = SecretKey(static_keys.tx);
         let used_epoch = if kind.is_static() {
             false
         } else if let Some((_, epoch_keys)) = self
@@ -587,7 +597,7 @@ impl Session {
             .get(&peer_id)
             .and_then(|entry| entry.epoch_keys.as_ref())
         {
-            tx = epoch_keys.tx;
+            tx.0 = epoch_keys.tx;
             true
         } else {
             false
@@ -603,8 +613,7 @@ impl Session {
             message_id: random_message_id(),
             counter,
         };
-        let frame_res = seal(&header, plaintext, &tx);
-        zero_key(&mut tx);
+        let frame_res = seal(&header, plaintext, &tx.0);
         let frame = frame_res?;
         if used_epoch && let Some(entry) = self.ephemeral.get_mut(&peer_id) {
             entry.sent_frames += 1;

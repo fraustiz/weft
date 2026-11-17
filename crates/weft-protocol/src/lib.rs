@@ -218,10 +218,22 @@ impl Drop for Identity {
 }
 
 /// Session keys with one peer: encrypt with `tx`, decrypt with `rx`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SessionKeys {
     pub rx: [u8; 32],
     pub tx: [u8; 32],
+}
+
+impl Drop for SessionKeys {
+    fn drop(&mut self) {
+        self.zero();
+    }
+}
+
+impl std::fmt::Debug for SessionKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SessionKeys { .. }")
+    }
 }
 
 impl SessionKeys {
@@ -989,6 +1001,18 @@ pub fn verify_lan_auth(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_keys_are_redacted_and_can_be_explicitly_erased() {
+        let mut keys = SessionKeys {
+            rx: [0xab; 32],
+            tx: [0xcd; 32],
+        };
+        assert_eq!(format!("{keys:?}"), "SessionKeys { .. }");
+        keys.zero();
+        assert_eq!(keys.rx, [0; 32]);
+        assert_eq!(keys.tx, [0; 32]);
+    }
 
     /// A Device name envelope whose plaintext is encrypted as is, bypassing
     /// the checks in `seal`, so `open` has to catch it after decrypting.
