@@ -47,8 +47,13 @@ pub const MAX_PACKET_LEN: usize = 256 * 1024;
 pub const TRANSFER_ID_LEN: usize = 16;
 /// Largest data in one file chunk, in bytes (128 KiB).
 pub const MAX_FILE_CHUNK_DATA_LEN: usize = 128 * 1024;
+/// Largest encoded envelope frame on the wire (`58 + 24 + 256 KiB + 16` bytes).
+pub const MAX_ENVELOPE_FRAME_LEN: usize = HEADER_LEN + NONCE_LEN + MAX_CLIPBOARD_TEXT_LEN + TAG_LEN;
 /// `transfer_id (16) || offset (8)`, before the data of a file chunk.
 const FILE_CHUNK_PREFIX_LEN: usize = TRANSFER_ID_LEN + 8;
+
+/// Domain-separation prefix for ephemeral forward-secrecy epoch keys.
+pub const FS_CONTEXT: &[u8] = b"weft-fs-v1";
 
 /// First byte of the relay challenge frame.
 pub const AUTH_CHALLENGE: u8 = 0xA0;
@@ -56,6 +61,17 @@ pub const AUTH_CHALLENGE: u8 = 0xA0;
 pub const AUTH_RESPONSE: u8 = 0xA1;
 /// The one-byte frame the relay sends when authentication succeeds.
 pub const AUTH_ACCEPTED: u8 = 0xA2;
+
+/// First byte of a direct LAN challenge frame (`0xC0 || nonce_32`).
+pub const LAN_CHALLENGE: u8 = 0xC0;
+/// First byte of a direct LAN authentication frame (`0xC1 || device_id_16 || sig_64`).
+pub const LAN_AUTH: u8 = 0xC1;
+/// Domain-separation prefix for direct LAN mutual authentication signatures.
+pub const LAN_CONTEXT: &[u8] = b"weft-lan-v1";
+/// Length of an encoded [`LanChallenge`] frame.
+pub const LAN_CHALLENGE_LEN: usize = 1 + AUTH_NONCE_LEN;
+/// Length of an encoded [`LanAuth`] frame.
+pub const LAN_AUTH_LEN: usize = 1 + DEVICE_ID_LEN + sodium::SIGNATURE_BYTES;
 
 const AUTH_CONTEXT: &[u8] = b"weft-auth-v1";
 const AUTH_NONCE_LEN: usize = 32;
@@ -112,6 +128,12 @@ pub enum Error {
     DeviceNameLength(usize),
     #[error("device name contains a control character")]
     DeviceNameControlCharacter,
+    #[error("rekey epoch 0 is invalid")]
+    ZeroEpoch,
+    #[error("malformed LAN authentication frame")]
+    MalformedLanFrame,
+    #[error("device id does not match signing public key")]
+    DeviceIdMismatch,
 }
 
 /// Derives a device id from a signing public key:
@@ -202,6 +224,53 @@ pub struct SessionKeys {
     pub tx: [u8; 32],
 }
 
+impl SessionKeys {
+    /// Zeroes both directional keys in memory via `sodium_memzero`.
+    pub fn zero(&mut self) {
+        sodium::memzero(&mut self.rx);
+        sodium::memzero(&mut self.tx);
+    }
+}
+
+/// Zeroes a 32-byte secret key buffer via `sodium_memzero`.
+pub fn zero_key(key: &mut [u8; 32]) {
+    sodium::memzero(key);
+}
+
+/// An ephemeral X25519 key pair for a forward-secrecy session rekey.
+///
+/// The secret key is erased via `sodium_memzero` when dropped.
+pub struct RekeyKeyPair {
+    pk: [u8; sodium::KX_PK_BYTES],
+    sk: [u8; sodium::KX_SK_BYTES],
+}
+
+impl RekeyKeyPair {
+    /// Generates a fresh random ephemeral X25519 key pair (`crypto_kx_keypair`).
+    pub fn generate() -> RekeyKeyPair {
+        let (pk, sk) = sodium::kx_keypair();
+        RekeyKeyPair { pk, sk }
+    }
+
+    /// Deterministically derives an ephemeral X25519 key pair from `seed`
+    /// (`crypto_kx_seed_keypair`). Intended for tests and reproducible vectors.
+    pub fn from_seed(mut seed: [u8; 32]) -> RekeyKeyPair {
+        let (pk, sk) = sodium::kx_seed_keypair(&seed);
+        sodium::memzero(&mut seed);
+        RekeyKeyPair { pk, sk }
+    }
+
+    pub fn public_key(&self) -> &[u8; 32] {
+        &self.pk
+    }
+}
+
+impl Drop for RekeyKeyPair {
+    fn drop(&mut self) {
+        sodium::memzero(&mut self.sk);
+    }
+}
+
 /// Derives the session keys between `local` and a peer.
 ///
 /// The device with the lower device id (bytewise) plays the libsodium
@@ -218,6 +287,50 @@ pub fn session_keys(
     };
     let (rx, tx) = sodium::kx_session_keys(role, &local.kx_pk, &local.kx_sk, peer_kx_pk)
         .ok_or(Error::KeyExchangeFailed)?;
+    Ok(SessionKeys { rx, tx })
+}
+
+/// Derives ephemeral forward-secrecy session keys for `epoch`, mixing an
+/// ephemeral X25519 exchange with the static directional [`SessionKeys`].
+///
+/// Requires `epoch > 0` and `own_id != peer_id`. As in [`session_keys`], the
+/// device with the lower device id plays the `crypto_kx` client role. Each
+/// directional key is computed with keyed 32-byte BLAKE2b (`key = static_rx`
+/// or `static_tx`) over `b"weft-fs-v1" || epoch.to_be_bytes() || ephem_key`,
+/// and the intermediate ephemeral secrets are zeroed before returning.
+pub fn derive_epoch_keys(
+    static_keys: &SessionKeys,
+    epoch: u64,
+    own_id: &[u8; 16],
+    peer_id: &[u8; 16],
+    own_ephem: &RekeyKeyPair,
+    peer_ephem_pk: &[u8; 32],
+) -> Result<SessionKeys, Error> {
+    if epoch == 0 {
+        return Err(Error::ZeroEpoch);
+    }
+    let role = match own_id.cmp(peer_id) {
+        std::cmp::Ordering::Less => KxRole::Client,
+        std::cmp::Ordering::Greater => KxRole::Server,
+        std::cmp::Ordering::Equal => return Err(Error::SameDeviceId),
+    };
+    let (mut ephem_rx, mut ephem_tx) =
+        sodium::kx_session_keys(role, &own_ephem.pk, &own_ephem.sk, peer_ephem_pk)
+            .ok_or(Error::KeyExchangeFailed)?;
+
+    let mut mix_buf = [0u8; FS_CONTEXT.len() + 8 + 32];
+    mix_buf[..FS_CONTEXT.len()].copy_from_slice(FS_CONTEXT);
+    mix_buf[FS_CONTEXT.len()..FS_CONTEXT.len() + 8].copy_from_slice(&epoch.to_be_bytes());
+
+    mix_buf[FS_CONTEXT.len() + 8..].copy_from_slice(&ephem_rx);
+    let rx = sodium::generichash_32_keyed(&mix_buf, &static_keys.rx);
+
+    mix_buf[FS_CONTEXT.len() + 8..].copy_from_slice(&ephem_tx);
+    let tx = sodium::generichash_32_keyed(&mix_buf, &static_keys.tx);
+
+    sodium::memzero(&mut mix_buf);
+    sodium::memzero(&mut ephem_rx);
+    sodium::memzero(&mut ephem_tx);
     Ok(SessionKeys { rx, tx })
 }
 
@@ -245,6 +358,15 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// Whether envelopes of this kind are eligible for relay offline queueing
+    /// and therefore ALWAYS sealed and opened with the static [`SessionKeys`].
+    pub fn is_static(self) -> bool {
+        matches!(
+            self,
+            Kind::Welcome | Kind::DeviceAdded | Kind::DeviceRemoved | Kind::DeviceName
+        )
+    }
+
     fn from_byte(byte: u8) -> Result<Kind, Error> {
         match byte {
             0x01 => Ok(Kind::ClipboardText),
@@ -752,6 +874,118 @@ pub fn classify(frame: &[u8]) -> FrameType {
     }
 }
 
+/// Direct LAN challenge frame (`0xC0 || nonce_32`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LanChallenge {
+    nonce: [u8; AUTH_NONCE_LEN],
+}
+
+impl LanChallenge {
+    /// Generates a fresh random 32-byte LAN challenge.
+    pub fn generate() -> LanChallenge {
+        let mut nonce = [0u8; AUTH_NONCE_LEN];
+        sodium::random_bytes(&mut nonce);
+        LanChallenge { nonce }
+    }
+
+    pub fn from_nonce(nonce: [u8; AUTH_NONCE_LEN]) -> LanChallenge {
+        LanChallenge { nonce }
+    }
+
+    pub fn nonce(&self) -> &[u8; AUTH_NONCE_LEN] {
+        &self.nonce
+    }
+
+    /// `0xC0 || nonce_32`.
+    pub fn encode(&self) -> [u8; LAN_CHALLENGE_LEN] {
+        let mut out = [0u8; LAN_CHALLENGE_LEN];
+        out[0] = LAN_CHALLENGE;
+        out[1..].copy_from_slice(&self.nonce);
+        out
+    }
+
+    pub fn decode(frame: &[u8]) -> Result<LanChallenge, Error> {
+        let &tag = frame.first().ok_or(Error::MalformedLanFrame)?;
+        if tag != LAN_CHALLENGE {
+            return Err(Error::UnexpectedFrameType(tag));
+        }
+        if frame.len() != LAN_CHALLENGE_LEN {
+            return Err(Error::MalformedLanFrame);
+        }
+        Ok(LanChallenge {
+            nonce: frame[1..].try_into().unwrap(),
+        })
+    }
+}
+
+/// Direct LAN mutual authentication response (`0xC1 || device_id_16 || sig_64`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LanAuth {
+    pub device_id: [u8; DEVICE_ID_LEN],
+    pub signature: [u8; sodium::SIGNATURE_BYTES],
+}
+
+impl LanAuth {
+    /// `0xC1 || device_id_16 || signature_64`.
+    pub fn encode(&self) -> [u8; LAN_AUTH_LEN] {
+        let mut out = [0u8; LAN_AUTH_LEN];
+        out[0] = LAN_AUTH;
+        out[1..1 + DEVICE_ID_LEN].copy_from_slice(&self.device_id);
+        out[1 + DEVICE_ID_LEN..].copy_from_slice(&self.signature);
+        out
+    }
+
+    pub fn decode(frame: &[u8]) -> Result<LanAuth, Error> {
+        let &tag = frame.first().ok_or(Error::MalformedLanFrame)?;
+        if tag != LAN_AUTH {
+            return Err(Error::UnexpectedFrameType(tag));
+        }
+        if frame.len() != LAN_AUTH_LEN {
+            return Err(Error::MalformedLanFrame);
+        }
+        Ok(LanAuth {
+            device_id: frame[1..1 + DEVICE_ID_LEN].try_into().unwrap(),
+            signature: frame[1 + DEVICE_ID_LEN..].try_into().unwrap(),
+        })
+    }
+}
+
+fn lan_signed_message(peer_nonce: &[u8; 32], own_nonce: &[u8; 32]) -> [u8; LAN_CONTEXT.len() + 64] {
+    let mut out = [0u8; LAN_CONTEXT.len() + 64];
+    out[..LAN_CONTEXT.len()].copy_from_slice(LAN_CONTEXT);
+    out[LAN_CONTEXT.len()..LAN_CONTEXT.len() + 32].copy_from_slice(peer_nonce);
+    out[LAN_CONTEXT.len() + 32..].copy_from_slice(own_nonce);
+    out
+}
+
+/// Signs `b"weft-lan-v1" || peer_nonce || own_nonce` with `identity`'s Ed25519
+/// signing key.
+pub fn sign_lan_auth(identity: &Identity, peer_nonce: &[u8; 32], own_nonce: &[u8; 32]) -> LanAuth {
+    let message = lan_signed_message(peer_nonce, own_nonce);
+    LanAuth {
+        device_id: identity.device_id,
+        signature: sodium::sign_detached(&message, &identity.sign_sk),
+    }
+}
+
+/// Verifies a peer's [`LanAuth`] against its trusted `peer_sign_pk`, the
+/// `own_nonce` we sent it, and the `peer_nonce` it sent us.
+pub fn verify_lan_auth(
+    peer_sign_pk: &[u8; 32],
+    own_nonce: &[u8; 32],
+    peer_nonce: &[u8; 32],
+    auth: &LanAuth,
+) -> Result<(), Error> {
+    if device_id_from_sign_pk(peer_sign_pk) != auth.device_id {
+        return Err(Error::DeviceIdMismatch);
+    }
+    let message = lan_signed_message(own_nonce, peer_nonce);
+    if !sodium::verify_detached(&auth.signature, &message, peer_sign_pk) {
+        return Err(Error::InvalidSignature);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -794,6 +1028,198 @@ mod tests {
         ] {
             let (frame, rx) = raw_name_frame(plaintext);
             assert_eq!(open(&frame, &rx), Err(expected), "{plaintext:?}");
+        }
+    }
+
+    #[test]
+    fn epoch_keys_are_symmetric_and_bound_to_epoch_and_static_keys() {
+        let a = Identity::from_seeds([10; 32], [11; 32]);
+        let b = Identity::from_seeds([20; 32], [21; 32]);
+        let static_a = session_keys(&a, &b.device_id(), &b.kx_pk()).unwrap();
+        let static_b = session_keys(&b, &a.device_id(), &a.kx_pk()).unwrap();
+        assert_eq!(static_a.tx, static_b.rx);
+        assert_eq!(static_a.rx, static_b.tx);
+
+        let ephem_a = RekeyKeyPair::generate();
+        let ephem_b = RekeyKeyPair::generate();
+
+        let epoch1_a = derive_epoch_keys(
+            &static_a,
+            1,
+            &a.device_id(),
+            &b.device_id(),
+            &ephem_a,
+            ephem_b.public_key(),
+        )
+        .unwrap();
+        let epoch1_b = derive_epoch_keys(
+            &static_b,
+            1,
+            &b.device_id(),
+            &a.device_id(),
+            &ephem_b,
+            ephem_a.public_key(),
+        )
+        .unwrap();
+
+        assert_eq!(epoch1_a.tx, epoch1_b.rx);
+        assert_eq!(epoch1_a.rx, epoch1_b.tx);
+        assert_ne!(epoch1_a.tx, epoch1_a.rx);
+        assert_ne!(epoch1_a.tx, static_a.tx);
+        assert_ne!(epoch1_a.rx, static_a.rx);
+
+        // Envelopes sealed under epoch 1 open with the peer's epoch 1 rx,
+        // and never open with the static rx.
+        let header = Header {
+            version: VERSION,
+            kind: Kind::ClipboardText,
+            sender: a.device_id(),
+            recipient: b.device_id(),
+            message_id: [0x33; 16],
+            counter: 1,
+        };
+        let frame = seal(&header, b"ephemeral", &epoch1_a.tx).unwrap();
+        assert_eq!(open(&frame, &static_b.rx), Err(Error::DecryptionFailed));
+        let (opened_header, opened_plain) = open(&frame, &epoch1_b.rx).unwrap();
+        assert_eq!(opened_header, header);
+        assert_eq!(opened_plain, b"ephemeral");
+
+        // Epoch separation: epoch 2 produces completely distinct keys.
+        let epoch2_a = derive_epoch_keys(
+            &static_a,
+            2,
+            &a.device_id(),
+            &b.device_id(),
+            &ephem_a,
+            ephem_b.public_key(),
+        )
+        .unwrap();
+        assert_ne!(epoch2_a.tx, epoch1_a.tx);
+        assert_ne!(epoch2_a.rx, epoch1_a.rx);
+
+        // Static-key binding: different static keys yield distinct epoch keys
+        // even for the exact same ephemeral key pairs and epoch.
+        let c = Identity::from_seeds([30; 32], [31; 32]);
+        let other_static = session_keys(&a, &c.device_id(), &c.kx_pk()).unwrap();
+        let unbound_a = derive_epoch_keys(
+            &other_static,
+            1,
+            &a.device_id(),
+            &b.device_id(),
+            &ephem_a,
+            ephem_b.public_key(),
+        )
+        .unwrap();
+        assert_ne!(unbound_a.tx, epoch1_a.tx);
+        assert_ne!(unbound_a.rx, epoch1_a.rx);
+    }
+
+    #[test]
+    fn epoch_keys_reject_invalid_inputs() {
+        let a = Identity::from_seeds([1; 32], [2; 32]);
+        let b = Identity::from_seeds([3; 32], [4; 32]);
+        let static_a = session_keys(&a, &b.device_id(), &b.kx_pk()).unwrap();
+        let ephem_a = RekeyKeyPair::from_seed([5; 32]);
+        let ephem_b = RekeyKeyPair::from_seed([6; 32]);
+
+        assert_eq!(
+            derive_epoch_keys(
+                &static_a,
+                0,
+                &a.device_id(),
+                &b.device_id(),
+                &ephem_a,
+                ephem_b.public_key(),
+            ),
+            Err(Error::ZeroEpoch)
+        );
+        assert_eq!(
+            derive_epoch_keys(
+                &static_a,
+                1,
+                &a.device_id(),
+                &a.device_id(),
+                &ephem_a,
+                ephem_b.public_key(),
+            ),
+            Err(Error::SameDeviceId)
+        );
+        assert_eq!(
+            derive_epoch_keys(
+                &static_a,
+                1,
+                &a.device_id(),
+                &b.device_id(),
+                &ephem_a,
+                &[0u8; 32],
+            ),
+            Err(Error::KeyExchangeFailed)
+        );
+    }
+
+    #[test]
+    fn lan_mutual_auth_verifies_and_rejects_forgery() {
+        let a = Identity::generate();
+        let b = Identity::generate();
+        let chal_a = LanChallenge::generate();
+        let chal_b = LanChallenge::generate();
+
+        let encoded_chal = chal_a.encode();
+        assert_eq!(LanChallenge::decode(&encoded_chal).unwrap(), chal_a);
+        assert_eq!(
+            LanChallenge::decode(&encoded_chal[..10]),
+            Err(Error::MalformedLanFrame)
+        );
+
+        let auth_a = sign_lan_auth(&a, chal_b.nonce(), chal_a.nonce());
+        let auth_b = sign_lan_auth(&b, chal_a.nonce(), chal_b.nonce());
+        assert_eq!(LanAuth::decode(&auth_a.encode()).unwrap(), auth_a);
+
+        assert_eq!(
+            verify_lan_auth(&a.sign_pk(), chal_b.nonce(), chal_a.nonce(), &auth_a),
+            Ok(())
+        );
+        assert_eq!(
+            verify_lan_auth(&b.sign_pk(), chal_a.nonce(), chal_b.nonce(), &auth_b),
+            Ok(())
+        );
+
+        // Swapped nonces (reflection attempt) must fail.
+        assert_eq!(
+            verify_lan_auth(&a.sign_pk(), chal_a.nonce(), chal_b.nonce(), &auth_a),
+            Err(Error::InvalidSignature)
+        );
+        // Untrusted / wrong signing key must fail.
+        let stranger = Identity::generate();
+        assert_eq!(
+            verify_lan_auth(&stranger.sign_pk(), chal_b.nonce(), chal_a.nonce(), &auth_a),
+            Err(Error::DeviceIdMismatch)
+        );
+        let mut forged = auth_a.clone();
+        forged.device_id = stranger.device_id();
+        assert_eq!(
+            verify_lan_auth(&stranger.sign_pk(), chal_b.nonce(), chal_a.nonce(), &forged),
+            Err(Error::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn static_vs_live_envelope_kinds() {
+        for kind in [
+            Kind::Welcome,
+            Kind::DeviceAdded,
+            Kind::DeviceRemoved,
+            Kind::DeviceName,
+        ] {
+            assert!(kind.is_static(), "{kind:?}");
+        }
+        for kind in [
+            Kind::ClipboardText,
+            Kind::Ping,
+            Kind::Packet,
+            Kind::FileChunk,
+        ] {
+            assert!(!kind.is_static(), "{kind:?}");
         }
     }
 }

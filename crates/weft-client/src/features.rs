@@ -113,8 +113,19 @@ impl Features {
     /// device allowed to `control` this computer, so only such a device is
     /// told about them.
     pub fn capabilities(&self, control: bool) -> Capabilities {
-        let mut incoming = vec!["state.request", "ping"];
-        let mut outgoing = vec!["state.request", "ping", "input.key"];
+        let mut incoming = vec![
+            "state.request",
+            "ping",
+            "clipboard.image.offer",
+            "clipboard.image.accept",
+        ];
+        let mut outgoing = vec![
+            "state.request",
+            "ping",
+            "input.key",
+            "clipboard.image.offer",
+            "clipboard.image.accept",
+        ];
         if self.ring {
             incoming.extend(["ring", "ring.stop"]);
             outgoing.extend(["ring", "ring.stop"]);
@@ -359,12 +370,29 @@ mod tests {
             commands: false,
         };
         assert_eq!(
-            none.capabilities(true).incoming[2..],
+            none.capabilities(true).incoming[4..],
             ["input.pointer", "input.click", "input.key", "presenter"]
         );
         let none = none.capabilities(false);
-        assert_eq!(none.incoming, ["state.request", "ping"]);
-        assert_eq!(none.outgoing, ["state.request", "ping", "input.key"]);
+        assert_eq!(
+            none.incoming,
+            [
+                "state.request",
+                "ping",
+                "clipboard.image.offer",
+                "clipboard.image.accept"
+            ]
+        );
+        assert_eq!(
+            none.outgoing,
+            [
+                "state.request",
+                "ping",
+                "input.key",
+                "clipboard.image.offer",
+                "clipboard.image.accept"
+            ]
+        );
     }
 
     #[test]

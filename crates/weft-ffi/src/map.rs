@@ -501,6 +501,11 @@ pub struct CoreSnapshot {
 /// `from` is a device id in hex, `device` its name when known.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum CoreNotice {
+    ClipboardImage {
+        from: String,
+        mime: String,
+        bytes: Vec<u8>,
+    },
     Ring {
         from: String,
         device: Option<String>,
@@ -1073,6 +1078,11 @@ fn transfer(view: &TransferView) -> TransferInfo {
 /// A notice of the worker as the app gets it.
 pub(crate) fn notice(notice: Notice) -> CoreNotice {
     match notice {
+        Notice::ClipboardImage { from, image } => CoreNotice::ClipboardImage {
+            from: hex(&from),
+            mime: image.mime.as_str().into(),
+            bytes: image.bytes,
+        },
         Notice::Ring { from, device } => CoreNotice::Ring {
             from: hex(&from),
             device,

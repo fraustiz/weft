@@ -97,6 +97,7 @@ extension CoreNotice {
     /// The packet family, for logs.
     var kind: String {
         switch self {
+        case .clipboardImage: "clipboardImage"
         case .ring: "ring"
         case .ringEnded: "ringEnded"
         case .ping: "ping"

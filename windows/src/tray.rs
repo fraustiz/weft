@@ -38,7 +38,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use crate::clipboard::{SystemClipboard, wide};
 use crate::i18n::t;
-use crate::sync::{Outgoing, Sync};
+use crate::sync::{ClipboardImage, Outgoing, Sync};
 use crate::update::Updater;
 use crate::window;
 use crate::worker::{Command, Handle, Snapshot, Status};
@@ -55,6 +55,8 @@ const WM_LOCAL_TEXT: u32 = WM_APP + 4;
 const WM_SHOW_MAIN: u32 = WM_APP + 5;
 /// A notice waits in the [`Link`].
 const WM_BALLOON: u32 = WM_APP + 6;
+/// A received image waits in the link.
+const WM_REMOTE_IMAGE: u32 = WM_APP + 7;
 
 const CLASS_NAME: &str = "WeftTray";
 const ICON_ID: u32 = 1;
@@ -82,6 +84,7 @@ pub struct Link {
     window: AtomicIsize,
     /// The received text waiting to be written. Only the latest counts.
     text: Mutex<Option<String>>,
+    image: Mutex<Option<ClipboardImage>>,
     /// The text from the main window waiting to be written.
     local: Mutex<Option<String>>,
     /// Notices waiting to be shown, as title and text.
@@ -93,6 +96,12 @@ impl Link {
     pub fn remote_text(&self, text: String) {
         *self.text.lock().unwrap() = Some(text);
         self.post(WM_REMOTE_TEXT);
+    }
+
+    /// Hands over an image to write on the clipboard on its owning thread.
+    pub fn remote_image(&self, image: ClipboardImage) {
+        *self.image.lock().unwrap() = Some(image);
+        self.post(WM_REMOTE_IMAGE);
     }
 
     /// Hands over a text from the main window to put on the clipboard for
@@ -320,6 +329,7 @@ impl Tray {
             .local_change(snapshot.pause, online, std::time::Instant::now())
         {
             Outgoing::Send(text) => self.worker.send(Command::SendText(text)),
+            Outgoing::SendImage(image) => self.worker.send(Command::SendImage(image)),
             Outgoing::TooLarge => {
                 tracing::info!("the copied text is over the size limit; not sent");
             }
@@ -333,6 +343,14 @@ impl Tray {
         if let Some(text) = text {
             let outcome = self.sync.remote_text(&text, self.worker.snapshot().pause);
             tracing::debug!(?outcome, "received text");
+        }
+    }
+
+    fn apply_remote_image(&mut self) {
+        let image = self.link.image.lock().unwrap().take();
+        if let Some(image) = image {
+            let outcome = self.sync.remote_image(&image, self.worker.snapshot().pause);
+            tracing::debug!(?outcome, "received clipboard image");
         }
     }
 
@@ -447,6 +465,9 @@ extern "system" fn window_proc(
         }
         WM_REMOTE_TEXT => {
             with_tray(Tray::apply_remote_text);
+        }
+        WM_REMOTE_IMAGE => {
+            with_tray(Tray::apply_remote_image);
         }
         WM_SNAPSHOT => {
             with_tray(Tray::refresh_icon);

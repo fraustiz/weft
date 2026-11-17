@@ -33,6 +33,8 @@ const MAX_TICK: Duration = Duration::from_secs(60);
 /// The shortest wait between two ticks, so no deadline can make them
 /// follow each other without pause.
 const MIN_TICK: Duration = Duration::from_millis(100);
+/// How long "No files on the clipboard" stays shown after Paste files.
+const PASTE_NOTICE_HOLD: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -94,8 +96,18 @@ pub enum Message {
     PickFiles,
     /// The picker closed with these files, maybe none.
     FilesPicked(Vec<PathBuf>),
+    /// Reads copied files from the clipboard for the device shown.
+    PasteFiles,
+    /// Clipboard file paste finished with these expanded files, maybe none.
+    FilesPasted([u8; 16], Vec<PathBuf>),
     /// Files were dropped on the device shown.
     Dropped(DroppedData),
+    /// Files were dropped on the Win32 window (`WM_DROPFILES`).
+    FilesDropped(Option<(u64, Vec<PathBuf>)>),
+    /// Sends the pending multi-device drop to the chosen device.
+    SendPendingDrop([u8; 16]),
+    /// Dismisses a pending multi-device drop.
+    CancelPendingDrop,
     CancelTransfer([u8; 16]),
     /// Play, pause, next or previous on the player shown.
     Media(MediaAction),
@@ -226,6 +238,12 @@ pub struct Weft {
     pub rang: Option<([u8; 16], Instant)>,
     /// The file picker is open.
     pub picking: bool,
+    /// A clipboard file paste is reading paths in the background.
+    pub pasting: bool,
+    /// Until when "No files on the clipboard" stays shown.
+    pub paste_empty_until: Option<Instant>,
+    /// Dropped files waiting for the user to choose among capable devices.
+    pub pending_drop: Option<Vec<PathBuf>>,
     /// The position just asked of the player shown, in milliseconds.
     pub seek_draft: Option<Draft<u64>>,
     /// The volume just asked of the device shown.
@@ -264,6 +282,14 @@ fn watch_settings_nav(context: &ComponentContext<Weft>, generation: u64) {
     });
 }
 
+fn watch_drops(context: &ComponentContext<Weft>, generation: u64) {
+    context.spawn_background(move |_| {
+        let dropped = window::wait_drops(generation)
+            .map(|(generation, paths)| (generation, picker::expand_paths(paths)));
+        Message::FilesDropped(dropped)
+    });
+}
+
 impl Weft {
     /// What follows a new snapshot: the QR card for a new code, and the
     /// end of the pairing view once a device was added.
@@ -271,6 +297,9 @@ impl Weft {
         self.snapshot = published.snapshot;
         if self.name_draft.as_deref() == Some(&self.snapshot.name) {
             self.name_draft = None;
+        }
+        if words::file_capable_devices(&self.snapshot).is_empty() {
+            self.pending_drop = None;
         }
         match &self.snapshot.pairing {
             PairingState::ShowingCode { code, .. } => {
@@ -436,6 +465,10 @@ impl Weft {
         .filter(|at| at.elapsed() < DRAFT_HOLD)
         .map(|at| (at + DRAFT_HOLD).saturating_duration_since(Instant::now()))
         .min();
+        let paste_notice = self
+            .paste_empty_until
+            .filter(|until| *until > Instant::now())
+            .map(|until| until.saturating_duration_since(Instant::now()));
         activity
             .map(|(_, next)| next)
             .into_iter()
@@ -443,6 +476,7 @@ impl Weft {
             .chain(rang)
             .chain(playing)
             .chain(drafts)
+            .chain(paste_notice)
             .min()
     }
 
@@ -468,6 +502,62 @@ impl Weft {
             && !paths.is_empty()
         {
             self.shell.worker.send(Command::SendFiles(device, paths));
+        }
+    }
+
+    /// The device currently shown on screen, or `None` when on the list,
+    /// Pairing or Settings.
+    fn viewed_device(&self) -> Option<[u8; 16]> {
+        if self.page != Page::Devices || self.pairing {
+            return None;
+        }
+        self.selected
+            .filter(|id| self.snapshot.devices.iter().any(|known| known.id == *id))
+    }
+
+    /// Routes expanded dropped files according to the current view and the
+    /// paired devices that accept files.
+    fn handle_dropped_files(&mut self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        match words::resolve_drop_target(&self.snapshot, self.viewed_device()) {
+            words::DropTarget::None => {}
+            words::DropTarget::SendCurrent(device) => {
+                self.pending_drop = None;
+                self.paste_empty_until = None;
+                self.shell.worker.send(Command::SendFiles(device, paths));
+            }
+            words::DropTarget::SelectAndSend(device) => {
+                if self.pairing {
+                    self.shell.worker.send(Command::CancelPairing);
+                    self.pairing = false;
+                    self.qr = None;
+                }
+                self.page = Page::Devices;
+                self.messages = None;
+                if self.selected != Some(device) {
+                    self.typed.clear();
+                    self.link = None;
+                }
+                self.selected = Some(device);
+                self.pending_drop = None;
+                self.paste_empty_until = None;
+                self.shell.worker.send(Command::SendFiles(device, paths));
+            }
+            words::DropTarget::Choose(_) => {
+                if self.pairing {
+                    self.shell.worker.send(Command::CancelPairing);
+                    self.pairing = false;
+                    self.qr = None;
+                }
+                self.page = Page::Devices;
+                self.selected = None;
+                self.messages = None;
+                self.link = None;
+                self.paste_empty_until = None;
+                self.pending_drop = Some(paths);
+            }
         }
     }
 
@@ -499,6 +589,7 @@ impl Component for Weft {
         watch(context, shell.worker.clone(), published.generation);
         watch_updates(context, shell.updater.clone(), updates.generation);
         watch_settings_nav(context, 0);
+        watch_drops(context, 0);
         let mut weft = Weft {
             shell: shell.clone(),
             snapshot: published.snapshot.clone(),
@@ -517,6 +608,9 @@ impl Component for Weft {
             selected: None,
             rang: None,
             picking: false,
+            pasting: false,
+            paste_empty_until: None,
+            pending_drop: None,
             seek_draft: None,
             volume_draft: None,
             messages: None,
@@ -558,6 +652,12 @@ impl Component for Weft {
                 }
                 if self.rang.is_some_and(|(_, until)| Instant::now() >= until) {
                     self.rang = None;
+                }
+                if self
+                    .paste_empty_until
+                    .is_some_and(|until| Instant::now() >= until)
+                {
+                    self.paste_empty_until = None;
                 }
             }
             Message::Navigate(tag) => {
@@ -642,12 +742,14 @@ impl Component for Weft {
                 if self.selected != Some(device) {
                     self.typed.clear();
                     self.link = None;
+                    self.paste_empty_until = None;
                 }
                 self.selected = Some(device);
             }
             Message::CloseDevice => {
                 self.selected = None;
                 self.link = None;
+                self.paste_empty_until = None;
             }
             Message::Ring => {
                 if let Some(device) = self.selected {
@@ -693,18 +795,71 @@ impl Component for Weft {
             }
             Message::FilesPicked(paths) => {
                 self.picking = false;
+                if !paths.is_empty() {
+                    self.paste_empty_until = None;
+                }
                 self.send_files(paths);
+            }
+            Message::PasteFiles => {
+                if !self.pasting
+                    && let Some(device) = self.viewed_device()
+                    && self.snapshot.features.files
+                    && self.snapshot.peer(&device).handles("file.offer")
+                {
+                    self.pasting = true;
+                    context.spawn_background(move |_| {
+                        let raw = crate::clipboard::read_clipboard_files(std::ptr::null_mut());
+                        Message::FilesPasted(device, picker::expand_paths(raw))
+                    });
+                }
+            }
+            Message::FilesPasted(device, paths) => {
+                self.pasting = false;
+                if paths.is_empty() {
+                    self.paste_empty_until = Some(Instant::now() + PASTE_NOTICE_HOLD);
+                } else {
+                    self.paste_empty_until = None;
+                    if self.snapshot.features.files
+                        && self.snapshot.devices.iter().any(|known| known.id == device)
+                        && self.snapshot.peer(&device).handles("file.offer")
+                    {
+                        worker.send(Command::SendFiles(device, paths));
+                    }
+                }
             }
             Message::Dropped(DroppedData::StorageItems(items)) => {
-                // Folders are not sent: only files.
-                let paths = items
+                let raw: Vec<PathBuf> = items
                     .into_iter()
                     .map(|item| PathBuf::from(item.path))
-                    .filter(|path| path.is_file())
                     .collect();
-                self.send_files(paths);
+                context.spawn_background(move |_| {
+                    Message::FilesDropped(Some((0, picker::expand_paths(raw))))
+                });
             }
             Message::Dropped(_) => {}
+            Message::FilesDropped(Some((generation, paths))) => {
+                if generation != 0 {
+                    watch_drops(context, generation);
+                }
+                self.handle_dropped_files(paths);
+            }
+            Message::FilesDropped(None) => {}
+            Message::SendPendingDrop(device) => {
+                if let Some(paths) = self.pending_drop.take()
+                    && self.snapshot.features.files
+                    && self.snapshot.peer(&device).handles("file.offer")
+                {
+                    if self.selected != Some(device) {
+                        self.typed.clear();
+                        self.link = None;
+                    }
+                    self.selected = Some(device);
+                    self.messages = None;
+                    self.paste_empty_until = None;
+                    worker.send(Command::SendFiles(device, paths));
+                }
+            }
+            Message::CancelPendingDrop => self.pending_drop = None,
             Message::CancelTransfer(id) => worker.send(Command::CancelTransfer(id)),
             Message::Media(action) => {
                 if let Some((device, player)) = self.player_shown() {

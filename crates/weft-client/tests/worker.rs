@@ -887,6 +887,100 @@ async fn paired(url: &str) -> (Tested, Peer) {
 }
 
 #[tokio::test]
+async fn clipboard_images_are_offered_streamed_verified_and_paused() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut peer) = paired(&url).await;
+        let pc = tested.id();
+        peer.send(
+            pc,
+            &Packet::Capabilities(Features::default().capabilities(false)),
+        )
+        .await;
+        tested
+            .wait(|s| s.peer(&peer.id()).handles("clipboard.image.offer"))
+            .await;
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.resize(1_300_000, 0x23);
+        let image =
+            weft_client::ClipboardImage::new(weft_client::ImageMime::Png, bytes.clone()).unwrap();
+        tested.worker.send(Command::SendImage(image.clone()));
+        let Packet::ClipboardImageOffer(offer) = peer
+            .expect_packet(pc, |p| matches!(p, Packet::ClipboardImageOffer(_)))
+            .await
+        else {
+            unreachable!()
+        };
+        peer.send(
+            pc,
+            &Packet::ClipboardImageAccept {
+                id: offer.id.clone(),
+            },
+        )
+        .await;
+        let mut received = Vec::new();
+        while received.len() < bytes.len() {
+            if let Event::FileChunk {
+                transfer_id,
+                offset,
+                data,
+                ..
+            } = peer.next_any().await
+            {
+                assert_eq!(packets::transfer_id(&transfer_id), offer.id);
+                assert_eq!(offset, received.len() as u64);
+                received.extend(data);
+            }
+        }
+        assert_eq!(received, bytes);
+        let id = [0xa1; 16];
+        let offer = packets::ClipboardImageOffer {
+            id: packets::transfer_id(&id),
+            mime: image.mime,
+            size: bytes.len() as u64,
+            hash: weft_cli::hex(&image.hash()),
+        };
+        peer.send(pc, &Packet::ClipboardImageOffer(offer)).await;
+        peer.expect_packet(pc, |p| matches!(p, Packet::ClipboardImageAccept { .. }))
+            .await;
+        for (index, chunk) in bytes.chunks(100_000).enumerate() {
+            peer.session
+                .send_file_chunk(pc, id, (index * 100_000) as u64, chunk)
+                .await
+                .unwrap();
+            peer.expect_packet(pc, |p| matches!(p, Packet::FileAck { offset, .. } if *offset == ((index * 100_000) + chunk.len()) as u64)).await;
+        }
+        peer.expect_packet(pc, |p| matches!(p, Packet::FileDone { id: done } if done == &packets::transfer_id(&id))).await;
+        tested
+            .expect_notice(
+                |n| matches!(n, Notice::ClipboardImage { image: got, .. } if got == &image),
+            )
+            .await;
+        let bad = [0xa2; 16];
+        let corrupt = packets::ClipboardImageOffer {
+            id: packets::transfer_id(&bad), mime: image.mime, size: 8, hash: "00".repeat(16),
+        };
+        let before = tested.notices.lock().unwrap().len();
+        peer.send(pc, &Packet::ClipboardImageOffer(corrupt)).await;
+        peer.expect_packet(pc, |p| matches!(p, Packet::ClipboardImageAccept { .. })).await;
+        peer.session.send_file_chunk(pc, bad, 0, &bytes[..8]).await.unwrap();
+        peer.expect_packet(pc, |p| matches!(p, Packet::FileCancel { id: cancel } if cancel == &packets::transfer_id(&bad))).await;
+        assert_eq!(tested.notices.lock().unwrap().len(), before);
+        tested.worker.send(Command::SetPaused(true));
+        tested.wait(|s| s.pause.all).await;
+        let before = tested.notices.lock().unwrap().len();
+        peer.session
+            .send_file_chunk(pc, id, 0, &bytes[..8])
+            .await
+            .unwrap();
+        tokio::time::sleep(QUIET).await;
+        assert_eq!(tested.notices.lock().unwrap().len(), before);
+        tested.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn pings_and_links_go_to_the_phone() {
     timed(async {
         let url = start_relay().await;
@@ -1882,8 +1976,8 @@ async fn media_and_volume_go_both_ways() {
         let seen =
             packets_until(&mut phone, pc, |packet| matches!(packet, Packet::Volume(_))).await;
         let kinds: Vec<&str> = seen.iter().map(Packet::kind).collect();
-        assert_eq!(kinds, ["capabilities", "media", "volume"]);
-        let Packet::Media { players } = &seen[1] else {
+        assert_eq!(kinds, ["capabilities", "lan.endpoints", "media", "volume"]);
+        let Packet::Media { players } = &seen[2] else {
             unreachable!();
         };
         assert_eq!(players[0].title, "Second");
@@ -2098,7 +2192,13 @@ async fn covers_go_once_per_connection_before_the_players() {
         let seen = packets_until(&mut phone, pc, is_media).await;
         assert_eq!(
             kinds(&seen),
-            ["capabilities", "media.art", "media.art", "media"]
+            [
+                "capabilities",
+                "lan.endpoints",
+                "media.art",
+                "media.art",
+                "media"
+            ]
         );
         let again: Vec<&str> = seen
             .iter()

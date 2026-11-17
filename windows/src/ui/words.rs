@@ -464,6 +464,61 @@ pub fn command_presets() -> [(&'static str, &'static str); 6] {
     ]
 }
 
+/// How files dropped onto the window are routed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DropTarget {
+    /// File sharing is off, or no paired device accepts files.
+    None,
+    /// Send straight to the file-capable device currently shown.
+    SendCurrent([u8; 16]),
+    /// Select the single file-capable paired device and send at once.
+    SelectAndSend([u8; 16]),
+    /// Multiple paired devices accept files and none of them is shown: ask.
+    Choose(Vec<[u8; 16]>),
+}
+
+/// The paired devices that currently accept file offers when file sharing is
+/// enabled on this computer.
+pub fn file_capable_devices(snapshot: &Snapshot) -> Vec<&Device> {
+    if !snapshot.features.files {
+        return Vec::new();
+    }
+    snapshot
+        .devices
+        .iter()
+        .filter(|device| snapshot.peer(&device.id).handles("file.offer"))
+        .collect()
+}
+
+/// Resolves which device should receive dropped files given `snapshot` and
+/// the device currently viewed (`None` when on the list, Pairing or Settings).
+pub fn resolve_drop_target(snapshot: &Snapshot, viewed_device: Option<[u8; 16]>) -> DropTarget {
+    let capable: Vec<[u8; 16]> = file_capable_devices(snapshot)
+        .into_iter()
+        .map(|device| device.id)
+        .collect();
+    if let Some(current) = viewed_device
+        && capable.contains(&current)
+    {
+        return DropTarget::SendCurrent(current);
+    }
+    match capable.as_slice() {
+        [] => DropTarget::None,
+        [only] => DropTarget::SelectAndSend(*only),
+        _ => DropTarget::Choose(capable),
+    }
+}
+
+/// Heading asking which device should receive `count` dropped file(s).
+pub fn pending_drop_prompt(count: usize) -> String {
+    match (is_french(), count) {
+        (false, 1) => "Choose a device for 1 dropped file".to_owned(),
+        (false, n) => format!("Choose a device for {n} dropped files"),
+        (true, 1) => "Choisir un appareil pour 1 fichier déposé".to_owned(),
+        (true, n) => format!("Choisir un appareil pour {n} fichiers déposés"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -762,5 +817,95 @@ mod tests {
         assert_eq!(track_time(0), "0:00");
         assert_eq!(track_time(187_400), "3:07");
         assert_eq!(track_time(3_765_000), "1:02:45");
+    }
+
+    #[test]
+    fn drop_target_resolves_selected_single_multi_and_disabled() {
+        use crate::packets::Capabilities;
+        use crate::worker::PeerInfo;
+
+        let phone_a = [0xAA; 16];
+        let phone_b = [0xBB; 16];
+        let desktop_no_files = [0xCC; 16];
+
+        let capable_peer = PeerInfo {
+            capabilities: Some(Capabilities {
+                platform: "android".into(),
+                incoming: vec!["file.offer".into()],
+                outgoing: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        let plain_peer = PeerInfo {
+            capabilities: Some(Capabilities {
+                platform: "windows".into(),
+                incoming: vec!["ping".into()],
+                outgoing: Vec::new(),
+            }),
+            ..Default::default()
+        };
+
+        let mut snap = snapshot(Status::Connected);
+        snap.features.files = true;
+        assert_eq!(resolve_drop_target(&snap, None), DropTarget::None);
+
+        // Non-capable device only -> None.
+        snap.devices.push(Device {
+            id: desktop_no_files,
+            name: Some("Desktop".into()),
+        });
+        snap.peers.insert(desktop_no_files, plain_peer);
+        assert_eq!(
+            resolve_drop_target(&snap, Some(desktop_no_files)),
+            DropTarget::None
+        );
+
+        // Single file-capable device -> SelectAndSend when not viewed, SendCurrent when viewed.
+        snap.devices.push(Device {
+            id: phone_a,
+            name: Some("Phone A".into()),
+        });
+        snap.peers.insert(phone_a, capable_peer.clone());
+        assert_eq!(
+            resolve_drop_target(&snap, None),
+            DropTarget::SelectAndSend(phone_a)
+        );
+        assert_eq!(
+            resolve_drop_target(&snap, Some(desktop_no_files)),
+            DropTarget::SelectAndSend(phone_a)
+        );
+        assert_eq!(
+            resolve_drop_target(&snap, Some(phone_a)),
+            DropTarget::SendCurrent(phone_a)
+        );
+
+        // Multiple file-capable devices -> Choose when none viewed, SendCurrent when one is viewed.
+        snap.devices.push(Device {
+            id: phone_b,
+            name: Some("Phone B".into()),
+        });
+        snap.peers.insert(phone_b, capable_peer);
+        assert_eq!(
+            resolve_drop_target(&snap, None),
+            DropTarget::Choose(vec![phone_a, phone_b])
+        );
+        assert_eq!(
+            resolve_drop_target(&snap, Some(desktop_no_files)),
+            DropTarget::Choose(vec![phone_a, phone_b])
+        );
+        assert_eq!(
+            resolve_drop_target(&snap, Some(phone_b)),
+            DropTarget::SendCurrent(phone_b)
+        );
+
+        // Feature switch disabled -> None even when viewing a capable device.
+        snap.features.files = false;
+        assert_eq!(resolve_drop_target(&snap, Some(phone_a)), DropTarget::None);
+
+        // Prompt copy has no trailing period or exclamation mark.
+        for count in [1, 4] {
+            let prompt = pending_drop_prompt(count);
+            assert!(!prompt.ends_with('.') && !prompt.contains('!'));
+        }
     }
 }

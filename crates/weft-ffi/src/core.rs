@@ -8,7 +8,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use weft_cli::{StateDir, short_id, unhex};
-use weft_client::features::{Features, UserCommand};
+use weft_client::features::{Features, Implemented, UserCommand};
 use weft_client::packets::{InputKey, MediaAction, MediaCommand, Packet, Volume, VolumeSet};
 use weft_client::sync::{self, Clipboard, Content, Incoming, Outgoing, Sync};
 use weft_client::worker::{self, Command, DEFAULT_RELAY_URL, Handle, Hooks, Published};
@@ -22,6 +22,73 @@ use crate::{CoreConfig, CoreError, check_device_name, check_relay_url, group};
 
 /// How long the worker gets to close its connection politely.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
+
+// The Swift pasteboard bridge currently carries text only. Keep clipboard
+// image offers out until the native app can apply them and suppress echoes.
+const MAC_IMPLEMENTED: Implemented = Implemented {
+    incoming: &[
+        "state.request",
+        "ping",
+        "ring",
+        "ring.stop",
+        "share.url",
+        "file.offer",
+        "file.accept",
+        "file.reject",
+        "file.ack",
+        "file.done",
+        "file.cancel",
+        "battery",
+        "connectivity",
+        "notification",
+        "notification.removed",
+        "call",
+        "media",
+        "media.art",
+        "media.command",
+        "volume",
+        "volume.set",
+        "sms.conversations",
+        "sms.messages",
+        "sms.sent",
+        "sms.received",
+        "contacts",
+        "command.run",
+        "input.pointer",
+        "input.click",
+        "input.key",
+        "presenter",
+    ],
+    outgoing: &[
+        "state.request",
+        "ping",
+        "input.key",
+        "ring",
+        "ring.stop",
+        "share.url",
+        "file.offer",
+        "file.accept",
+        "file.reject",
+        "file.ack",
+        "file.done",
+        "file.cancel",
+        "notification.dismiss",
+        "notification.action",
+        "notification.reply",
+        "notification.request",
+        "call.mute",
+        "media",
+        "media.art",
+        "media.command",
+        "volume",
+        "volume.set",
+        "sms.conversations.request",
+        "sms.messages.request",
+        "sms.send",
+        "contacts.request",
+        "command.list",
+    ],
+};
 
 /// The feature switches the Mac app supports: all of `weft-client`.
 const SUPPORTED: Features = Features {
@@ -269,7 +336,7 @@ impl WeftCore {
             downloads: self.downloads.clone(),
             on_input: Box::new(move |input| input_delegate.input(map::remote_input(input))),
             run_command: Box::new(run_shell_command),
-            implemented: None,
+            implemented: Some(MAC_IMPLEMENTED),
         }
     }
 

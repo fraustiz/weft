@@ -19,9 +19,12 @@
 pub mod features;
 pub mod files;
 pub mod input;
+pub mod lan;
 pub mod media;
 pub mod packets;
 pub mod sms;
 pub mod sync;
 pub mod transfer;
 pub mod worker;
+
+pub use sync::{ClipboardImage, ImageMime, MAX_CLIPBOARD_IMAGE_BYTES};

@@ -157,6 +157,8 @@ extension AppModel {
         Development.record("notice \(notice.kind)")
         let french = Language.current == .french
         switch notice {
+        case .clipboardImage:
+            break // Not advertised until the macOS image adapter is connected.
         case .ring(_, let device):
             ringer.start(device: named(device))
         case .ringEnded:

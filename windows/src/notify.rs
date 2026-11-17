@@ -34,6 +34,7 @@ const UPDATE_TAG: &str = "update";
 /// Turns notices into what the user sees; any thread.
 pub struct Notifier {
     pub system: System,
+    pub clipboard: Arc<crate::tray::Link>,
 }
 
 fn named(device: Option<String>) -> String {
@@ -305,6 +306,7 @@ impl Notifier {
     pub fn handle(&self, notice: Notice) {
         let french = is_french();
         match notice {
+            Notice::ClipboardImage { image, .. } => self.clipboard.remote_image(image),
             Notice::Ring { device, .. } => {
                 sound::start();
                 window::show();

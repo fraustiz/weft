@@ -2,7 +2,7 @@ name: Windows app
 
 on:
   push:
-    branches: [main, windows-app]
+    branches: [main, windows-app, wt/core-next]
     paths:
       - "windows/**"
       - "macos/**"
@@ -10,6 +10,16 @@ on:
       - "crates/**"
       - "cli/**"
       # The tests of the app and of the client run against a real relay.
+      - "relay/**"
+      - "Cargo.*"
+      - ".github/workflows/windows-app.yml"
+  pull_request:
+    paths:
+      - "windows/**"
+      - "macos/**"
+      - "swift/**"
+      - "crates/**"
+      - "cli/**"
       - "relay/**"
       - "Cargo.*"
       - ".github/workflows/windows-app.yml"
