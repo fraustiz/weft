@@ -76,6 +76,13 @@ private struct Node {
         }
     }
 
+    var uint64: UInt64 {
+        get throws {
+            guard let n = value as? NSNumber else { throw VectorError(description: "not a number") }
+            return n.uint64Value
+        }
+    }
+
     var bytes: Data { get throws { try unhex(string) } }
 }
 
@@ -185,6 +192,9 @@ struct VectorTests {
         // Full frame from seal with the fixed nonce.
         let frame = try seal(header: header, plaintext: plaintext, nonce: v["nonce"].bytes, tx: senderKeys.tx)
         #expect(hex(frame) == (try v["frame"].string))
+        #expect(
+            try RouteHeader(decoding: frame)
+                == RouteHeader(kind: kind.rawValue, sender: sender.deviceID, recipient: recipient.deviceID))
 
         // Open the committed frame.
         let (opened, openedPlaintext) = try open(frame: v["frame"].bytes, rx: recipientKeys.rx)
@@ -222,6 +232,78 @@ struct VectorTests {
 
         #expect(try verifyAuth(challenge: challenge, response: response) == d.a.deviceID)
         #expect(hex(Data([Weft.authAccepted])) == (try v["accepted_frame"].string))
+    }
+}
+
+@Suite("v1 vectors: features")
+struct FeatureVectorTests {
+    private func checkFeatureEnvelope(_ v: Node, devices d: Devices, expectedKind: Kind) throws -> Data {
+        let senderName = try v["sender"].string
+        let recipientName = try v["recipient"].string
+        let sender = try d.identity(senderName)
+        let recipient = try d.identity(recipientName)
+        let senderKeys = try d.keys(senderName)
+        let recipientKeys = try d.keys(recipientName)
+
+        let kind = try #require(Kind(rawValue: UInt8(v["kind"].int)))
+        #expect(kind == expectedKind)
+        let header = try Header(
+            version: UInt8(v["version"].int), kind: kind,
+            sender: sender.deviceID, recipient: recipient.deviceID,
+            messageID: v["message_id"].bytes, counter: v["counter"].uint64)
+        let plaintext = try v["plaintext"].bytes
+        #expect(senderKeys.tx == (try v["key"].bytes))
+        #expect(recipientKeys.rx == (try v["key"].bytes))
+
+        let headerBytes = header.encode()
+        #expect(hex(headerBytes) == (try v["header"].string))
+        #expect(try Header(decoding: headerBytes) == header)
+
+        let frame = try seal(header: header, plaintext: plaintext, nonce: v["nonce"].bytes, tx: senderKeys.tx)
+        #expect(hex(frame) == (try v["frame"].string))
+        #expect(classify(frame) == .envelope)
+        #expect(
+            try RouteHeader(decoding: frame)
+                == RouteHeader(kind: kind.rawValue, sender: sender.deviceID, recipient: recipient.deviceID))
+
+        let (opened, openedPlaintext) = try open(frame: v["frame"].bytes, rx: recipientKeys.rx)
+        #expect(opened == header)
+        #expect(openedPlaintext == plaintext)
+        return openedPlaintext
+    }
+
+    @Test func packetEnvelope() throws {
+        let d = try Devices()
+        let packet = try d.vectors["features"]["packet"]
+        #expect(try packet["max_len"].int == Weft.maxPacketLength)
+
+        let json = try packet["json"].string
+        let envelope = try packet["envelope"]
+        #expect(try envelope["name"].string == "packet_a_to_b")
+        #expect(try envelope["plaintext_utf8"].string == json)
+        #expect(Data(json.utf8) == (try envelope["plaintext"].bytes))
+
+        let plaintext = try checkFeatureEnvelope(envelope, devices: d, expectedKind: .packet)
+        #expect(plaintext == Data(json.utf8))
+    }
+
+    @Test func fileChunkEnvelope() throws {
+        let d = try Devices()
+        let chunk = try d.vectors["features"]["file_chunk"]
+        #expect(try chunk["max_data_len"].int == Weft.maxFileChunkDataLength)
+
+        let expected = try FileChunk(
+            transferID: chunk["transfer_id"].bytes,
+            offset: chunk["offset"].uint64,
+            data: chunk["data"].bytes)
+        let envelope = try chunk["envelope"]
+        #expect(try envelope["name"].string == "file_chunk_b_to_a")
+        #expect(
+            try encodeFileChunk(transferID: expected.transferID, offset: expected.offset, data: expected.data)
+                == (try envelope["plaintext"].bytes))
+
+        let plaintext = try checkFeatureEnvelope(envelope, devices: d, expectedKind: .fileChunk)
+        #expect(try decodeFileChunk(plaintext) == expected)
     }
 }
 

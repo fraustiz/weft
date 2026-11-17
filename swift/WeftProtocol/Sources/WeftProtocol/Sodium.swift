@@ -173,27 +173,48 @@ enum Sodium {
         return sodium_memcmp(a, b, a.count) == 0
     }
 
-    private static let base64Variant = Int32(sodium_base64_VARIANT_URLSAFE_NO_PADDING)
+    private static let base64URLVariant = Int32(sodium_base64_VARIANT_URLSAFE_NO_PADDING)
+    private static let base64Variant = Int32(sodium_base64_VARIANT_ORIGINAL)
 
     /// `sodium_bin2base64`, URL-safe alphabet, no padding.
     static func base64URLEncode(_ bin: [UInt8]) -> String {
-        ensureInitialised()
-        // libsodium encodes nothing as nothing; this also keeps the input
-        // pointer below non-null.
-        guard !bin.isEmpty else { return "" }
-        // The returned length includes the trailing NUL byte.
-        let maxLength = sodium_base64_encoded_len(bin.count, base64Variant)
-        var out = [CChar](repeating: 0, count: maxLength)
-        let result = sodium_bin2base64(&out, maxLength, bin, bin.count, base64Variant)
-        precondition(result != nil, "sodium_bin2base64 failed")
-        let ascii = out.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
-        return String(decoding: ascii, as: UTF8.self)
+        bin2base64(bin, variant: base64URLVariant)
     }
 
     /// `sodium_base642bin`, URL-safe alphabet, no padding. `nil` if the input
     /// has any other byte (padding and whitespace included), a length that
     /// cannot be produced by the encoder, or non-zero trailing bits.
     static func base64URLDecode(_ b64: [UInt8]) -> [UInt8]? {
+        base642bin(b64, variant: base64URLVariant)
+    }
+
+    /// `sodium_bin2base64`, standard alphabet, with padding.
+    static func base64Encode(_ bin: [UInt8]) -> String {
+        bin2base64(bin, variant: base64Variant)
+    }
+
+    /// `sodium_base642bin`, standard alphabet, with padding. `nil` if the
+    /// input has any other byte (whitespace included), missing padding, or
+    /// non-zero trailing bits.
+    static func base64Decode(_ b64: [UInt8]) -> [UInt8]? {
+        base642bin(b64, variant: base64Variant)
+    }
+
+    private static func bin2base64(_ bin: [UInt8], variant: Int32) -> String {
+        ensureInitialised()
+        // libsodium encodes nothing as nothing; this also keeps the input
+        // pointer below non-null.
+        guard !bin.isEmpty else { return "" }
+        // The returned length includes the trailing NUL byte.
+        let maxLength = sodium_base64_encoded_len(bin.count, variant)
+        var out = [CChar](repeating: 0, count: maxLength)
+        let result = sodium_bin2base64(&out, maxLength, bin, bin.count, variant)
+        precondition(result != nil, "sodium_bin2base64 failed")
+        let ascii = out.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return String(decoding: ascii, as: UTF8.self)
+    }
+
+    private static func base642bin(_ b64: [UInt8], variant: Int32) -> [UInt8]? {
         ensureInitialised()
         // libsodium decodes nothing as nothing; this also keeps the input
         // pointer below non-null.
@@ -208,7 +229,7 @@ enum Sodium {
             let input = raw.bindMemory(to: CChar.self)
             return sodium_base642bin(
                 &out, outCapacity, input.baseAddress, input.count,
-                nil, &outLength, nil, base64Variant)
+                nil, &outLength, nil, variant)
         }
         guard rc == 0 else {
             memzero(&out)

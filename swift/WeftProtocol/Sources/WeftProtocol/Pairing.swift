@@ -24,14 +24,21 @@ extension Weft {
     public static let controlGroupAdd: UInt8 = 0xB2
     /// First byte of the frame that removes a device from the group.
     public static let controlGroupRemove: UInt8 = 0xB3
+    /// First byte of the frame by which the slot owner accepts an invitation.
+    public static let controlGroupJoin: UInt8 = 0xB4
+    /// First byte of the frame a device sends to invite the slot owner into
+    /// its group.
+    public static let controlPairInvite: UInt8 = 0xB5
     /// First byte of the relay's error frame.
     public static let controlError: UInt8 = 0xBE
 
     static let pairContext = Array("weft-pair-v1".utf8)
+    static let inviteContext = Array("weft-invite-v1".utf8)
     /// `pairing_id (16) || sign_pk (32) || kx_pk (32) || secret (32)`.
     static let pairingCodeFixedLength =
         pairingIDLength + Sodium.signPublicKeyBytes + Sodium.kxPublicKeyBytes + pairingSecretLength
-    /// `pairing_id || sign_pk || kx_pk || mac`, the body of the `0xB1` frame.
+    /// `pairing_id || sign_pk || kx_pk || mac`, the body of the `0xB1` and
+    /// `0xB5` frames.
     static let pairRequestBodyLength =
         pairingIDLength + Sodium.signPublicKeyBytes + Sodium.kxPublicKeyBytes + pairRequestMACLength
 }
@@ -180,15 +187,41 @@ private func hexString(_ data: Data) -> String {
 
 // MARK: - Pair request
 
+private func requestMACInput(
+    context: [UInt8], pairingID: Data, signPublicKey: Data, kxPublicKey: Data
+) throws(WeftError) -> [UInt8] {
+    context
+        + (try fixed(pairingID, Weft.pairingIDLength, "pairingID"))
+        + (try fixed(signPublicKey, Sodium.signPublicKeyBytes, "signPublicKey"))
+        + (try fixed(kxPublicKey, Sodium.kxPublicKeyBytes, "kxPublicKey"))
+}
+
 /// `"weft-pair-v1" || pairing_id || sign_pk || kx_pk`, the input of the
 /// pair request MAC.
 func pairRequestMACInput(
     pairingID: Data, signPublicKey: Data, kxPublicKey: Data
 ) throws(WeftError) -> [UInt8] {
-    Weft.pairContext
-        + (try fixed(pairingID, Weft.pairingIDLength, "pairingID"))
-        + (try fixed(signPublicKey, Sodium.signPublicKeyBytes, "signPublicKey"))
-        + (try fixed(kxPublicKey, Sodium.kxPublicKeyBytes, "kxPublicKey"))
+    try requestMACInput(
+        context: Weft.pairContext, pairingID: pairingID, signPublicKey: signPublicKey, kxPublicKey: kxPublicKey)
+}
+
+/// `"weft-invite-v1" || pairing_id || sign_pk || kx_pk`, the input of the
+/// invitation MAC.
+func inviteRequestMACInput(
+    pairingID: Data, signPublicKey: Data, kxPublicKey: Data
+) throws(WeftError) -> [UInt8] {
+    try requestMACInput(
+        context: Weft.inviteContext, pairingID: pairingID, signPublicKey: signPublicKey, kxPublicKey: kxPublicKey)
+}
+
+private func requestMAC(
+    context: [UInt8], secret: Data, pairingID: Data, signPublicKey: Data, kxPublicKey: Data
+) throws(WeftError) -> Data {
+    var key = try fixed(secret, Weft.pairingSecretLength, "secret")
+    defer { Sodium.memzero(&key) }
+    let input = try requestMACInput(
+        context: context, pairingID: pairingID, signPublicKey: signPublicKey, kxPublicKey: kxPublicKey)
+    return Data(Sodium.genericHash32Keyed(input, key: key))
 }
 
 /// MAC of a pair request: keyed BLAKE2b (`crypto_generichash`, 32-byte
@@ -197,22 +230,36 @@ func pairRequestMACInput(
 public func pairRequestMAC(
     secret: Data, pairingID: Data, signPublicKey: Data, kxPublicKey: Data
 ) throws(WeftError) -> Data {
-    var key = try fixed(secret, Weft.pairingSecretLength, "secret")
-    defer { Sodium.memzero(&key) }
-    let input = try pairRequestMACInput(
-        pairingID: pairingID, signPublicKey: signPublicKey, kxPublicKey: kxPublicKey)
-    return Data(Sodium.genericHash32Keyed(input, key: key))
+    try requestMAC(
+        context: Weft.pairContext, secret: secret, pairingID: pairingID,
+        signPublicKey: signPublicKey, kxPublicKey: kxPublicKey)
 }
 
-/// Body of the `0xB1` frame: a device asking to join a group.
+/// MAC of an invitation (`0xB5`): the same as
+/// `pairRequestMAC(secret:pairingID:signPublicKey:kxPublicKey:)` with the
+/// context `"weft-invite-v1"`, so a join request can never pass for an
+/// invitation or the other way round. The keys are those of the inviting
+/// device.
+public func inviteRequestMAC(
+    secret: Data, pairingID: Data, signPublicKey: Data, kxPublicKey: Data
+) throws(WeftError) -> Data {
+    try requestMAC(
+        context: Weft.inviteContext, secret: secret, pairingID: pairingID,
+        signPublicKey: signPublicKey, kxPublicKey: kxPublicKey)
+}
+
+/// Body of the `0xB1` frame (a device asking to join a group) and of the
+/// `0xB5` frame (a device inviting the slot owner into its group). Only the
+/// MAC context tells them apart.
 public struct PairRequest: Equatable, Sendable {
     /// 16-byte pairing id.
     public let pairingID: Data
-    /// Signing public key of the device asking to join.
+    /// Signing public key of the device asking to join or inviting.
     public let signPublicKey: Data
-    /// Key exchange public key of the device asking to join.
+    /// Key exchange public key of the device asking to join or inviting.
     public let kxPublicKey: Data
-    /// 32-byte MAC, see `pairRequestMAC(secret:pairingID:signPublicKey:kxPublicKey:)`.
+    /// 32-byte MAC, see `pairRequestMAC(secret:pairingID:signPublicKey:kxPublicKey:)`
+    /// and `inviteRequestMAC(secret:pairingID:signPublicKey:kxPublicKey:)`.
     public let mac: Data
 
     public init(pairingID: Data, signPublicKey: Data, kxPublicKey: Data, mac: Data) throws(WeftError) {
@@ -228,6 +275,17 @@ public struct PairRequest: Equatable, Sendable {
         let mac = try pairRequestMAC(
             secret: secret, pairingID: pairingID, signPublicKey: signPublicKey, kxPublicKey: kxPublicKey)
         try self.init(pairingID: pairingID, signPublicKey: signPublicKey, kxPublicKey: kxPublicKey, mac: mac)
+    }
+
+    /// Builds the invitation of the inviting device, computing the MAC with
+    /// the invitation context and the secret read from the pairing code.
+    public static func invite(
+        secret: Data, pairingID: Data, signPublicKey: Data, kxPublicKey: Data
+    ) throws(WeftError) -> PairRequest {
+        let mac = try inviteRequestMAC(
+            secret: secret, pairingID: pairingID, signPublicKey: signPublicKey, kxPublicKey: kxPublicKey)
+        return try PairRequest(
+            pairingID: pairingID, signPublicKey: signPublicKey, kxPublicKey: kxPublicKey, mac: mac)
     }
 
     /// `pairing_id || sign_pk || kx_pk || mac`.
@@ -259,6 +317,19 @@ public func verifyPairRequest(secret: Data, request: PairRequest) throws(WeftErr
     return Sodium.memcmp([UInt8](expected), [UInt8](request.mac))
 }
 
+/// Checks the MAC of a received invitation (`0xB5`) in constant time
+/// (`sodium_memcmp`), with the invitation context. A join request's MAC
+/// never verifies here.
+///
+/// As for `verifyPairRequest(secret:request:)`, the caller must also check
+/// that `request.pairingID` is the id of the code it is showing.
+public func verifyInviteRequest(secret: Data, request: PairRequest) throws(WeftError) -> Bool {
+    let expected = try inviteRequestMAC(
+        secret: secret, pairingID: request.pairingID,
+        signPublicKey: request.signPublicKey, kxPublicKey: request.kxPublicKey)
+    return Sodium.memcmp([UInt8](expected), [UInt8](request.mac))
+}
+
 // MARK: - Control frames
 
 /// Error code carried by the relay's `0xBE` frame.
@@ -281,6 +352,13 @@ public enum ControlFrame: Equatable, Sendable {
     case groupAdd(deviceID: Data)
     /// `0xB3`, device → relay: removes that device (16-byte id) from the group.
     case groupRemove(deviceID: Data)
+    /// `0xB4`, slot owner → relay: accepts the invitation of that device
+    /// (16-byte id), moving the sender into its group.
+    case groupJoin(deviceID: Data)
+    /// `0xB5`, inviting device → relay → slot owner: invites the slot owner
+    /// into the sender's group. Same body as `0xB1`, MAC with the invitation
+    /// context.
+    case pairInvite(PairRequest)
     /// `0xBE`, relay → device.
     case error(ControlError)
 
@@ -297,6 +375,10 @@ public enum ControlFrame: Equatable, Sendable {
             return Data([Weft.controlGroupAdd] + (try fixed(deviceID, Weft.deviceIDLength, "deviceID")))
         case .groupRemove(let deviceID):
             return Data([Weft.controlGroupRemove] + (try fixed(deviceID, Weft.deviceIDLength, "deviceID")))
+        case .groupJoin(let deviceID):
+            return Data([Weft.controlGroupJoin] + (try fixed(deviceID, Weft.deviceIDLength, "deviceID")))
+        case .pairInvite(let request):
+            return Data([Weft.controlPairInvite] + request.body)
         case .error(let code):
             return Data([Weft.controlError, code.rawValue])
         }
@@ -324,13 +406,19 @@ public enum ControlFrame: Equatable, Sendable {
         case Weft.controlGroupRemove:
             try exact(Weft.deviceIDLength)
             self = .groupRemove(deviceID: Data(body))
+        case Weft.controlGroupJoin:
+            try exact(Weft.deviceIDLength)
+            self = .groupJoin(deviceID: Data(body))
+        case Weft.controlPairInvite:
+            try exact(Weft.pairRequestBodyLength)
+            self = .pairInvite(PairRequest(body: body))
         case Weft.controlError:
             try exact(1)
             let code = bytes[1]
             guard let error = ControlError(rawValue: code) else { throw .unknownControlError(code) }
             self = .error(error)
         // The rest of the control range is reserved.
-        case 0xB4...0xBD, 0xBF:
+        case 0xB6...0xBD, 0xBF:
             throw .unknownControlFrame(tag)
         default:
             throw .unexpectedFrameType(tag)

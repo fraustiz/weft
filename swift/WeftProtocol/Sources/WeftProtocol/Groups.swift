@@ -1,5 +1,6 @@
-// Group change plaintexts (kinds 0x03–0x05) and device names (kind 0x06),
-// docs/protocol.md sections 3 and 5. Mirrors crates/weft-protocol/src/lib.rs.
+// Group change plaintexts (kinds 0x03–0x05), device names (kind 0x06) and
+// file chunks (kind 0x08), docs/protocol.md sections 3 and 5 and
+// docs/features.md section 1. Mirrors crates/weft-protocol/src/lib.rs.
 
 import Foundation
 
@@ -147,4 +148,55 @@ private func checkDeviceName(_ name: String) throws(WeftError) {
     if name.unicodeScalars.contains(where: isControl) {
         throw .deviceNameControlCharacter
     }
+}
+
+// MARK: - File chunk (0x08)
+
+/// A decoded file chunk plaintext (kind `0x08`).
+public struct FileChunk: Equatable, Sendable {
+    /// 16-byte transfer id.
+    public let transferID: Data
+    /// Position of `data` in the file, in bytes.
+    public let offset: UInt64
+    /// 1 to `Weft.maxFileChunkDataLength` bytes.
+    public let data: Data
+
+    public init(transferID: Data, offset: UInt64, data: Data) throws(WeftError) {
+        self.transferID = Data(try fixed(transferID, Weft.transferIDLength, "transferID"))
+        self.offset = offset
+        self.data = Data(data)
+    }
+
+    fileprivate init(uncheckedTransferID: Data, offset: UInt64, data: Data) {
+        self.transferID = uncheckedTransferID
+        self.offset = offset
+        self.data = data
+    }
+}
+
+/// File chunk plaintext (kind `0x08`):
+/// `transfer_id (16) || offset (u64, big-endian) || data`, with 1 to
+/// `Weft.maxFileChunkDataLength` bytes of data.
+public func encodeFileChunk(transferID: Data, offset: UInt64, data: Data) throws(WeftError) -> Data {
+    let id = try fixed(transferID, Weft.transferIDLength, "transferID")
+    let length = Weft.fileChunkPrefixLength + data.count
+    try Kind.fileChunk.checkPlaintextLength(length)
+    var out = Data(capacity: length)
+    out.append(contentsOf: id)
+    withUnsafeBytes(of: offset.bigEndian) { out.append(contentsOf: $0) }
+    out.append(data)
+    return out
+}
+
+/// Parses a file chunk plaintext, with the same rules as
+/// `encodeFileChunk(transferID:offset:data:)`.
+public func decodeFileChunk(_ plaintext: Data) throws(WeftError) -> FileChunk {
+    try Kind.fileChunk.checkPlaintextLength(plaintext.count)
+    let prefix = [UInt8](plaintext.prefix(Weft.fileChunkPrefixLength))
+    let transferID = Data(prefix[0..<Weft.transferIDLength])
+    let offset = prefix[Weft.transferIDLength..<Weft.fileChunkPrefixLength].reduce(UInt64(0)) {
+        ($0 << 8) | UInt64($1)
+    }
+    let data = Data(plaintext.dropFirst(Weft.fileChunkPrefixLength))
+    return FileChunk(uncheckedTransferID: transferID, offset: offset, data: data)
 }

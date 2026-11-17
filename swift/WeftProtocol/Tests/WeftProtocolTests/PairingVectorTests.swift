@@ -1,5 +1,6 @@
-// Interoperability checks against the `pairing` and `device_name` sections
-// of the Rust reference test vectors (crates/weft-protocol/vectors/v1.json).
+// Interoperability checks against the `pairing`, `device_name` and
+// `invitation` sections of the Rust reference test vectors
+// (crates/weft-protocol/vectors/v1.json).
 
 import Foundation
 import Testing
@@ -56,10 +57,17 @@ private struct GroupDevices {
             secret: v["secret"].bytes, pairingID: v["pairing_id"].bytes,
             signPublicKey: b.signPublicKey, kxPublicKey: b.kxPublicKey)
     }
+
+    func inviteRequest() throws -> PairRequest {
+        let v = try vectors["invitation"]
+        return try PairRequest.invite(
+            secret: v["secret"].bytes, pairingID: v["pairing_id"].bytes,
+            signPublicKey: b.signPublicKey, kxPublicKey: b.kxPublicKey)
+    }
 }
 
-/// Checks one envelope of the vectors: header, seal with the fixed nonce,
-/// open of the committed frame. Returns the opened plaintext.
+/// Checks one envelope of the vectors: header, route header, seal with the
+/// fixed nonce, open of the committed frame. Returns the opened plaintext.
 private func checkEnvelope(_ v: VectorNode, devices d: GroupDevices) throws -> Data {
     let senderName = try v["sender"].string
     let recipientName = try v["recipient"].string
@@ -84,6 +92,9 @@ private func checkEnvelope(_ v: VectorNode, devices d: GroupDevices) throws -> D
     let frame = try seal(header: header, plaintext: plaintext, nonce: v["nonce"].bytes, tx: senderKeys.tx)
     #expect(hexEncoded(frame) == (try v["frame"].string))
     #expect(classify(frame) == .envelope)
+    #expect(
+        try RouteHeader(decoding: frame)
+            == RouteHeader(kind: kind.rawValue, sender: sender.deviceID, recipient: recipient.deviceID))
 
     let (opened, openedPlaintext) = try open(frame: v["frame"].bytes, rx: recipientKeys.rx)
     #expect(opened == header)
@@ -262,5 +273,77 @@ struct DeviceNameVectorTests {
         #expect(try decodeDeviceName(plaintext) == name)
         // Byte-exact, not just canonically equivalent.
         #expect(Data(try decodeDeviceName(plaintext).utf8) == plaintext)
+    }
+}
+
+@Suite("v1 vectors: invitation")
+struct InvitationVectorTests {
+    @Test func rolesAndCode() throws {
+        let d = try GroupDevices()
+        let v = try d.vectors["invitation"]
+        let pairing = try d.vectors["pairing"]
+        #expect(try v["shown_by"].string == "a")
+        #expect(try v["inviter"].string == "b")
+        #expect(try v["code"].string == (try pairing["code"].string))
+
+        let decoded = try PairingCode(decoding: v["code"].string)
+        #expect(decoded == (try d.pairingCode()))
+        #expect(decoded.pairingID == (try v["pairing_id"].bytes))
+        #expect(decoded.secret == (try v["secret"].bytes))
+        #expect(decoded.signPublicKey == d.a.signPublicKey)
+    }
+
+    @Test func macInputAndMAC() throws {
+        let d = try GroupDevices()
+        let v = try d.vectors["invitation"]
+        let pairing = try d.vectors["pairing"]
+        let input = try inviteRequestMACInput(
+            pairingID: v["pairing_id"].bytes, signPublicKey: d.b.signPublicKey, kxPublicKey: d.b.kxPublicKey)
+        #expect(hexEncoded(Data(input)) == (try v["mac_input"].string))
+
+        let mac = try inviteRequestMAC(
+            secret: v["secret"].bytes, pairingID: v["pairing_id"].bytes,
+            signPublicKey: d.b.signPublicKey, kxPublicKey: d.b.kxPublicKey)
+        #expect(hexEncoded(mac) == (try v["mac"].string))
+        #expect(try v["mac"].string != (try pairing["mac"].string))
+
+        let request = try d.inviteRequest()
+        #expect(request.mac == mac)
+        #expect(try verifyInviteRequest(secret: v["secret"].bytes, request: request))
+        #expect(!(try verifyPairRequest(secret: v["secret"].bytes, request: request)))
+    }
+
+    @Test(arguments: ["pair_invite", "group_join"])
+    func controlFrame(name: String) throws {
+        let d = try GroupDevices()
+        let v = try d.vectors["invitation"]
+        let frame: ControlFrame =
+            switch name {
+            case "pair_invite": .pairInvite(try d.inviteRequest())
+            case "group_join": .groupJoin(deviceID: d.b.deviceID)
+            default: throw VectorError(description: "unknown frame \(name)")
+            }
+        let expected = try v["control_frames"][name]
+        #expect(hexEncoded(try frame.encode()) == (try expected.string))
+        #expect(try ControlFrame(decoding: expected.bytes) == frame)
+        #expect(classify(try expected.bytes) == .control)
+    }
+
+    @Test func receivedPairInviteVerifies() throws {
+        let d = try GroupDevices()
+        let v = try d.vectors["invitation"]
+        let raw = try v["control_frames"]["pair_invite"].bytes
+        #expect(raw[0] == Weft.controlPairInvite)
+        guard case .pairInvite(let request) = try ControlFrame(decoding: raw) else {
+            Issue.record("not a pair invite")
+            return
+        }
+        #expect(request.pairingID == (try v["pairing_id"].bytes))
+        #expect(request.signPublicKey == d.b.signPublicKey)
+        #expect(request.kxPublicKey == d.b.kxPublicKey)
+        #expect(hexEncoded(request.mac) == (try v["mac"].string))
+        #expect(try verifyInviteRequest(secret: v["secret"].bytes, request: request))
+        #expect(!(try verifyPairRequest(secret: v["secret"].bytes, request: request)))
+        #expect(try deviceID(fromSignPublicKey: request.signPublicKey) == d.b.deviceID)
     }
 }

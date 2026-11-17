@@ -2,9 +2,10 @@
 //
 // Implements docs/protocol.md: device identities, session keys between two
 // devices, the encrypted message envelope, the relay authentication
-// frames, the group change and device name plaintexts (Groups.swift) and
-// pairing (Pairing.swift). Mirrors the Rust reference (crates/weft-protocol) and must produce
-// byte-identical output (see crates/weft-protocol/vectors/v1.json).
+// frames, the group change, device name and file chunk plaintexts
+// (Groups.swift), the packet envelope of docs/features.md, and pairing
+// (Pairing.swift). Mirrors the Rust reference (crates/weft-protocol) and must
+// produce byte-identical output (see crates/weft-protocol/vectors/v1.json).
 
 import Foundation
 
@@ -33,6 +34,14 @@ public enum Weft {
     public static let peerKeysLength = Sodium.signPublicKeyBytes + Sodium.kxPublicKeyBytes
     /// Largest device name, in bytes of UTF-8.
     public static let maxDeviceNameLength = 64
+    /// Largest packet plaintext (a JSON object), in bytes (256 KiB).
+    public static let maxPacketLength = 256 * 1024
+    /// Size of a file transfer id.
+    public static let transferIDLength = 16
+    /// Largest data in one file chunk, in bytes (128 KiB).
+    public static let maxFileChunkDataLength = 128 * 1024
+    /// `transfer_id (16) || offset (8)`, before the data of a file chunk.
+    static let fileChunkPrefixLength = transferIDLength + 8
 
     /// First byte of the relay challenge frame.
     public static let authChallenge: UInt8 = 0xA0
@@ -73,7 +82,7 @@ public enum WeftError: Error, Equatable, Sendable {
     /// The relay url of a pairing code must be 1 to 255 bytes of UTF-8.
     case relayURLLength(Int)
     case malformedControlFrame
-    /// A reserved byte of the control range (`0xB4`–`0xBD`, `0xBF`).
+    /// A reserved byte of the control range (`0xB6`–`0xBD`, `0xBF`).
     case unknownControlFrame(UInt8)
     case unknownControlError(UInt8)
     /// The relay name in the challenge is not the host the client connected to.
@@ -110,6 +119,25 @@ func isValidUTF8<C: Collection>(_ bytes: C) -> Bool where C.Element == UInt8 {
 public func deviceID(fromSignPublicKey signPublicKey: Data) throws(WeftError) -> Data {
     let pk = try fixed(signPublicKey, Sodium.signPublicKeyBytes, "signPublicKey")
     return Data(Sodium.genericHash16(pk))
+}
+
+/// `crypto_generichash` (BLAKE2b) of `data` without a key, 16-byte output:
+/// a short name for content, such as a cover image. Not a MAC.
+public func contentHash(_ data: Data) -> Data {
+    Data(Sodium.genericHash16([UInt8](data)))
+}
+
+/// Standard base64 (RFC 4648 section 4, with padding), as packets carry
+/// binary data.
+public func base64Encode(_ data: Data) -> String {
+    Sodium.base64Encode([UInt8](data))
+}
+
+/// The inverse of `base64Encode(_:)`. `nil` unless `text` is standard
+/// base64 with its padding, without whitespace.
+public func base64Decode(_ text: String) -> Data? {
+    guard let bytes = Sodium.base64Decode(Array(text.utf8)) else { return nil }
+    return Data(bytes)
 }
 
 /// A device's long-term key pairs (Ed25519 signing and X25519 key exchange).
@@ -228,10 +256,15 @@ public enum Kind: UInt8, Sendable {
     case welcome = 0x03
     /// Keys of a device that joined the group; see `encodeDeviceAdded(_:)`.
     case deviceAdded = 0x04
-    /// Id of a device that left the group; see `encodeDeviceRemoved(_:)`.
+    /// Id of a device that left the group; see `encodeDeviceRemoved(deviceID:)`.
     case deviceRemoved = 0x05
     /// The sender's own name; see `encodeDeviceName(_:)`.
     case deviceName = 0x06
+    /// A UTF-8 JSON object, 1 to `Weft.maxPacketLength` bytes. Only the length
+    /// and the UTF-8 are checked here; the JSON is the client's business.
+    case packet = 0x07
+    /// A piece of a file transfer; see `encodeFileChunk(transferID:offset:data:)`.
+    case fileChunk = 0x08
 
     /// Largest plaintext allowed for this kind.
     var maxPlaintextLength: Int {
@@ -242,6 +275,8 @@ public enum Kind: UInt8, Sendable {
         case .deviceAdded: Weft.peerKeysLength
         case .deviceRemoved: Weft.deviceIDLength
         case .deviceName: Weft.maxDeviceNameLength
+        case .packet: Weft.maxPacketLength
+        case .fileChunk: Weft.fileChunkPrefixLength + Weft.maxFileChunkDataLength
         }
     }
 
@@ -261,6 +296,8 @@ public enum Kind: UInt8, Sendable {
         case .welcome: valid = length % Weft.peerKeysLength == 1
         case .deviceAdded: valid = length == Weft.peerKeysLength
         case .deviceRemoved: valid = length == Weft.deviceIDLength
+        case .packet: valid = length >= 1
+        case .fileChunk: valid = length > Weft.fileChunkPrefixLength
         case .deviceName: valid = true  // Checked above.
         }
         guard valid else { throw .invalidPlaintextLength(length) }
@@ -269,14 +306,14 @@ public enum Kind: UInt8, Sendable {
     func checkPlaintext(_ plaintext: [UInt8]) throws(WeftError) {
         try checkPlaintextLength(plaintext.count)
         switch self {
-        case .clipboardText:
+        case .clipboardText, .packet:
             guard isValidUTF8(plaintext) else { throw .invalidUTF8 }
         case .welcome:
             _ = try decodeWelcome(bytes: plaintext)
         case .deviceName:
             _ = try decodeDeviceName(bytes: plaintext)
         // Fully checked by their length.
-        case .ping, .deviceAdded, .deviceRemoved:
+        case .ping, .deviceAdded, .deviceRemoved, .fileChunk:
             break
         }
     }
@@ -339,6 +376,38 @@ public struct Header: Equatable, Sendable {
         self.recipient = Data(bytes[18..<34])
         self.messageID = Data(bytes[34..<50])
         self.counter = bytes[50..<58].reduce(0) { ($0 << 8) | UInt64($1) }
+    }
+}
+
+/// The header fields the relay routes an envelope on. Unlike
+/// `Header(decoding:)`, `RouteHeader(decoding:)` does not check `kind`, so
+/// kinds added later need no relay update (`docs/features.md`, section 1).
+public struct RouteHeader: Equatable, Sendable {
+    public let kind: UInt8
+    /// 16-byte sender device id.
+    public let sender: Data
+    /// 16-byte recipient device id.
+    public let recipient: Data
+
+    public init(kind: UInt8, sender: Data, recipient: Data) throws(WeftError) {
+        self.kind = kind
+        self.sender = Data(try fixed(sender, Weft.deviceIDLength, "sender"))
+        self.recipient = Data(try fixed(recipient, Weft.deviceIDLength, "recipient"))
+    }
+
+    /// Reads the header of a whole envelope frame. Checks the version and
+    /// that the frame holds at least a header, a nonce and a tag.
+    public init(decoding frame: Data) throws(WeftError) {
+        guard frame.count >= Weft.headerLength + Weft.nonceLength + Weft.tagLength else {
+            throw .frameTooShort(frame.count)
+        }
+        let header = [UInt8](frame.prefix(Weft.headerLength))
+        guard header[0] == Weft.version else {
+            throw .unsupportedVersion(header[0])
+        }
+        self.kind = header[1]
+        self.sender = Data(header[2..<18])
+        self.recipient = Data(header[18..<34])
     }
 }
 

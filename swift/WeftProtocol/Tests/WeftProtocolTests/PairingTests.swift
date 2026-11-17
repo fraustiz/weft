@@ -567,11 +567,18 @@ struct PairRequestTests {
 
 // MARK: - Control frames
 
+private func inviteRequest(secret: Data) -> PairRequest {
+    try! PairRequest.invite(
+        secret: secret, pairingID: bytes(0x11, 16), signPublicKey: bytes(0x22, 32), kxPublicKey: bytes(0x33, 32))
+}
+
 private let controlFrames: [(ControlFrame, UInt8, Int)] = [
     (.pairOpen(pairingID: bytes(1, 16)), 0xB0, 17),
     (.pairRequest(pairRequest(secret: bytes(0x44, 32))), 0xB1, 113),
     (.groupAdd(deviceID: bytes(2, 16)), 0xB2, 17),
     (.groupRemove(deviceID: bytes(3, 16)), 0xB3, 17),
+    (.groupJoin(deviceID: bytes(4, 16)), 0xB4, 17),
+    (.pairInvite(inviteRequest(secret: bytes(0x44, 32))), 0xB5, 113),
     (.error(.unknownPairing), 0xBE, 2),
     (.error(.notAllowed), 0xBE, 2),
     (.error(.rateLimited), 0xBE, 2),
@@ -598,9 +605,13 @@ struct ControlFrameTests {
         #expect(
             try ControlFrame.pairRequest(request).encode()
                 == Data([0xB1]) + bytes(1, 16) + bytes(2, 32) + bytes(3, 32) + bytes(4, 32))
+        #expect(
+            try ControlFrame.pairInvite(request).encode()
+                == Data([0xB5]) + bytes(1, 16) + bytes(2, 32) + bytes(3, 32) + bytes(4, 32))
 
         #expect(try ControlFrame.groupAdd(deviceID: bytes(5, 16)).encode() == Data([0xB2]) + bytes(5, 16))
         #expect(try ControlFrame.groupRemove(deviceID: bytes(6, 16)).encode() == Data([0xB3]) + bytes(6, 16))
+        #expect(try ControlFrame.groupJoin(deviceID: bytes(7, 16)).encode() == Data([0xB4]) + bytes(7, 16))
 
         for (code, byte) in [
             (ControlError.unknownPairing, UInt8(0x01)), (.notAllowed, 0x02), (.rateLimited, 0x03), (.groupFull, 0x04),
@@ -618,6 +629,9 @@ struct ControlFrameTests {
         }
         #expect(throws: WeftError.invalidLength(field: "deviceID", expected: 16, actual: 0)) {
             try ControlFrame.groupRemove(deviceID: Data()).encode()
+        }
+        #expect(throws: WeftError.invalidLength(field: "deviceID", expected: 16, actual: 15)) {
+            try ControlFrame.groupJoin(deviceID: bytes(0, 15)).encode()
         }
     }
 
@@ -642,7 +656,7 @@ struct ControlFrameTests {
         #expect(try ControlFrame(decoding: padded.dropFirst(2)) == .error(.groupFull))
     }
 
-    @Test(arguments: [UInt8](0xB4...0xBD) + [0xBF])
+    @Test(arguments: [UInt8](0xB6...0xBD) + [0xBF])
     func decodeRejectsUnknownControlBytes(tag: UInt8) {
         // Whatever the body length.
         for bodyLength in [0, 1, 16, 112] {
