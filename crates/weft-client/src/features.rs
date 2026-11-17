@@ -171,7 +171,8 @@ impl Features {
 pub struct UserCommand {
     pub id: String,
     pub name: String,
-    /// Run by `cmd /C`, as written here.
+    /// Run as written here by [`crate::worker::Hooks::run_command`]: on
+    /// Windows by `cmd /C`.
     pub line: String,
 }
 
@@ -271,7 +272,7 @@ mod tests {
     #[test]
     fn switched_off_features_leave_the_capabilities() {
         let all = Features::default().capabilities(false);
-        assert_eq!(all.platform, "windows");
+        assert_eq!(all.platform, PLATFORM);
         for kind in [
             "ring",
             "ring.stop",

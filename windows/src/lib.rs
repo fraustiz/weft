@@ -9,7 +9,8 @@
 //! - [`sync`] decides what happens to clipboard text;
 //! - [`packets`], [`features`], [`transfer`] and [`media`] are the feature
 //!   packets, the switches, the file transfer rules and the clock of the
-//!   players; [`files`] the disk side of transfers;
+//!   players; [`files`] the disk side of transfers, and the Downloads
+//!   folder;
 //! - [`worker`] holds the connection to the relay, on its own thread;
 //! - [`ui`] is the main window, on the main thread;
 //! - [`clipboard`], [`tray`], [`window`] and [`autostart`] are the Win32
@@ -22,19 +23,18 @@
 //!   decides what remote input means, and [`control`] and [`spot`] make
 //!   it happen: key strokes, pointer moves, commands, the presenter's spot.
 //!
-//! The session logic itself is the one of the command-line client, used
-//! as a library.
+//! - [`i18n`] picks the interface language.
+//!
+//! [`sync`], [`packets`], [`features`], [`transfer`], [`media`], [`sms`],
+//! [`input`], [`worker`] and the disk side of [`files`] are the
+//! platform-independent client, the `weft-client` crate, re-exported here
+//! under the same paths. The session logic itself is the one of the
+//! command-line client, used as a library.
 
-pub mod features;
+pub use weft_client::{features, input, media, packets, sms, sync, transfer, worker};
+
 pub mod files;
 pub mod i18n;
-pub mod input;
-pub mod media;
-pub mod packets;
-pub mod sms;
-pub mod sync;
-pub mod transfer;
-pub mod worker;
 
 #[cfg(windows)]
 pub mod control;

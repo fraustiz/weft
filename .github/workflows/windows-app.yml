@@ -1,0 +1,56 @@
+name: Windows app
+
+on:
+  push:
+    branches: [main, windows-app]
+    paths:
+      - "windows/**"
+      - "crates/**"
+      - "cli/**"
+      # The tests of the app and of the client run against a real relay.
+      - "relay/**"
+      - "Cargo.*"
+      - ".github/workflows/windows-app.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy --target x86_64-pc-windows-msvc
+          rustup default stable-x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            windows -> target
+            . -> target
+      - name: Test the app
+        run: cargo test --manifest-path windows/Cargo.toml --locked
+      # The shared client's own tests, on Windows too: its disk side asks
+      # the system there.
+      - name: Test the shared client
+        run: cargo test -p weft-client --locked
+      - name: Lint the app
+        run: cargo clippy --manifest-path windows/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Build the app
+        run: cargo build --manifest-path windows/Cargo.toml --release --locked
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test the shared client
+        run: cargo test -p weft-client --locked

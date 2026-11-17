@@ -13,20 +13,20 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use weft_cli::{Error, Event, Session, State, StateDir};
-use weft_protocol::PairingCode;
-use weft_relay::Config;
-use weft_windows::features::{Features, Settings, UserCommand};
-use weft_windows::input::{Button, Input, Key, Modifiers, Press};
-use weft_windows::packets::{
+use weft_client::features::{Features, Settings, UserCommand};
+use weft_client::input::{Button, Input, Key, Modifiers, Press};
+use weft_client::packets::{
     self, Battery, Call, Capabilities, Connectivity, FileOffer, MediaAction, MediaCommand,
     Notification, Packet, Parsed, Player, Volume, VolumeSet, transfer_id,
 };
-use weft_windows::sms::SendState;
-use weft_windows::transfer::{CHUNK, Stage, WINDOW};
-use weft_windows::worker::{
+use weft_client::sms::SendState;
+use weft_client::transfer::{CHUNK, Stage, WINDOW};
+use weft_client::worker::{
     Command, Device, Direction, Handle, Hooks, Notice, PairingFailure, PairingState, Snapshot,
     Status, spawn_on,
 };
+use weft_protocol::PairingCode;
+use weft_relay::Config;
 
 /// Timeout for a single step.
 const STEP: Duration = Duration::from_secs(10);

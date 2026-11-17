@@ -2031,6 +2031,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "weft-client"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "weft-cli",
+ "weft-protocol",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "weft-protocol"
 version = "0.1.0"
 dependencies = [
@@ -2066,6 +2079,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "weft-cli",
+ "weft-client",
  "weft-protocol",
  "weft-relay",
  "windows-collections",

@@ -1,0 +1,24 @@
+[package]
+name = "weft-client"
+version = "0.1.0"
+description = "Weft client core: the feature packets, transfers, messages and the worker that talks to the relay, shared by the desktop apps"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["rt", "macros", "sync", "time"] }
+tracing = "0.1.44"
+weft-cli = { path = "../../cli" }
+weft-protocol = { path = "../weft-protocol" }
+
+# The free space of a volume, and a move that never replaces a file.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net"] }
+weft-relay = { path = "../../relay" }

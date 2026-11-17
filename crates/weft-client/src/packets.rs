@@ -8,8 +8,12 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The `platform` this app announces.
+/// The `platform` this app announces: the one it is built for.
+#[cfg(not(target_os = "macos"))]
 pub const PLATFORM: &str = "windows";
+/// The `platform` this app announces: the one it is built for.
+#[cfg(target_os = "macos")]
+pub const PLATFORM: &str = "macos";
 
 /// The largest file a transfer may carry: 4 GiB.
 pub const MAX_FILE_SIZE: u64 = 4 << 30;
