@@ -1,0 +1,36 @@
+[package]
+name = "weft-ffi"
+version = "0.1.0"
+description = "Weft client core for the Apple apps: a UniFFI layer over weft-client"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["staticlib", "lib"]
+name = "weft_ffi"
+
+# Generates the Swift bindings from the built library:
+# cargo run -p weft-ffi --features bindgen --bin uniffi-bindgen -- generate ...
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["rt", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uniffi = "0.32.2"
+weft-cli = { path = "../../cli" }
+weft-client = { path = "../weft-client" }
+weft-protocol = { path = "../weft-protocol" }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net"] }
+weft-relay = { path = "../../relay" }

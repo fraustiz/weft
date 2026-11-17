@@ -1,0 +1,190 @@
+// The app's state on the main actor: the core, its last snapshot, and what
+// the windows show.
+
+import AppKit
+import SwiftUI
+import WeftFFI
+import WeftKit
+
+@MainActor
+final class AppModel: ObservableObject {
+    /// How often the pasteboard is looked at: there is no notification
+    /// for its changes, and reading `changeCount` costs next to nothing.
+    static let pollInterval: TimeInterval = 0.5
+
+    @Published private(set) var snapshot: CoreSnapshot?
+    /// Why the core could not start, if it did not.
+    @Published private(set) var startError: String?
+    @Published var showingPairing = false
+    @Published var selection: String?
+    /// A blocking change (relay, leaving the group) is under way.
+    @Published private(set) var busy = false
+
+    private var core: WeftCore?
+    private var events: CoreEvents?
+    private var timer: Timer?
+    private var writtenCode: String?
+    private var pairingRequested = false
+    /// Set by the first view that appears: SwiftUI gives it only to views.
+    var openWindow: OpenWindowAction?
+    /// The same, for the Settings window.
+    var openSettings: OpenSettingsAction?
+
+    var devices: [DeviceInfo] { snapshot?.devices ?? [] }
+
+    func start() {
+        guard core == nil else { return }
+        let events = CoreEvents(model: self)
+        self.events = events
+        let config = CoreConfig(
+            stateDir: Self.stateDirectory().path,
+            downloadsDir: Self.downloadsDirectory().path,
+            relayUrl: Development.relayURL,
+            defaultName: Host.current().localizedName
+        )
+        do {
+            core = try WeftCore.start(config: config, delegate: events, pasteboard: MacPasteboard())
+        } catch {
+            startError = "\(error)"
+            log.error("core did not start: \(String(describing: error), privacy: .public)")
+            return
+        }
+        refresh()
+        let timer = Timer(timeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pollPasteboard() }
+        }
+        timer.tolerance = 0.1
+        // Common modes: it keeps running while a menu is open.
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    func stop() {
+        timer?.invalidate()
+        core?.stop()
+    }
+
+    func refresh() {
+        guard let core else { return }
+        let snapshot = core.snapshot()
+        self.snapshot = snapshot
+        if let selection, snapshot.device(selection) == nil {
+            self.selection = nil
+        }
+        if selection == nil {
+            selection = snapshot.devices.first?.id
+        }
+        developmentHooks(snapshot)
+    }
+
+    func pollPasteboard() {
+        _ = core?.pollPasteboard()
+    }
+
+    // MARK: Commands
+
+    func pair() {
+        core?.startPairing()
+        showingPairing = true
+        showMainWindow()
+    }
+
+    func join(code: String) {
+        core?.join(code: code)
+    }
+
+    func closePairing() {
+        core?.cancelPairing()
+        showingPairing = false
+    }
+
+    func remove(_ device: DeviceInfo) {
+        do {
+            try core?.removeDevice(deviceId: device.id)
+        } catch {
+            log.error("remove failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    func rename(_ name: String) {
+        guard case .success(let name) = DeviceName.check(name), name != snapshot?.name else { return }
+        do {
+            try core?.rename(name: name)
+        } catch {
+            log.error("rename refused: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Sends the pasteboard now; beeps when there was nothing to send.
+    func sendClipboardNow() {
+        guard let core else { return }
+        let outcome = core.sendClipboardNow()
+        if outcome != .sent {
+            log.info("clipboard not sent: \(String(describing: outcome), privacy: .public)")
+            NSSound.beep()
+        }
+    }
+
+    /// Changes the relay; returns why it was refused, if it was.
+    func setRelay(_ url: String) async -> String? {
+        guard let core else { return nil }
+        busy = true
+        defer { busy = false }
+        let result = await Task.detached { () -> String? in
+            do {
+                try core.setRelayUrl(url: url)
+                return nil
+            } catch CoreError.InvalidRelayUrl(let message) {
+                return message
+            } catch {
+                return "\(error)"
+            }
+        }.value
+        refresh()
+        return result
+    }
+
+    /// Leaves the group; returns whether the other devices were told.
+    func leaveGroup() async -> Bool {
+        guard let core else { return false }
+        busy = true
+        defer { busy = false }
+        let told = await Task.detached { (try? core.leaveGroup()) ?? false }.value
+        refresh()
+        return told
+    }
+
+    // MARK: Windows
+
+    func showMainWindow() {
+        openWindow?(id: WeftApp.mainWindow)
+        NSApp.activate()
+    }
+
+    // MARK: Places
+
+    static func stateDirectory() -> URL {
+        if let dir = Development.stateDirectory { return dir }
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return support.appendingPathComponent("Weft", isDirectory: true)
+    }
+
+    static func downloadsDirectory() -> URL {
+        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? stateDirectory().appendingPathComponent("Received", isDirectory: true)
+    }
+
+    // MARK: Development
+
+    private func developmentHooks(_ snapshot: CoreSnapshot) {
+        if Development.codeFile != nil, case .showingCode(let code, _) = snapshot.pairing,
+           code != writtenCode {
+            writtenCode = code
+            Development.writeCode(code)
+        }
+        if Development.startsPairing, !pairingRequested, snapshot.isConnected {
+            pairingRequested = true
+            pair()
+        }
+    }
+}

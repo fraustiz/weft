@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/weft-protocol", "crates/weft-client", "relay", "cli"]
+members = ["crates/weft-protocol", "crates/weft-client", "crates/weft-ffi", "relay", "cli"]
 # The Windows app is its own workspace, with its own lock file: the relay
 # image and the other platforms never build its dependencies.
 exclude = ["windows"]

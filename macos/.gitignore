@@ -1,0 +1,8 @@
+.build/
+.swiftpm/
+/build/
+# Made by scripts/build-rust.sh from crates/weft-ffi.
+/Rust/
+/Sources/WeftFFI/weft_ffi.swift
+/Sources/weft_ffiFFI/weft_ffiFFI.h
+/Sources/weft_ffiFFI/module.modulemap
