@@ -4,8 +4,9 @@
     <color name="weft_orange">#FFF26A21</color>
     <color name="weft_ink">#FF17130F</color>
     <color name="window_background">#FFF9F8F6</color>
-    <!-- The Weft keyboard's bar: surfaceContainer and the text roles of ui/Theme.kt. -->
+    <!-- The Weft keyboard’s bar: surfaceContainer, the text roles of ui/Theme.kt and a tonal button a step darker. -->
     <color name="keyboard_bar">#FFEFEDEA</color>
     <color name="keyboard_text">#FF17130F</color>
     <color name="keyboard_text_secondary">#FF5C554D</color>
+    <color name="keyboard_button">#FFDDDAD6</color>
 </resources>

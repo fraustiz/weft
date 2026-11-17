@@ -296,6 +296,8 @@
     <string name="device_remote_body">Touchpad and keyboard</string>
     <string name="device_presenter">Presentation</string>
     <string name="device_presenter_body">Turn the slides and point at the screen</string>
+    <!-- %1$s: the computer, %2$s: this phone. The quoted switch is on the computer’s device page. -->
+    <string name="device_control_hint">To control %1$s from here, allow this phone on %1$s: open its page in Weft and turn on “Let %2$s control this computer”.</string>
     <string name="device_commands">Commands</string>
     <!-- %1$s: the command name. -->
     <string name="command_sent">Sent “%1$s”</string>
@@ -333,8 +335,9 @@
     <!-- The Weft keyboard. -->
     <string name="keyboard_label">Weft keyboard</string>
     <string name="keyboard_switch">Switch keyboard</string>
-    <string name="keyboard_waiting">Ready to type from your computers</string>
+    <string name="keyboard_waiting">Type on your computer to write here</string>
+    <string name="keyboard_no_computer">No computer connected</string>
     <!-- %1$s: the computer that types. -->
     <string name="keyboard_typing_from">Typing from %1$s</string>
-    <string name="keyboard_off">Turn on Remote input in Weft to type from your computers</string>
+    <string name="keyboard_off">Weft keyboard is off in Weft’s settings</string>
 </resources>

@@ -75,6 +75,8 @@ class DeviceActions(
     val presenter: (() -> Unit)? = null,
     val commands: List<Command> = emptyList(),
     val runCommand: (suspend (String) -> Boolean)? = null,
+    /** This phone's name, when the computer does not let it control it yet: the screen says where to allow it. */
+    val askControl: String? = null,
 ) {
     val isEmpty: Boolean get() = ring == null && ping == null && sendFile == null
     val showsControl: Boolean get() = remote != null || presenter != null
@@ -149,6 +151,17 @@ fun DeviceScreen(
                 Spacer(Modifier.height(16.dp))
                 actions.remote?.let { NavigationRow(R.string.device_remote, R.string.device_remote_body, REMOTE_ROW, it) }
                 actions.presenter?.let { NavigationRow(R.string.device_presenter, R.string.device_presenter_body, PRESENTER_ROW, it) }
+            }
+            actions.askControl?.let { phone ->
+                Spacer(Modifier.height(24.dp))
+                Text(
+                    stringResource(R.string.device_control_hint, device.label, phone),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .padding(horizontal = 16.dp)
+                        .testTag(CONTROL_HINT),
+                )
             }
             val runCommand = actions.runCommand
             if (actions.showsCommands && runCommand != null) {
@@ -454,6 +467,7 @@ const val PING_BUTTON = "ping_button"
 const val SEND_FILE_BUTTON = "send_file_button"
 const val REMOTE_ROW = "remote_row"
 const val PRESENTER_ROW = "presenter_row"
+const val CONTROL_HINT = "control_hint"
 const val COMMAND_BUTTON_PREFIX = "command_"
 
 /** How long the Ring button reads "Stop ringing": as long as a ring lasts. */

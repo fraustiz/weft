@@ -273,6 +273,8 @@
     <string name="device_remote_body">Pavé tactile et clavier</string>
     <string name="device_presenter">Présentation</string>
     <string name="device_presenter_body">Passer les diapositives et pointer l’écran</string>
+    <!-- %1$s : l’ordinateur, %2$s : ce téléphone. L’interrupteur cité est sur la page de l’appareil, sur l’ordinateur. -->
+    <string name="device_control_hint">Pour contrôler %1$s d’ici, autorisez ce téléphone sur %1$s : ouvrez sa page dans Weft et activez « Laisser %2$s contrôler cet ordinateur ».</string>
     <string name="device_commands">Commandes</string>
     <string name="command_sent">« %1$s » envoyée</string>
 
@@ -307,7 +309,8 @@
     <!-- Le clavier Weft. -->
     <string name="keyboard_label">Clavier Weft</string>
     <string name="keyboard_switch">Changer de clavier</string>
-    <string name="keyboard_waiting">Prêt à écrire depuis vos ordinateurs</string>
+    <string name="keyboard_waiting">Tapez sur votre ordinateur pour écrire ici</string>
+    <string name="keyboard_no_computer">Aucun ordinateur connecté</string>
     <string name="keyboard_typing_from">Saisie depuis %1$s</string>
-    <string name="keyboard_off">Activez la saisie à distance dans Weft pour écrire depuis vos ordinateurs</string>
+    <string name="keyboard_off">Le clavier Weft est désactivé dans les réglages de Weft</string>
 </resources>

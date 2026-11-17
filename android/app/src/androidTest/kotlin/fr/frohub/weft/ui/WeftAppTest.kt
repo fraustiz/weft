@@ -27,6 +27,8 @@ import fr.frohub.weft.core.GroupChangeResult
 import fr.frohub.weft.core.JoinResult
 import fr.frohub.weft.core.JoinState
 import fr.frohub.weft.core.RenameResult
+import fr.frohub.weft.features.Packet
+import fr.frohub.weft.features.PeerInfo
 import fr.frohub.weft.protocol.ControlError
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -178,6 +180,24 @@ class WeftAppTest {
     }
 
     @Test
+    fun controlRowsAndTheirHintFollowTheComputersCapabilities() {
+        model.devices.value = listOf(LAPTOP)
+        model.peers.value = mapOf(LAPTOP.id to PeerInfo(Packet.Capabilities("windows", setOf(Packet.PING), setOf(Packet.PING, Packet.INPUT_KEY))))
+        launch()
+        compose.onNodeWithTag(DEVICE_ROW_PREFIX + LAPTOP.id).performScrollTo().performClick()
+        val hint = context.getString(R.string.device_control_hint, "MacBook Air", "Pixel 8")
+        compose.onNodeWithText(hint).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag(REMOTE_ROW).assertDoesNotExist()
+
+        // The computer allows this phone: its new capabilities show the rows, no reopening.
+        val allowed = setOf(Packet.PING, Packet.INPUT_POINTER, Packet.INPUT_CLICK, Packet.INPUT_KEY, Packet.PRESENTER)
+        model.peers.value = mapOf(LAPTOP.id to PeerInfo(Packet.Capabilities("windows", allowed, setOf(Packet.PING, Packet.INPUT_KEY))))
+        compose.onNodeWithTag(REMOTE_ROW).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag(PRESENTER_ROW).assertExists()
+        compose.onNodeWithTag(CONTROL_HINT).assertDoesNotExist()
+    }
+
+    @Test
     fun unpairingFromTheMenu() {
         model.devices.value = listOf(LAPTOP)
         launch()
@@ -268,6 +288,7 @@ class WeftAppTest {
         override val lastSent = MutableStateFlow<LastSent?>(null)
         override val joinState = MutableStateFlow<JoinState>(JoinState.Idle)
         override val name = MutableStateFlow("Pixel 8")
+        override val peers = MutableStateFlow<Map<String, PeerInfo>>(emptyMap())
         val joins = CopyOnWriteArrayList<String>()
         val renames = CopyOnWriteArrayList<String>()
         var renameResult: RenameResult = RenameResult.Sent(1)

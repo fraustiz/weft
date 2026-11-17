@@ -4,4 +4,5 @@
     <color name="keyboard_bar">#FF201E1C</color>
     <color name="keyboard_text">#FFF6EFE6</color>
     <color name="keyboard_text_secondary">#FFB5AEA6</color>
+    <color name="keyboard_button">#FF353330</color>
 </resources>

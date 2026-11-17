@@ -156,6 +156,12 @@ fun WeftApp(
                         presenter = if (offers(Feature.REMOTE, Packet.PRESENTER)) ({ route = Route.PRESENTER + id }) else null,
                         commands = peer?.commands.orEmpty(),
                         runCommand = if (offers(Feature.COMMANDS, Packet.COMMAND_RUN)) ({ model.send(id, Packet.CommandRun(it)) }) else null,
+                        // A computer (it types on phones) that does not take the pointer from this one yet.
+                        askControl = name.takeIf {
+                            Feature.REMOTE in features &&
+                                peer?.capabilities?.outgoing?.contains(Packet.INPUT_KEY) == true &&
+                                !peer.handles(Packet.INPUT_POINTER)
+                        },
                     )
                     val media = DeviceMedia(
                         media = peer?.media,

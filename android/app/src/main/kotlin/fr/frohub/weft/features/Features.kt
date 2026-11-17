@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -127,6 +128,10 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
                 if (Feature.NOTIFICATIONS !in enabled) serial.trySend { mirror.clear() }
                 sendCapabilitiesAndState(trustedIds())
             }
+        }
+        scope.launch {
+            // The keyboard's bar says whether a computer can type now.
+            merge(core.status, _peers, core.devices).collect { withContext(Dispatchers.Main) { keyboard?.refresh() } }
         }
         scope.launch { for (job in serial) job() }
         scope.launch(Dispatchers.IO) { partials.expire() }
@@ -476,6 +481,13 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
 
     fun onKeyboardDestroyed(service: WeftKeyboard) {
         if (keyboard === service) keyboard = null
+    }
+
+    /** Whether the relay is connected and a trusted computer there says it types on phones. */
+    fun computerCanType(): Boolean {
+        if (core.status.value != ConnectionStatus.Connected) return false
+        val peers = _peers.value
+        return core.devices.value.any { peers[it.id]?.capabilities?.outgoing?.contains(Packet.INPUT_KEY) == true }
     }
 
     // endregion
