@@ -39,10 +39,12 @@ struct MainWindow: View {
             List(selection: $model.selection) {
                 Section(t("Devices", "Appareils")) {
                     ForEach(snapshot.devices) { device in
-                        DeviceRow(device: device).tag(device.id)
+                        DeviceRow(device: device, selected: model.selection == device.id)
+                            .tag(device.id)
                     }
                 }
             }
+            .background(PlainTableSelection())
             .safeAreaInset(edge: .bottom) {
                 StatusFooter(snapshot: snapshot)
             }
@@ -70,6 +72,7 @@ struct MainWindow: View {
 
 private struct DeviceRow: View {
     let device: DeviceInfo
+    let selected: Bool
 
     var body: some View {
         Label {
@@ -77,13 +80,16 @@ private struct DeviceRow: View {
                 Text(device.displayName)
                 Text(caption)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .opacity(selected ? 0.75 : 1)
+                    .foregroundStyle(selected ? AnyShapeStyle(Color.weftInk) : AnyShapeStyle(.secondary))
                     .monospacedDigit()
             }
         } icon: {
             Image(systemName: device.symbol)
+                .foregroundStyle(selected ? Color.weftInk : Color.secondary)
         }
         .padding(.vertical, 2)
+        .modifier(SelectionHighlight(selected: selected))
     }
 
     /// "Android · 87%", or the short id until the platform is known.
@@ -103,7 +109,7 @@ struct StatusFooter: View {
     var body: some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(snapshot.isConnected ? Color.green : Color.secondary.opacity(0.5))
+                .fill(snapshot.isConnected ? Color.weftOrange : Color.secondary.opacity(0.5))
                 .frame(width: 8, height: 8)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 0) {
@@ -119,75 +125,6 @@ struct StatusFooter: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .help(snapshot.statusReason ?? snapshot.relayUrl)
-    }
-}
-
-private struct DeviceDetail: View {
-    @ObservedObject var model: AppModel
-    let device: DeviceInfo
-    @StateObject private var confirmingRemoval = Local(false)
-
-    var body: some View {
-        Form {
-            Section {
-                HStack(spacing: 12) {
-                    Image(systemName: device.symbol)
-                        .font(.system(size: 28, weight: .light))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(device.displayName).font(.title3)
-                        Text(device.platformName ?? t("Platform not known yet", "Plateforme pas encore connue"))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-            Section {
-                if let battery = device.battery, let text = device.batteryText {
-                    LabeledContent(t("Battery", "Batterie")) {
-                        Label(text, systemImage: Words.batterySymbol(
-                            level: battery.level, charging: battery.charging
-                        ))
-                        .monospacedDigit()
-                    }
-                }
-                LabeledContent(t("Device ID", "Identifiant")) {
-                    Text(device.shortId)
-                        .font(.body.monospaced())
-                        .textSelection(.enabled)
-                        .help(device.id)
-                }
-            }
-            Section {
-                Button(t("Remove from Group…", "Retirer du groupe…"), role: .destructive) {
-                    confirmingRemoval.value = true
-                }
-            } footer: {
-                Text(t(
-                    "A removed device no longer gets this Mac’s clipboard. You can pair it again later.",
-                    "Un appareil retiré ne reçoit plus le presse-papiers de ce Mac. Vous pourrez l’associer de nouveau."
-                ))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .formStyle(.grouped)
-        .navigationTitle(device.displayName)
-        .confirmationDialog(
-            Language.current == .french
-                ? "Retirer « \(device.displayName) » du groupe ?"
-                : "Remove “\(device.displayName)” from the group?",
-            isPresented: $confirmingRemoval.value
-        ) {
-            Button(t("Remove", "Retirer"), role: .destructive) { model.remove(device) }
-        } message: {
-            Text(t(
-                "The other devices of the group stop trusting it too.",
-                "Les autres appareils du groupe cessent aussi de lui faire confiance."
-            ))
-        }
     }
 }
 
@@ -212,8 +149,7 @@ private struct EmptyState: View {
             .frame(maxWidth: 360)
             .padding(.bottom, 24)
             Button(t("Pair a Device…", "Associer un appareil…"), action: model.pair)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                .buttonStyle(WeftProminentButtonStyle(large: true))
                 .keyboardShortcut(.defaultAction)
             if let snapshot = model.snapshot {
                 StatusFooter(snapshot: snapshot)

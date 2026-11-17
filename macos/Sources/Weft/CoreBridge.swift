@@ -75,9 +75,9 @@ final class CoreEvents: CoreDelegate, @unchecked Sendable {
     }
 
     func notice(notice: CoreNotice) {
-        // This version shows none of them yet. Only the kind is logged,
-        // never what it says.
-        log.info("notice not handled yet: \(notice.kind, privacy: .public)")
+        Task { @MainActor [weak self] in
+            self?.model?.handle(notice)
+        }
     }
 
     func clipboardWaiting() {

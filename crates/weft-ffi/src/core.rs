@@ -7,32 +7,111 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use weft_cli::{StateDir, short_id, unhex};
-use weft_client::features::Features;
+use weft_client::features::{Features, Implemented};
+use weft_client::packets::{MediaAction, MediaCommand, Packet, Volume, VolumeSet};
 use weft_client::sync::{self, Clipboard, Content, Incoming, Outgoing, Sync};
 use weft_client::worker::{self, Command, DEFAULT_RELAY_URL, Handle, Hooks, Published};
 use weft_protocol::MAX_CLIPBOARD_TEXT_LEN;
 
-use crate::map::{self, CoreNotice, CoreSnapshot, Now, PollOutcome, SendOutcome};
+use crate::map::{
+    self, CoreNotice, CoreSnapshot, FeatureSwitches, MediaControl, Now, PollOutcome, SendOutcome,
+};
 use crate::{CoreConfig, CoreError, check_device_name, check_relay_url, group};
 
 /// How long the worker gets to close its connection politely.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 
-/// The features this version of the Mac app handles. The others are left
-/// out of the capabilities it announces, so no device sends it files,
-/// rings or notifications it would drop. Later versions widen it.
+/// The feature switches the Mac app has. The others (SMS and contacts,
+/// commands) are always off, whatever `features.json` says.
 const SUPPORTED: Features = Features {
-    files: false,
-    links: false,
-    ring: false,
+    files: true,
+    links: true,
+    ring: true,
     battery: true,
-    notifications: false,
-    calls: false,
-    media: false,
-    volume: false,
+    notifications: true,
+    calls: true,
+    media: true,
+    volume: true,
     sms: false,
     commands: false,
 };
+
+/// The packet types the Mac app acts on: its capabilities list only
+/// these, less the switched-off features (`docs/features.md` sections 2
+/// and 10). Its own players are not here: macOS has no public way to read
+/// what other apps play, so it never sends `media` nor takes
+/// `media.command`. No remote input, presenter, SMS or commands either.
+///
+/// A later version that implements a packet adds it here (and to
+/// [`MAC_OUTGOING`] if it sends it), with its switch in [`SUPPORTED`].
+pub const MAC_INCOMING: &[&str] = &[
+    "state.request",
+    "ping",
+    "ring",
+    "ring.stop",
+    "share.url",
+    "file.offer",
+    "file.accept",
+    "file.reject",
+    "file.ack",
+    "file.done",
+    "file.cancel",
+    "battery",
+    "connectivity",
+    "notification",
+    "notification.removed",
+    "call",
+    // The players of the other devices, shown and controlled from here.
+    "media",
+    "volume",
+    "volume.set",
+];
+
+/// The packet types the Mac app sends; see [`MAC_INCOMING`].
+pub const MAC_OUTGOING: &[&str] = &[
+    "state.request",
+    "ping",
+    "ring",
+    "ring.stop",
+    "share.url",
+    "file.offer",
+    "file.accept",
+    "file.reject",
+    "file.ack",
+    "file.done",
+    "file.cancel",
+    "notification.dismiss",
+    "notification.action",
+    "notification.reply",
+    "notification.request",
+    "call.mute",
+    // Control of the other devices' players.
+    "media.command",
+    "volume",
+    "volume.set",
+];
+
+/// What the Mac app implements, for the worker.
+pub const MAC_IMPLEMENTED: Implemented = Implemented {
+    incoming: MAC_INCOMING,
+    outgoing: MAC_OUTGOING,
+};
+
+/// `features` with the switches the Mac does not have turned off.
+fn supported(features: Features) -> Features {
+    Features {
+        files: features.files && SUPPORTED.files,
+        links: features.links && SUPPORTED.links,
+        ring: features.ring && SUPPORTED.ring,
+        battery: features.battery && SUPPORTED.battery,
+        notifications: features.notifications && SUPPORTED.notifications,
+        calls: features.calls && SUPPORTED.calls,
+        media: features.media && SUPPORTED.media,
+        volume: features.volume && SUPPORTED.volume,
+        sms: features.sms && SUPPORTED.sms,
+        commands: features.commands && SUPPORTED.commands,
+    }
+}
 
 /// How the core reaches the app. Called from Rust threads: the app hops to
 /// its main thread before touching its interface.
@@ -166,9 +245,10 @@ impl WeftCore {
             }),
             on_notice: Arc::new(move |notice| notice_delegate.notice(map::notice(notice))),
             downloads: self.downloads.clone(),
-            // Not announced (see SUPPORTED): nothing should come.
-            on_input: Box::new(|_| tracing::debug!("remote input ignored: not handled yet")),
-            run_command: Box::new(|_| tracing::debug!("command ignored: not handled yet")),
+            // Not announced (see MAC_INCOMING): nothing should come.
+            on_input: Box::new(|_| tracing::debug!("remote input ignored: not handled")),
+            run_command: Box::new(|_| tracing::debug!("command ignored: not handled")),
+            implemented: Some(MAC_IMPLEMENTED),
         }
     }
 
@@ -203,8 +283,9 @@ impl WeftCore {
             .map_err(|err| CoreError::Start {
                 message: err.to_string(),
             })?;
-        if handle.snapshot().features != SUPPORTED {
-            handle.send(Command::SetFeatures(SUPPORTED));
+        let features = handle.snapshot().features;
+        if supported(features) != features {
+            handle.send(Command::SetFeatures(supported(features)));
         }
         let watcher = handle.clone();
         let delegate = self.delegate.clone();
@@ -240,6 +321,31 @@ impl WeftCore {
             Some(handle) => handle.send(command),
             None => tracing::info!("no worker running: command dropped"),
         }
+    }
+
+    /// A trusted device by its id in hex.
+    fn device(&self, device_id: &str) -> Result<[u8; 16], CoreError> {
+        let id = unhex::<16>(device_id).ok_or(CoreError::UnknownDevice)?;
+        let known = self
+            .published()
+            .snapshot
+            .devices
+            .iter()
+            .any(|device| device.id == id);
+        if known {
+            Ok(id)
+        } else {
+            Err(CoreError::UnknownDevice)
+        }
+    }
+
+    /// Sends a packet the user asked for to a trusted device. The worker
+    /// drops it if its feature is off.
+    fn send_packet(&self, device_id: &str, packet: Packet) -> Result<(), CoreError> {
+        let device = self.device(device_id)?;
+        tracing::debug!(device = %short_id(&device), kind = packet.kind(), "packet asked for");
+        self.send(Command::SendPacket(device, packet));
+        Ok(())
     }
 
     fn published(&self) -> Published {
@@ -352,16 +458,7 @@ impl WeftCore {
 
     /// Removes a trusted device from the group, by id in hex.
     pub fn remove_device(&self, device_id: String) -> Result<(), CoreError> {
-        let id = unhex::<16>(&device_id).ok_or(CoreError::UnknownDevice)?;
-        let known = self
-            .published()
-            .snapshot
-            .devices
-            .iter()
-            .any(|device| device.id == id);
-        if !known {
-            return Err(CoreError::UnknownDevice);
-        }
+        let id = self.device(&device_id)?;
         tracing::info!(device = %short_id(&id), "removing a device");
         self.send(Command::RemoveDevice(id));
         Ok(())
@@ -458,6 +555,158 @@ impl WeftCore {
         outcome
     }
 
+    /// Turns features on or off: saved, and new capabilities go to every
+    /// device. Switches this Mac does not have stay off.
+    pub fn set_features(&self, switches: FeatureSwitches) {
+        let features = supported(Features {
+            files: switches.files,
+            links: switches.links,
+            ring: switches.ring,
+            battery: switches.battery,
+            notifications: switches.notifications,
+            calls: switches.calls,
+            media: switches.media,
+            volume: switches.volume,
+            sms: false,
+            commands: false,
+        });
+        tracing::info!(?switches, "feature switches changed");
+        self.send(Command::SetFeatures(features));
+    }
+
+    /// Makes a device ring, until [`WeftCore::stop_ringing`] or a minute.
+    pub fn ring(&self, device_id: String) -> Result<(), CoreError> {
+        let device = self.device(&device_id)?;
+        self.send(Command::Ring(device));
+        Ok(())
+    }
+
+    /// Stops the ring this Mac started on a device.
+    pub fn stop_ringing(&self, device_id: String) -> Result<(), CoreError> {
+        let device = self.device(&device_id)?;
+        self.send(Command::StopRinging(device));
+        Ok(())
+    }
+
+    /// The user found this Mac: stops its ring.
+    pub fn found_it(&self) {
+        self.send(Command::FoundIt);
+    }
+
+    pub fn ping(&self, device_id: String) -> Result<(), CoreError> {
+        self.send_packet(&device_id, Packet::Ping { message: None })
+    }
+
+    /// Sends a web link, opened on the device. Only http and https links
+    /// of at most 2048 bytes ([`is_shareable_url`]).
+    pub fn share_url(&self, device_id: String, url: String) -> Result<(), CoreError> {
+        let url = url.trim().to_owned();
+        if !weft_client::packets::is_shareable_url(&url) {
+            return Err(CoreError::InvalidLink);
+        }
+        self.send_packet(&device_id, Packet::ShareUrl { url })
+    }
+
+    /// Offers these files (absolute paths) to a device; progress shows in
+    /// the snapshot's transfers.
+    pub fn send_files(&self, device_id: String, paths: Vec<String>) -> Result<(), CoreError> {
+        let device = self.device(&device_id)?;
+        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+        tracing::info!(device = %short_id(&device), files = paths.len(), "sending files");
+        self.send(Command::SendFiles(device, paths));
+        Ok(())
+    }
+
+    /// Cancels a transfer, either way, by its id in hex.
+    pub fn cancel_transfer(&self, transfer_id: String) {
+        match unhex::<16>(&transfer_id) {
+            Some(id) => self.send(Command::CancelTransfer(id)),
+            None => tracing::debug!("cancel of an invalid transfer id ignored"),
+        }
+    }
+
+    /// Asks a player of a device to act.
+    pub fn media_command(
+        &self,
+        device_id: String,
+        player: String,
+        control: MediaControl,
+    ) -> Result<(), CoreError> {
+        let action = match control {
+            MediaControl::Play => MediaAction::Play,
+            MediaControl::Pause => MediaAction::Pause,
+            MediaControl::PlayPause => MediaAction::PlayPause,
+            MediaControl::Next => MediaAction::Next,
+            MediaControl::Previous => MediaAction::Previous,
+            MediaControl::Seek { position_ms } => MediaAction::Seek(position_ms),
+            MediaControl::SetVolume { level } => MediaAction::SetVolume(level.min(100)),
+        };
+        let command = MediaCommand::new(&player, action);
+        self.send_packet(&device_id, Packet::MediaCommand(command))
+    }
+
+    /// Changes a device's volume (0 to 100) or mute; `None` keeps it.
+    pub fn set_device_volume(
+        &self,
+        device_id: String,
+        level: Option<u8>,
+        muted: Option<bool>,
+    ) -> Result<(), CoreError> {
+        let set = VolumeSet {
+            level: level.map(|level| level.min(100)),
+            muted,
+        };
+        self.send_packet(&device_id, Packet::VolumeSet(set))
+    }
+
+    /// Dismisses a notification on the phone.
+    pub fn dismiss_notification(&self, device_id: String, id: String) -> Result<(), CoreError> {
+        self.send_packet(&device_id, Packet::NotificationDismiss { id })
+    }
+
+    /// Presses one of a notification's actions, by its label.
+    pub fn notification_action(
+        &self,
+        device_id: String,
+        id: String,
+        action: String,
+    ) -> Result<(), CoreError> {
+        self.send_packet(&device_id, Packet::NotificationAction { id, action })
+    }
+
+    /// Answers a notification with its inline reply.
+    pub fn reply_to_notification(
+        &self,
+        device_id: String,
+        id: String,
+        text: String,
+    ) -> Result<(), CoreError> {
+        let text = text.trim().to_owned();
+        if text.is_empty() {
+            return Ok(());
+        }
+        self.send_packet(&device_id, Packet::NotificationReply { id, text })
+    }
+
+    /// Asks the phone for its current notifications again.
+    pub fn request_notifications(&self, device_id: String) -> Result<(), CoreError> {
+        self.send_packet(&device_id, Packet::NotificationRequest {})
+    }
+
+    /// Silences the ringer of the phone's incoming call.
+    pub fn mute_call(&self, device_id: String) -> Result<(), CoreError> {
+        self.send_packet(&device_id, Packet::CallMute {})
+    }
+
+    /// This Mac's output volume, 0 to 100, as it is now: sent to the
+    /// devices when it changed.
+    pub fn local_volume(&self, level: u8, muted: bool) {
+        self.send(Command::LocalVolume(Volume {
+            level: Some(level.min(100)),
+            muted: Some(muted),
+        }));
+    }
+
     /// Stops the worker. The core does nothing afterwards.
     pub fn stop(&self) {
         let running = lock(&self.running).take();
@@ -477,7 +726,7 @@ fn placeholder() -> worker::Snapshot {
         devices: Vec::new(),
         peers: Default::default(),
         pause: sync::Pause::default(),
-        features: SUPPORTED,
+        features: supported(Features::default()),
         control: Default::default(),
         commands: Vec::new(),
         pairing: worker::PairingState::Idle,

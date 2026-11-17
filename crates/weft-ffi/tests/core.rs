@@ -10,8 +10,9 @@ use tokio::net::TcpListener;
 use weft_cli::{Event, Session, State, StateDir, unhex};
 use weft_client::packets::{self, Packet, Parsed};
 use weft_ffi::{
-    ConnectionStatus, CoreConfig, CoreDelegate, CoreError, CoreNotice, CoreSnapshot, Pairing,
-    Pasteboard, PasteboardContent, SendOutcome, WeftCore,
+    ConnectionStatus, ConnectivityInfo, CoreConfig, CoreDelegate, CoreError, CoreNotice,
+    CoreSnapshot, FeatureSwitches, MediaControl, Pairing, Pasteboard, PasteboardContent,
+    SendOutcome, TransferStage, VolumeInfo, WeftCore,
 };
 use weft_protocol::PairingCode;
 use weft_relay::Config;
@@ -118,7 +119,7 @@ impl CoreDelegate for Recorder {
 
 /// The core under test, with what it was given.
 struct Tested {
-    _temp: TempDir,
+    temp: TempDir,
     core: Arc<WeftCore>,
     pasteboard: Arc<FakePasteboard>,
     recorder: Arc<Recorder>,
@@ -137,7 +138,7 @@ impl Tested {
         };
         let core = WeftCore::start(config, recorder.clone(), pasteboard.clone()).unwrap();
         Tested {
-            _temp: temp,
+            temp,
             core,
             pasteboard,
             recorder,
@@ -275,6 +276,67 @@ impl Peer {
     }
 }
 
+fn sorted(kinds: &[String]) -> Vec<String> {
+    let mut kinds = kinds.to_vec();
+    kinds.sort();
+    kinds
+}
+
+fn sorted_str(kinds: &[&str]) -> Vec<String> {
+    sorted(
+        &kinds
+            .iter()
+            .map(|kind| kind.to_string())
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// What the Mac acts on, spelled out: a change to `MAC_INCOMING` or
+/// `MAC_OUTGOING` must change these too.
+const MAC_INCOMING: &[&str] = &[
+    "state.request",
+    "ping",
+    "ring",
+    "ring.stop",
+    "share.url",
+    "file.offer",
+    "file.accept",
+    "file.reject",
+    "file.ack",
+    "file.done",
+    "file.cancel",
+    "battery",
+    "connectivity",
+    "notification",
+    "notification.removed",
+    "call",
+    "media",
+    "volume",
+    "volume.set",
+];
+
+const MAC_OUTGOING: &[&str] = &[
+    "state.request",
+    "ping",
+    "ring",
+    "ring.stop",
+    "share.url",
+    "file.offer",
+    "file.accept",
+    "file.reject",
+    "file.ack",
+    "file.done",
+    "file.cancel",
+    "notification.dismiss",
+    "notification.action",
+    "notification.reply",
+    "notification.request",
+    "call.mute",
+    "media.command",
+    "volume",
+    "volume.set",
+];
+
 /// A connected core named "Studio Mac", paired with a peer named "Pixel".
 async fn paired(relay_url: &str) -> (Tested, Peer) {
     let tested = Tested::start(relay_url);
@@ -378,7 +440,7 @@ async fn pairs_and_syncs_the_pasteboard_both_ways() {
         let (tested, mut peer) = paired(&url).await;
         let mac = tested.id();
 
-        // The Mac announces only what this version handles.
+        // The Mac announces exactly what it implements.
         let capabilities = peer
             .expect_packet(|packet| matches!(packet, Packet::Capabilities(_)))
             .await;
@@ -386,9 +448,8 @@ async fn pairs_and_syncs_the_pasteboard_both_ways() {
             unreachable!();
         };
         assert_eq!(capabilities.platform, "macos");
-        assert!(capabilities.handles("battery"));
-        assert!(!capabilities.handles("ring"));
-        assert!(!capabilities.handles("file.offer"));
+        assert_eq!(sorted(&capabilities.incoming), sorted_str(MAC_INCOMING));
+        assert_eq!(sorted(&capabilities.outgoing), sorted_str(MAC_OUTGOING));
 
         // What the pasteboard held at start is never sent.
         assert!(!tested.core.poll_pasteboard().sent);
@@ -542,6 +603,452 @@ async fn leaves_the_group_and_changes_the_relay() {
         tested
             .wait(|snapshot| {
                 snapshot.relay_url == other && snapshot.status == ConnectionStatus::Connected
+            })
+            .await;
+        tested.blocking(|core| core.stop()).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn announces_only_what_the_mac_implements() {
+    timed(async {
+        assert_eq!(sorted_str(weft_ffi::MAC_INCOMING), sorted_str(MAC_INCOMING));
+        assert_eq!(sorted_str(weft_ffi::MAC_OUTGOING), sorted_str(MAC_OUTGOING));
+        for kind in [
+            "media",
+            "media.command",
+            "input.key",
+            "input.pointer",
+            "presenter",
+            "sms.send",
+            "contacts",
+            "command.run",
+            "command.list",
+        ] {
+            let incoming = weft_ffi::MAC_INCOMING.contains(&kind);
+            let outgoing = weft_ffi::MAC_OUTGOING.contains(&kind);
+            match kind {
+                // The phone's players are shown and controlled; the Mac's
+                // own are not shared.
+                "media" => assert!(incoming && !outgoing),
+                "media.command" => assert!(!incoming && outgoing),
+                _ => assert!(!incoming && !outgoing, "{kind}"),
+            }
+        }
+
+        let url = start_relay().await;
+        let (tested, mut peer) = paired(&url).await;
+        peer.expect_packet(|packet| matches!(packet, Packet::Capabilities(_)))
+            .await;
+        // SMS and commands stay off whatever is asked; the others follow
+        // the switches, and new capabilities go out at once.
+        let snapshot = tested.core.snapshot();
+        assert_eq!(
+            snapshot.features,
+            FeatureSwitches {
+                files: true,
+                links: true,
+                notifications: true,
+                battery: true,
+                ring: true,
+                calls: true,
+                media: true,
+                volume: true,
+            }
+        );
+        tested.core.set_features(FeatureSwitches {
+            media: false,
+            ring: false,
+            ..snapshot.features
+        });
+        let Packet::Capabilities(capabilities) = peer
+            .expect_packet(|packet| matches!(packet, Packet::Capabilities(_)))
+            .await
+        else {
+            unreachable!();
+        };
+        for kind in ["media", "media.command", "ring", "ring.stop"] {
+            assert!(
+                !capabilities.handles(kind) && !capabilities.sends(kind),
+                "{kind}"
+            );
+        }
+        assert!(capabilities.handles("file.offer") && capabilities.sends("volume"));
+        tested
+            .wait(|snapshot| !snapshot.features.media && !snapshot.features.ring)
+            .await;
+        tested.blocking(|core| core.stop()).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn shows_the_phone_and_tells_what_it_does() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut peer) = paired(&url).await;
+        let mac = tested.id();
+        let phone = weft_cli::hex(&peer.id());
+        peer.expect_packet(|packet| matches!(packet, Packet::Capabilities(_)))
+            .await;
+
+        // The phone's state, as it sends it after its capabilities.
+        for packet in [
+            r#"{"type":"capabilities","platform":"android","incoming":["ring","ping","share.url","file.offer","media.command","volume.set","notification.dismiss","notification.action","notification.reply","notification.request","call.mute"],"outgoing":["battery","connectivity","media","volume","notification","call"]}"#,
+            r#"{"type":"battery","level":52,"charging":true}"#,
+            r#"{"type":"connectivity","network":"LTE","signal":3}"#,
+            r#"{"type":"media","players":[{"id":"p1","app":"Music","title":"Song","artist":"Band","playing":false,"position":1000,"length":200000,"canPlay":true},{"id":"p2","app":"Radio","title":"News","playing":true,"position":5000,"length":60000,"canPause":true,"canSeek":true,"volume":40}]}"#,
+            r#"{"type":"volume","level":70,"muted":false}"#,
+        ] {
+            peer.session.send_packet(mac, packet).await.unwrap();
+        }
+        let snapshot = tested
+            .wait(|snapshot| {
+                snapshot.devices[0].volume.is_some() && snapshot.devices[0].media.is_some()
+            })
+            .await;
+        let device = &snapshot.devices[0];
+        assert_eq!(device.platform.as_deref(), Some("android"));
+        assert!(device.handles.contains(&"ring".to_string()));
+        assert!(device.sends.contains(&"media".to_string()));
+        assert_eq!(device.battery.as_ref().unwrap().level, 52);
+        assert_eq!(
+            device.connectivity,
+            Some(ConnectivityInfo {
+                network: Some("LTE".into()),
+                signal: Some(3)
+            })
+        );
+        assert_eq!(
+            device.volume,
+            Some(VolumeInfo {
+                level: Some(70),
+                muted: Some(false)
+            })
+        );
+        let media = device.media.as_ref().unwrap();
+        assert_eq!(media.players.len(), 2);
+        // The one playing is the one shown.
+        assert_eq!(media.current, Some(1));
+        let radio = &media.players[1];
+        assert_eq!(
+            (radio.playing, radio.position_ms, radio.length_ms, radio.volume),
+            (true, Some(5000), Some(60000), Some(40))
+        );
+        assert!(radio.can_seek && radio.can_pause && !radio.can_next);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        assert!((now_ms - media.received_at_ms).abs() < 5_000);
+
+        // What the Mac sends the phone.
+        assert_eq!(
+            tested.core.ping("00".repeat(16)),
+            Err(CoreError::UnknownDevice)
+        );
+        tested.core.ping(phone.clone()).unwrap();
+        peer.expect_packet(|packet| matches!(packet, Packet::Ping { message: None }))
+            .await;
+        tested.core.ring(phone.clone()).unwrap();
+        peer.expect_packet(|packet| matches!(packet, Packet::Ring {}))
+            .await;
+        tested.core.stop_ringing(phone.clone()).unwrap();
+        peer.expect_packet(|packet| matches!(packet, Packet::RingStop {}))
+            .await;
+        assert_eq!(
+            tested
+                .core
+                .share_url(phone.clone(), "file:///etc/passwd".into()),
+            Err(CoreError::InvalidLink)
+        );
+        assert!(!weft_ffi::is_shareable_url("javascript:alert(1)"));
+        assert!(weft_ffi::is_shareable_url(" https://example.org/a "));
+        tested
+            .core
+            .share_url(phone.clone(), " https://example.org/a ".into())
+            .unwrap();
+        peer.expect_packet(|packet| {
+            *packet
+                == Packet::ShareUrl {
+                    url: "https://example.org/a".into(),
+                }
+        })
+        .await;
+        tested
+            .core
+            .media_command(phone.clone(), "p2".into(), MediaControl::Seek { position_ms: 30_000 })
+            .unwrap();
+        peer.expect_packet(|packet| {
+            matches!(packet, Packet::MediaCommand(command)
+                if command.player == "p2" && command.action == "seek" && command.value == Some(30_000))
+        })
+        .await;
+        tested
+            .core
+            .media_command(phone.clone(), "p2".into(), MediaControl::SetVolume { level: 120 })
+            .unwrap();
+        peer.expect_packet(|packet| {
+            matches!(packet, Packet::MediaCommand(command)
+                if command.action == "setVolume" && command.value == Some(100))
+        })
+        .await;
+        tested
+            .core
+            .set_device_volume(phone.clone(), Some(30), None)
+            .unwrap();
+        peer.expect_packet(|packet| {
+            matches!(packet, Packet::VolumeSet(set) if set.level == Some(30) && set.muted.is_none())
+        })
+        .await;
+        tested
+            .core
+            .dismiss_notification(phone.clone(), "n1".into())
+            .unwrap();
+        peer.expect_packet(|packet| *packet == Packet::NotificationDismiss { id: "n1".into() })
+            .await;
+        tested
+            .core
+            .notification_action(phone.clone(), "n1".into(), "Archive".into())
+            .unwrap();
+        peer.expect_packet(|packet| {
+            *packet
+                == Packet::NotificationAction {
+                    id: "n1".into(),
+                    action: "Archive".into(),
+                }
+        })
+        .await;
+        tested
+            .core
+            .reply_to_notification(phone.clone(), "n1".into(), "  on my way ".into())
+            .unwrap();
+        peer.expect_packet(|packet| {
+            *packet
+                == Packet::NotificationReply {
+                    id: "n1".into(),
+                    text: "on my way".into(),
+                }
+        })
+        .await;
+        tested.core.request_notifications(phone.clone()).unwrap();
+        peer.expect_packet(|packet| *packet == Packet::NotificationRequest {})
+            .await;
+        tested.core.mute_call(phone.clone()).unwrap();
+        peer.expect_packet(|packet| *packet == Packet::CallMute {})
+            .await;
+        // This Mac's volume goes to the devices that show it.
+        tested.core.local_volume(35, true);
+
+        // What the phone asks of the Mac.
+        peer.session
+            .send_packet(mac, r#"{"type":"ring"}"#)
+            .await
+            .unwrap();
+        tested
+            .expect_notice(|notice| matches!(notice, CoreNotice::Ring { .. }))
+            .await;
+        tested
+            .wait(|snapshot| snapshot.ringing.as_deref() == Some(phone.as_str()))
+            .await;
+        tested.core.found_it();
+        tested
+            .expect_notice(|notice| *notice == CoreNotice::RingEnded)
+            .await;
+        tested.wait(|snapshot| snapshot.ringing.is_none()).await;
+
+        peer.session
+            .send_packet(mac, r#"{"type":"share.url","url":"https://example.org/b"}"#)
+            .await
+            .unwrap();
+        let link = tested
+            .expect_notice(|notice| matches!(notice, CoreNotice::Link { .. }))
+            .await;
+        assert_eq!(
+            link,
+            CoreNotice::Link {
+                from: phone.clone(),
+                device: Some("Pixel".into()),
+                url: "https://example.org/b".into()
+            }
+        );
+        peer.session
+            .send_packet(mac, r#"{"type":"notification","id":"n2","app":"Chat","title":"Ann","text":"Hi","dismissable":true,"actions":["Like"],"reply":true}"#)
+            .await
+            .unwrap();
+        let notification = tested
+            .expect_notice(|notice| matches!(notice, CoreNotice::Notification { id, .. } if id == "n2"))
+            .await;
+        assert_eq!(
+            notification,
+            CoreNotice::Notification {
+                from: phone.clone(),
+                device: Some("Pixel".into()),
+                id: "n2".into(),
+                app: "Chat".into(),
+                title: "Ann".into(),
+                text: "Hi".into(),
+                dismissable: true,
+                actions: vec!["Like".into()],
+                reply: true,
+                // Within seconds of a notification.request: one the phone
+                // already had, which does not pop up again.
+                silent: true,
+            }
+        );
+        peer.session
+            .send_packet(mac, r#"{"type":"notification.removed","id":"n2"}"#)
+            .await
+            .unwrap();
+        tested
+            .expect_notice(|notice| matches!(notice, CoreNotice::NotificationRemoved { id, .. } if id == "n2"))
+            .await;
+        peer.session
+            .send_packet(mac, r#"{"type":"call","event":"ringing","name":"Ann"}"#)
+            .await
+            .unwrap();
+        tested
+            .expect_notice(|notice| matches!(notice, CoreNotice::Call { event, .. } if event == "ringing"))
+            .await;
+        peer.session
+            .send_packet(mac, r#"{"type":"volume.set","level":20}"#)
+            .await
+            .unwrap();
+        let set = tested
+            .expect_notice(|notice| matches!(notice, CoreNotice::SetVolume { .. }))
+            .await;
+        assert_eq!(
+            set,
+            CoreNotice::SetVolume {
+                from: phone.clone(),
+                level: Some(20),
+                muted: None
+            }
+        );
+        // Not implemented on the Mac: a media command for its own players
+        // is never announced, so it never comes; one that does is ignored
+        // by the app (the core still reports it).
+        tested.blocking(|core| core.stop()).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn sends_and_receives_files() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut peer) = paired(&url).await;
+        let mac = tested.id();
+        let phone = weft_cli::hex(&peer.id());
+        peer.expect_packet(|packet| matches!(packet, Packet::Capabilities(_)))
+            .await;
+
+        // Phone -> Mac: lands in the Downloads folder of the config.
+        let id = [0x5a; 16];
+        let offer = format!(
+            r#"{{"type":"file.offer","id":"{}","name":"photo.jpg","size":5}}"#,
+            weft_cli::hex(&id)
+        );
+        peer.session.send_packet(mac, &offer).await.unwrap();
+        peer.expect_packet(|packet| matches!(packet, Packet::FileAccept { offset: 0, .. }))
+            .await;
+        peer.session
+            .send_file_chunk(mac, id, 0, b"hello")
+            .await
+            .unwrap();
+        peer.expect_packet(|packet| matches!(packet, Packet::FileDone { .. }))
+            .await;
+        let received = tested
+            .expect_notice(|notice| matches!(notice, CoreNotice::FileReceived { .. }))
+            .await;
+        let CoreNotice::FileReceived { from, path, .. } = received else {
+            unreachable!();
+        };
+        assert_eq!(from, phone);
+        let downloads = tested.temp.path().join("Downloads");
+        assert_eq!(std::path::Path::new(&path), downloads.join("photo.jpg"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello");
+        tested
+            .wait(|snapshot| {
+                snapshot
+                    .transfers
+                    .iter()
+                    .any(|transfer| !transfer.outgoing && transfer.stage == TransferStage::Done)
+            })
+            .await;
+
+        // Mac -> phone: offered, sent in chunks, done.
+        let source = tested.temp.path().join("notes.txt");
+        std::fs::write(&source, b"weft notes").unwrap();
+        tested
+            .core
+            .send_files(phone.clone(), vec![source.to_string_lossy().into_owned()])
+            .unwrap();
+        let Packet::FileOffer(offer) = peer
+            .expect_packet(|packet| matches!(packet, Packet::FileOffer(_)))
+            .await
+        else {
+            unreachable!();
+        };
+        assert_eq!((offer.name.as_str(), offer.size), ("notes.txt", 10));
+        let accept = format!(r#"{{"type":"file.accept","id":"{}","offset":0}}"#, offer.id);
+        peer.session.send_packet(mac, &accept).await.unwrap();
+        let chunk = peer
+            .expect(|event| matches!(event, Event::FileChunk { .. }))
+            .await;
+        let Event::FileChunk { data, .. } = chunk else {
+            unreachable!();
+        };
+        assert_eq!(data, b"weft notes");
+        let ack = format!(r#"{{"type":"file.ack","id":"{}","offset":10}}"#, offer.id);
+        peer.session.send_packet(mac, &ack).await.unwrap();
+        let done = format!(r#"{{"type":"file.done","id":"{}"}}"#, offer.id);
+        peer.session.send_packet(mac, &done).await.unwrap();
+        let snapshot = tested
+            .wait(|snapshot| {
+                snapshot
+                    .transfers
+                    .iter()
+                    .any(|transfer| transfer.outgoing && transfer.stage == TransferStage::Done)
+            })
+            .await;
+        let sent = snapshot
+            .transfers
+            .iter()
+            .find(|transfer| transfer.outgoing)
+            .unwrap();
+        assert_eq!(
+            (sent.size, sent.done, sent.device_id.as_str()),
+            (10, 10, phone.as_str())
+        );
+
+        // A cancelled offer: the peer hears of it.
+        std::fs::write(&source, vec![7u8; 300_000]).unwrap();
+        tested
+            .core
+            .send_files(phone.clone(), vec![source.to_string_lossy().into_owned()])
+            .unwrap();
+        let Packet::FileOffer(offer) = peer
+            .expect_packet(|packet| matches!(packet, Packet::FileOffer(_)))
+            .await
+        else {
+            unreachable!();
+        };
+        tested.core.cancel_transfer(offer.id.clone());
+        peer.expect_packet(|packet| {
+            *packet
+                == Packet::FileCancel {
+                    id: offer.id.clone(),
+                }
+        })
+        .await;
+        tested
+            .wait(|snapshot| {
+                snapshot
+                    .transfers
+                    .iter()
+                    .any(|transfer| transfer.stage == TransferStage::Cancelled)
             })
             .await;
         tested.blocking(|core| core.stop()).await;

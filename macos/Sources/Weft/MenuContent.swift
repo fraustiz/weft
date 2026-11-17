@@ -20,6 +20,7 @@ struct MenuContent: View {
                 model.sendClipboardNow()
             }
             .disabled(!snapshot.isConnected || snapshot.devices.isEmpty)
+            sendFile(snapshot)
             Button(t("Pair a Device…", "Associer un appareil…")) {
                 model.openWindow = openWindow
                 model.pair()
@@ -73,6 +74,25 @@ struct MenuContent: View {
                     } label: {
                         Label(label(device), systemImage: device.symbol)
                     }
+                }
+            }
+        }
+    }
+
+    /// « Send File to » the devices that take files.
+    @ViewBuilder
+    private func sendFile(_ snapshot: CoreSnapshot) -> some View {
+        let takers = snapshot.features.files ? snapshot.devices.filter { $0.takes("file.offer") } : []
+        if takers.count == 1, let device = takers.first {
+            Button(Language.current == .french
+                   ? "Envoyer un fichier à \(device.displayName)…"
+                   : "Send File to \(device.displayName)…") {
+                model.pickFiles(for: device)
+            }
+        } else if !takers.isEmpty {
+            Menu(t("Send File to", "Envoyer un fichier à")) {
+                ForEach(takers) { device in
+                    Button(device.displayName) { model.pickFiles(for: device) }
                 }
             }
         }

@@ -165,6 +165,31 @@ impl Features {
     }
 }
 
+/// The packet types an app built on this core really acts on and sends,
+/// when it implements fewer than the core knows: the capabilities it
+/// announces keep only these, so no device offers an action the app would
+/// drop. An app that implements everything gives `None` in
+/// [`crate::worker::Hooks::implemented`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Implemented {
+    pub incoming: &'static [&'static str],
+    pub outgoing: &'static [&'static str],
+}
+
+impl Implemented {
+    /// `capabilities` without the packet types this app does not
+    /// implement, order kept.
+    pub fn restrict(&self, mut capabilities: Capabilities) -> Capabilities {
+        capabilities
+            .incoming
+            .retain(|kind| self.incoming.contains(&kind.as_str()));
+        capabilities
+            .outgoing
+            .retain(|kind| self.outgoing.contains(&kind.as_str()));
+        capabilities
+    }
+}
+
 /// A command the other devices may run on this computer: they only see
 /// its id and name, and only ever ask for it by id.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -336,5 +361,24 @@ mod tests {
         let none = none.capabilities(false);
         assert_eq!(none.incoming, ["state.request", "ping"]);
         assert_eq!(none.outgoing, ["state.request", "ping", "input.key"]);
+    }
+
+    #[test]
+    fn an_app_announces_only_what_it_implements() {
+        let implemented = Implemented {
+            incoming: &["state.request", "ping", "media"],
+            outgoing: &["state.request", "media.command"],
+        };
+        let restricted = implemented.restrict(Features::default().capabilities(true));
+        assert_eq!(restricted.incoming, ["state.request", "ping", "media"]);
+        assert_eq!(restricted.outgoing, ["state.request", "media.command"]);
+        // A switched-off feature stays out.
+        let off = Features {
+            media: false,
+            ..Features::default()
+        };
+        let restricted = implemented.restrict(off.capabilities(false));
+        assert_eq!(restricted.incoming, ["state.request", "ping"]);
+        assert_eq!(restricted.outgoing, ["state.request"]);
     }
 }

@@ -112,3 +112,71 @@ extension PairingFailureKind {
         }
     }
 }
+
+extension TransferFailureKind {
+    /// Why a transfer failed, in a sentence.
+    var text: String {
+        switch self {
+        case .disabled:
+            t("The other device does not accept files.", "L’autre appareil n’accepte pas les fichiers.")
+        case .tooLargeForReceiver:
+            t("Too large for the other device.", "Trop grand pour l’autre appareil.")
+        case .noSpace:
+            t("Not enough space on the other device.", "Pas assez de place sur l’autre appareil.")
+        case .busy:
+            t("The other device is busy with other files.", "L’autre appareil reçoit déjà d’autres fichiers.")
+        case .refused:
+            t("Refused by the other device.", "Refusé par l’autre appareil.")
+        case .noProgress:
+            t("Stopped: nothing moved for 10 minutes.", "Arrêté : rien n’a avancé pendant 10 minutes.")
+        case .disk:
+            t("The file could not be read or written.", "Le fichier n’a pas pu être lu ou écrit.")
+        case .tooLarge:
+            t("Over 4 GB, the most Weft sends.", "Plus de 4 Go, le maximum de Weft.")
+        }
+    }
+}
+
+extension TransferInfo: Identifiable {}
+
+extension TransferInfo {
+    var isActive: Bool {
+        switch stage {
+        case .waiting, .running: true
+        case .done, .cancelled, .failed: false
+        }
+    }
+
+    /// Where it stands, in a few words.
+    var status: String {
+        switch stage {
+        case .waiting:
+            return t("Waiting for the other device", "En attente de l’autre appareil")
+        case .running:
+            let (done, total) = (Words.size(done), Words.size(size))
+            return Language.current == .french ? "\(done) sur \(total)" : "\(done) of \(total)"
+        case .done:
+            return outgoing ? t("Sent", "Envoyé") : t("Saved in Downloads", "Enregistré dans Téléchargements")
+        case .cancelled:
+            return t("Cancelled", "Annulé")
+        case .failed(let failure):
+            return failure.text
+        }
+    }
+}
+
+extension DeviceInfo {
+    /// Whether it acts on `kind` (its capabilities' `incoming`).
+    func takes(_ kind: String) -> Bool { handles.contains(kind) }
+    /// Whether it may send `kind` (its capabilities' `outgoing`).
+    func gives(_ kind: String) -> Bool { sends.contains(kind) }
+
+    /// "LTE", or "Wi-Fi", when it said.
+    var networkText: String? { Words.network(connectivity?.network) }
+
+    /// The player to show, when there is one.
+    var currentPlayer: PlayerInfo? {
+        guard let media, let index = media.current, Int(index) < media.players.count else { return nil }
+        return media.players[Int(index)]
+    }
+}

@@ -89,6 +89,8 @@ fn main() -> ExitCode {
                 Box::new(move |input| injector.apply(input))
             },
             run_command: Box::new(control::run_command),
+            // Every feature of the core is implemented here.
+            implemented: None,
         }
     };
     let (worker, worker_thread) = match worker::spawn(StateDir::new(state_dir.clone()), hooks) {

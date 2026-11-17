@@ -6,8 +6,12 @@
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use weft_cli::{hex, short_id};
+use weft_client::features::Features;
+use weft_client::packets::{Player, RejectReason};
+use weft_client::transfer::{Failure, Stage};
 use weft_client::worker::{
-    Direction, Notice, PairingFailure, PairingState, Published, Snapshot, Status,
+    Direction, Notice, PairingFailure, PairingState, PeerMedia, Published, Snapshot, Status,
+    TransferView,
 };
 
 /// The state of the connection to the relay.
@@ -36,6 +40,137 @@ pub struct BatteryInfo {
     pub low: bool,
 }
 
+/// A device's network, when it sent one.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ConnectivityInfo {
+    /// `"5G"`, `"LTE"`, `"3G"`, `"2G"`, `"wifi"`, `"none"`, or unknown.
+    pub network: Option<String>,
+    /// 0 to 4 bars, when known.
+    pub signal: Option<u8>,
+}
+
+/// A player of another device. Times are in milliseconds; `position_ms`
+/// is where it was when the device sent it (see [`MediaInfo`]).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PlayerInfo {
+    pub id: String,
+    pub app: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub playing: bool,
+    pub position_ms: Option<u64>,
+    pub length_ms: Option<u64>,
+    pub can_play: bool,
+    pub can_pause: bool,
+    pub can_next: bool,
+    pub can_previous: bool,
+    pub can_seek: bool,
+    /// 0 to 100, when the player has its own volume.
+    pub volume: Option<u8>,
+}
+
+/// What another device plays. A player that plays has moved on by the
+/// time elapsed since `received_at_ms`, up to its length.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MediaInfo {
+    /// Empty when nothing plays.
+    pub players: Vec<PlayerInfo>,
+    /// When the positions were received, in ms since the Unix epoch.
+    pub received_at_ms: i64,
+    /// The index in `players` of the one to show: the first one playing,
+    /// else the first one; `None` when there is none.
+    pub current: Option<u32>,
+}
+
+/// Another device's output volume. A missing member is unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct VolumeInfo {
+    /// 0 to 100.
+    pub level: Option<u8>,
+    pub muted: Option<bool>,
+}
+
+/// The feature switches of `docs/features.md` section 10 this Mac has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct FeatureSwitches {
+    pub files: bool,
+    pub links: bool,
+    pub notifications: bool,
+    pub battery: bool,
+    pub ring: bool,
+    pub calls: bool,
+    pub media: bool,
+    pub volume: bool,
+}
+
+/// Why a transfer failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum TransferFailureKind {
+    /// The other device does not take files.
+    Disabled,
+    /// Too large for the other device.
+    TooLargeForReceiver,
+    /// Not enough space on the other device.
+    NoSpace,
+    /// The other device already runs as many transfers as it can.
+    Busy,
+    /// Refused, for a reason this version does not know.
+    Refused,
+    /// Nothing moved for 10 minutes.
+    NoProgress,
+    /// The file could not be read (sending) or written (receiving).
+    Disk,
+    /// Over 4 GiB, the most a transfer carries.
+    TooLarge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum TransferStage {
+    /// Waiting for a free slot, or for the other device to answer.
+    Waiting,
+    Running,
+    Done,
+    Cancelled,
+    Failed {
+        failure: TransferFailureKind,
+    },
+}
+
+/// A file transfer, under way or among the last finished ones.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct TransferInfo {
+    /// In hex, as [`crate::WeftCore::cancel_transfer`] takes it.
+    pub id: String,
+    /// The device on the other end, in hex.
+    pub device_id: String,
+    /// Sent from this Mac, rather than received.
+    pub outgoing: bool,
+    pub name: String,
+    pub size: u64,
+    /// Bytes confirmed (sent) or written (received).
+    pub done: u64,
+    pub stage: TransferStage,
+}
+
+/// What [`crate::WeftCore::media_command`] asks a player to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MediaControl {
+    Play,
+    Pause,
+    PlayPause,
+    Next,
+    Previous,
+    /// To this position, in milliseconds.
+    Seek {
+        position_ms: u64,
+    },
+    /// To this volume, 0 to 100.
+    SetVolume {
+        level: u8,
+    },
+}
+
 /// A trusted device, with what it told about itself.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct DeviceInfo {
@@ -49,8 +184,15 @@ pub struct DeviceInfo {
     /// capabilities.
     pub platform: Option<String>,
     pub battery: Option<BatteryInfo>,
+    pub connectivity: Option<ConnectivityInfo>,
     /// The packet types it acts on (`incoming` of its capabilities).
     pub handles: Vec<String>,
+    /// The packet types it may send (`outgoing` of its capabilities).
+    pub sends: Vec<String>,
+    /// Its players, once it sent them and while the media switch is on.
+    pub media: Option<MediaInfo>,
+    /// Its volume, once it sent it and while the volume switch is on.
+    pub volume: Option<VolumeInfo>,
 }
 
 /// Why a pairing failed.
@@ -117,11 +259,16 @@ pub struct CoreSnapshot {
     pub devices: Vec<DeviceInfo>,
     pub pairing: Pairing,
     pub last_activity: Option<LastActivity>,
+    /// The feature switches, as saved.
+    pub features: FeatureSwitches,
+    /// The device ringing this Mac, in hex, while it rings.
+    pub ringing: Option<String>,
+    /// Transfers under way, then the last finished ones.
+    pub transfers: Vec<TransferInfo>,
 }
 
 /// Something the user should see or hear, as the worker reported it.
-/// `from` is a device id in hex, `device` its name when known. This
-/// version of the app shows none of them yet; later ones will.
+/// `from` is a device id in hex, `device` its name when known.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum CoreNotice {
     Ring {
@@ -148,8 +295,11 @@ pub enum CoreNotice {
         device: Option<String>,
         name: String,
         outgoing: bool,
-        reason: String,
+        failure: TransferFailureKind,
     },
+    /// A phone notification, new or updated: `id` is stable for one
+    /// notification. `silent`: an update, or one the phone already had,
+    /// that should not pop up again.
     Notification {
         from: String,
         device: Option<String>,
@@ -157,6 +307,9 @@ pub enum CoreNotice {
         app: String,
         title: String,
         text: String,
+        dismissable: bool,
+        actions: Vec<String>,
+        reply: bool,
         silent: bool,
     },
     NotificationRemoved {
@@ -318,6 +471,31 @@ pub(crate) fn snapshot(published: &Published, now: Now) -> CoreSnapshot {
                         low: battery.low == Some(true),
                     })
                 });
+            let connectivity = peer
+                .connectivity
+                .clone()
+                .filter(|_| view.features.battery)
+                .map(|connectivity| ConnectivityInfo {
+                    network: connectivity.network,
+                    signal: connectivity.signal.filter(|signal| *signal <= 4),
+                });
+            let media = peer
+                .media
+                .as_ref()
+                .filter(|_| view.features.media)
+                .map(|media| media_info(media, now));
+            let volume = peer
+                .volume
+                .filter(|_| view.features.volume)
+                .map(|volume| VolumeInfo {
+                    level: volume.level.map(|level| level.min(100)),
+                    muted: volume.muted,
+                });
+            let (handles, sends) = peer
+                .capabilities
+                .as_ref()
+                .map(|capabilities| (capabilities.incoming.clone(), capabilities.outgoing.clone()))
+                .unwrap_or_default();
             DeviceInfo {
                 id: hex(&device.id),
                 short_id: short_id(&device.id),
@@ -327,10 +505,11 @@ pub(crate) fn snapshot(published: &Published, now: Now) -> CoreSnapshot {
                     .as_ref()
                     .map(|capabilities| capabilities.platform.clone()),
                 battery,
-                handles: peer
-                    .capabilities
-                    .map(|capabilities| capabilities.incoming)
-                    .unwrap_or_default(),
+                connectivity,
+                handles,
+                sends,
+                media,
+                volume,
             }
         })
         .collect();
@@ -351,6 +530,90 @@ pub(crate) fn snapshot(published: &Published, now: Now) -> CoreSnapshot {
             },
             at_ms: system_ms(activity.at),
         }),
+        features: switches(&view.features),
+        ringing: view.ringing.as_ref().map(|device| hex(device)),
+        transfers: view.transfers.iter().map(transfer).collect(),
+    }
+}
+
+fn player(player: &Player) -> PlayerInfo {
+    PlayerInfo {
+        id: player.id.clone(),
+        app: player.app.clone(),
+        title: player.title.clone(),
+        artist: player.artist.clone(),
+        album: player.album.clone(),
+        playing: player.playing,
+        position_ms: player.position,
+        length_ms: player.length,
+        can_play: player.can_play,
+        can_pause: player.can_pause,
+        can_next: player.can_next,
+        can_previous: player.can_previous,
+        can_seek: player.can_seek,
+        volume: player.volume.filter(|volume| *volume <= 100),
+    }
+}
+
+fn media_info(media: &PeerMedia, now: Now) -> MediaInfo {
+    let current = media.current().and_then(|shown| {
+        let index = media
+            .players
+            .iter()
+            .position(|player| std::ptr::eq(player, shown))?;
+        u32::try_from(index).ok()
+    });
+    MediaInfo {
+        players: media.players.iter().map(player).collect(),
+        received_at_ms: now.unix_ms(media.at),
+        current,
+    }
+}
+
+/// The switches the app shows, out of all the core has.
+pub(crate) fn switches(features: &Features) -> FeatureSwitches {
+    FeatureSwitches {
+        files: features.files,
+        links: features.links,
+        notifications: features.notifications,
+        battery: features.battery,
+        ring: features.ring,
+        calls: features.calls,
+        media: features.media,
+        volume: features.volume,
+    }
+}
+
+pub(crate) fn failure_kind(failure: Failure) -> TransferFailureKind {
+    match failure {
+        Failure::Rejected(Some(RejectReason::Disabled)) => TransferFailureKind::Disabled,
+        Failure::Rejected(Some(RejectReason::TooLarge)) => TransferFailureKind::TooLargeForReceiver,
+        Failure::Rejected(Some(RejectReason::NoSpace)) => TransferFailureKind::NoSpace,
+        Failure::Rejected(Some(RejectReason::Busy)) => TransferFailureKind::Busy,
+        Failure::Rejected(None) => TransferFailureKind::Refused,
+        Failure::NoProgress => TransferFailureKind::NoProgress,
+        Failure::Disk => TransferFailureKind::Disk,
+        Failure::TooLarge => TransferFailureKind::TooLarge,
+    }
+}
+
+fn transfer(view: &TransferView) -> TransferInfo {
+    TransferInfo {
+        id: hex(&view.id),
+        device_id: hex(&view.device),
+        outgoing: view.outgoing,
+        name: view.name.clone(),
+        size: view.size,
+        done: view.done,
+        stage: match view.stage {
+            Stage::Waiting => TransferStage::Waiting,
+            Stage::Running => TransferStage::Running,
+            Stage::Done => TransferStage::Done,
+            Stage::Cancelled => TransferStage::Cancelled,
+            Stage::Failed(failure) => TransferStage::Failed {
+                failure: failure_kind(failure),
+            },
+        },
     }
 }
 
@@ -390,7 +653,7 @@ pub(crate) fn notice(notice: Notice) -> CoreNotice {
             device,
             name,
             outgoing,
-            reason: format!("{failure:?}"),
+            failure: failure_kind(failure),
         },
         Notice::Notification {
             from,
@@ -403,6 +666,9 @@ pub(crate) fn notice(notice: Notice) -> CoreNotice {
             app: notification.app,
             title: notification.title,
             text: notification.text,
+            dismissable: notification.dismissable,
+            actions: notification.actions,
+            reply: notification.reply,
             silent: notification.silent,
         },
         Notice::NotificationRemoved { from, id } => CoreNotice::NotificationRemoved {

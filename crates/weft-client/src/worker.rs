@@ -40,7 +40,7 @@ use weft_cli::session::{
 use weft_cli::{Error, Event, Next, PairOutcome, Result, Session, State, StateDir, hex, short_id};
 use weft_protocol::{ControlError, PairingCode, device_id_from_sign_pk, random_message_id};
 
-use crate::features::{Features, Settings, UserCommand};
+use crate::features::{Features, Implemented, Settings, UserCommand};
 use crate::input::Input;
 use crate::packets::{
     self, Battery, Call, Capabilities, Connectivity, FileOffer, MediaAction, Notification, Packet,
@@ -521,6 +521,11 @@ pub struct Hooks {
     pub on_input: Box<dyn FnMut(Input) + Send>,
     /// Called on the worker thread with the line of a command to run.
     pub run_command: Box<dyn FnMut(&str) + Send>,
+    /// The packet types the app acts on and sends, if fewer than this core
+    /// knows: its capabilities list only these, and packets the user asks
+    /// for ([`Command::SendPacket`]) go only if they are among them.
+    /// `None` for an app that implements every feature.
+    pub implemented: Option<Implemented>,
 }
 
 /// Loads the state in `dir`, creating an identity on [`DEFAULT_RELAY_URL`]
@@ -1248,9 +1253,16 @@ impl Worker {
     /// What this device announces to `to`: input only if `to` may control
     /// it.
     fn capabilities_for(&self, to: &[u8; 16]) -> Capabilities {
-        self.view
-            .features
-            .capabilities(self.view.control.contains(to))
+        self.announced(self.view.control.contains(to))
+    }
+
+    /// What the switches give, less what the app does not implement.
+    fn announced(&self, control: bool) -> Capabilities {
+        let capabilities = self.view.features.capabilities(control);
+        match &self.hooks.implemented {
+            Some(implemented) => implemented.restrict(capabilities),
+            None => capabilities,
+        }
     }
 
     /// Sends this device's capabilities, then its current state: what its
@@ -2335,7 +2347,7 @@ impl Worker {
                 Ok(())
             }
             Command::SendPacket(device, packet) => {
-                if self.view.features.capabilities(false).sends(packet.kind()) {
+                if self.announced(false).sends(packet.kind()) {
                     self.send(session, device, &packet).await
                 } else {
                     tracing::debug!(

@@ -25,10 +25,15 @@ mod core;
 mod group;
 mod map;
 
-pub use crate::core::{CoreDelegate, Pasteboard, PasteboardContent, WeftCore};
+pub use crate::core::{
+    CoreDelegate, MAC_IMPLEMENTED, MAC_INCOMING, MAC_OUTGOING, Pasteboard, PasteboardContent,
+    WeftCore,
+};
 pub use crate::map::{
-    BatteryInfo, ConnectionStatus, CoreNotice, CoreSnapshot, DeviceInfo, LastActivity, Pairing,
-    PairingFailureKind, PollOutcome, SendOutcome, TextDirection,
+    BatteryInfo, ConnectionStatus, ConnectivityInfo, CoreNotice, CoreSnapshot, DeviceInfo,
+    FeatureSwitches, LastActivity, MediaControl, MediaInfo, Pairing, PairingFailureKind,
+    PlayerInfo, PollOutcome, SendOutcome, TextDirection, TransferFailureKind, TransferInfo,
+    TransferStage, VolumeInfo,
 };
 
 uniffi::setup_scaffolding!();
@@ -70,6 +75,10 @@ pub enum CoreError {
     /// The state file could not be updated.
     #[error("{message}")]
     State { message: String },
+    /// Not a link another device opens: only http and https, at most
+    /// 2048 bytes.
+    #[error("not a web link")]
+    InvalidLink,
 }
 
 /// The relay a new installation uses.
@@ -88,6 +97,13 @@ pub fn check_device_name(typed: &str) -> Result<String, CoreError> {
         Some(valid) if valid == name => Ok(valid),
         _ => Err(CoreError::InvalidName),
     }
+}
+
+/// Whether `url` is a link another device opens (`docs/features.md`
+/// section 4): http or https, with a host, at most 2048 bytes, no spaces.
+#[uniffi::export]
+pub fn is_shareable_url(url: &str) -> bool {
+    weft_client::packets::is_shareable_url(url.trim())
 }
 
 /// Checks a relay url the user typed: what the client accepts, and plain

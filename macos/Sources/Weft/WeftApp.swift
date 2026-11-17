@@ -15,22 +15,30 @@ struct WeftApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var model = AppModel()
 
+    init() {
+        // Before AppKit reads it: see Brand.swift.
+        Brand.applyAccent()
+    }
+
     var body: some Scene {
         MenuBarExtra {
             MenuContent(model: model)
+                .tint(.weftOrange)
         } label: {
             MenuBarIcon(model: model)
         }
 
         Window("Weft", id: Self.mainWindow) {
             MainWindow(model: model)
+                .tint(.weftOrange)
                 .onAppear { delegate.model = model }
         }
-        .defaultSize(width: 720, height: 520)
+        .defaultSize(width: 720, height: 640)
         .windowResizability(.contentMinSize)
 
         Settings {
             SettingsView(model: model)
+                .tint(.weftOrange)
         }
     }
 
@@ -43,6 +51,9 @@ struct WeftApp: App {
             model.showMainWindow()
         case "settings":
             NSApp.activate()
+            model.openSettings?()
+        case "main+settings":
+            model.showMainWindow()
             model.openSettings?()
         case "menu":
             AppDelegate.openStatusMenu()
@@ -60,6 +71,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor func applicationDidFinishLaunching(_ notification: Notification) {
         Self.shared = self
+        if let appearance = Brand.appearance { NSApp.appearance = appearance }
+        if let accent = NSColor.controlAccentColor.usingColorSpace(.sRGB) {
+            Development.record(String(
+                format: "accent %.2f %.2f %.2f",
+                accent.redComponent, accent.greenComponent, accent.blueComponent
+            ))
+        }
     }
 
     @MainActor func applicationWillTerminate(_ notification: Notification) {

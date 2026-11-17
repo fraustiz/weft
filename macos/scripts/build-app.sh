@@ -17,14 +17,26 @@
 # only when their SVG changed. Prints the path of the app.
 #
 # Environment: WEFT_ARCHS="aarch64-apple-darwin" for an arm64-only build;
-# CHROME=/path/to/chrome if Chrome is elsewhere.
+# CHROME=/path/to/chrome if Chrome is elsewhere; WEFT_DEV_BUNDLE=1 for
+# build/Weft Dev.app instead, a development copy with its own identifier
+# (fr.frohub.weft.mac.dev): it shares no notification permission,
+# preferences or Launch Services entry with an installed Weft, so it can
+# run next to it (scripts/e2e.sh uses it).
 set -euo pipefail
 
 macos="$(cd "$(dirname "$0")/.." && pwd)"
 root="$(cd "$macos/.." && pwd)"
 brand="$root/brand/final"
 build="$macos/build"
-app="$build/Weft.app"
+if [[ "${WEFT_DEV_BUNDLE:-}" == 1 ]]; then
+    app="$build/Weft Dev.app"
+    bundle_id=fr.frohub.weft.mac.dev
+    display_name="Weft Dev"
+else
+    app="$build/Weft.app"
+    bundle_id=fr.frohub.weft.mac
+    display_name=Weft
+fi
 icons="$build/icons"
 chrome="${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
 read -r -a rust_archs <<<"${WEFT_ARCHS:-aarch64-apple-darwin x86_64-apple-darwin}"
@@ -89,7 +101,7 @@ EOF
     sips -z 18 18 "$icons/mark-360.png" --out "$icons/MenuBarIcon.png" >/dev/null
 fi
 
-echo "==> Weft.app"
+echo "==> ${app##*/}"
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/crates/weft-ffi/Cargo.toml" | head -1)"
 build_number="$(git -C "$root" rev-list --count HEAD 2>/dev/null || echo 1)"
 rm -rf "$app"
@@ -100,7 +112,7 @@ cp "$icons/Weft.icns" "$icons/MenuBarIcon.png" "$icons/MenuBarIcon@2x.png" "$app
 # own menus and panels follow them too.
 for language in en fr; do
     mkdir -p "$app/Contents/Resources/$language.lproj"
-    printf '"CFBundleDisplayName" = "Weft";\n' >"$app/Contents/Resources/$language.lproj/InfoPlist.strings"
+    printf '"CFBundleDisplayName" = "%s";\n' "$display_name" >"$app/Contents/Resources/$language.lproj/InfoPlist.strings"
 done
 cat >"$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -108,10 +120,10 @@ cat >"$app/Contents/Info.plist" <<EOF
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key><string>en</string>
-    <key>CFBundleDisplayName</key><string>Weft</string>
+    <key>CFBundleDisplayName</key><string>$display_name</string>
     <key>CFBundleExecutable</key><string>Weft</string>
     <key>CFBundleIconFile</key><string>Weft</string>
-    <key>CFBundleIdentifier</key><string>fr.frohub.weft.mac</string>
+    <key>CFBundleIdentifier</key><string>$bundle_id</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleLocalizations</key><array><string>en</string><string>fr</string></array>
     <key>CFBundleName</key><string>Weft</string>

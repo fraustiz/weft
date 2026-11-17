@@ -19,8 +19,18 @@ final class AppModel: ObservableObject {
     @Published var selection: String?
     /// A blocking change (relay, leaving the group) is under way.
     @Published private(set) var busy = false
+    /// The device this Mac rings, and until when, to show « Stop ».
+    @Published var rang: (device: String, until: Date)?
+    /// The Settings tab shown.
+    @Published var settingsTab = Development.settingsTab ?? "general"
 
-    private var core: WeftCore?
+    let notifier = Notifier()
+    let ringer = Ringer()
+    let volume = SystemVolume()
+    private(set) var core: WeftCore?
+    /// Devices `WEFT_DEV_SEND_FILE` was offered to.
+    private var developmentFileSent: Set<String> = []
+    private var hadDevices = false
     private var events: CoreEvents?
     private var timer: Timer?
     private var writtenCode: String?
@@ -38,7 +48,7 @@ final class AppModel: ObservableObject {
         self.events = events
         let config = CoreConfig(
             stateDir: Self.stateDirectory().path,
-            downloadsDir: Self.downloadsDirectory().path,
+            downloadsDir: (Development.downloadsDirectory ?? Self.downloadsDirectory()).path,
             relayUrl: Development.relayURL,
             defaultName: Host.current().localizedName
         )
@@ -49,9 +59,20 @@ final class AppModel: ObservableObject {
             log.error("core did not start: \(String(describing: error), privacy: .public)")
             return
         }
+        notifier.onResponse = { [weak self] response, info in self?.respond(response, info: info) }
+        notifier.start()
+        ringer.foundIt = { [weak self] in self?.core?.foundIt() }
+        volume.onChange = { [weak self] level, muted in self?.core?.localVolume(level: level, muted: muted) }
+        volume.start()
         refresh()
+        hadDevices = !devices.isEmpty
         let timer = Timer(timeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.pollPasteboard() }
+            MainActor.assumeIsolated {
+                self?.pollPasteboard()
+                if Development.fileToSend != nil, let snapshot = self?.snapshot {
+                    self?.offerDevelopmentFile(snapshot)
+                }
+            }
         }
         timer.tolerance = 0.1
         // Common modes: it keeps running while a menu is open.
@@ -73,6 +94,17 @@ final class AppModel: ObservableObject {
         }
         if selection == nil {
             selection = snapshot.devices.first?.id
+        }
+        // Right after a first pairing: the moment to ask for notifications.
+        if !hadDevices, !snapshot.devices.isEmpty {
+            notifier.askIfNeeded()
+        }
+        hadDevices = !snapshot.devices.isEmpty
+        if let rang, rang.until < .now || snapshot.device(rang.device) == nil {
+            self.rang = nil
+        }
+        if snapshot.ringing == nil, ringer.isRinging {
+            ringer.stop()
         }
         developmentHooks(snapshot)
     }
@@ -185,6 +217,21 @@ final class AppModel: ObservableObject {
         if Development.startsPairing, !pairingRequested, snapshot.isConnected {
             pairingRequested = true
             pair()
+        }
+        offerDevelopmentFile(snapshot)
+    }
+
+    /// `WEFT_DEV_SEND_FILE`: offers the file once to each device that
+    /// takes files, once it exists. Looked at with each snapshot and on
+    /// the pasteboard's clock.
+    private func offerDevelopmentFile(_ snapshot: CoreSnapshot) {
+        if let file = Development.fileToSend, FileManager.default.fileExists(atPath: file.path) {
+            for device in snapshot.devices
+            where device.handles.contains("file.offer") && !developmentFileSent.contains(device.id) {
+                developmentFileSent.insert(device.id)
+                sendFiles([file], to: device.id)
+                Development.record("offered file")
+            }
         }
     }
 }

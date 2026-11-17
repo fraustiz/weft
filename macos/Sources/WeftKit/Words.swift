@@ -80,3 +80,35 @@ public enum Words {
         }
     }
 }
+
+extension Words {
+    /// A `connectivity` network as people name it; `nil` when unknown.
+    public static func network(_ network: String?, language: Language = .current) -> String? {
+        switch network {
+        case nil, "": nil
+        case "wifi": "Wi-Fi"
+        case "none": language == .french ? "Pas de réseau" : "No network"
+        case let other?: other
+        }
+    }
+
+    /// The SF Symbol of a network: Wi-Fi, or cellular bars.
+    public static func networkSymbol(_ network: String?) -> String {
+        switch network {
+        case "wifi": "wifi"
+        case "none": "antenna.radiowaves.left.and.right.slash"
+        default: "cellularbars"
+        }
+    }
+
+    /// 0 to 4 bars as the fraction the cellular symbol fills.
+    public static func signalFraction(_ bars: UInt8?) -> Double {
+        guard let bars else { return 1 }
+        return Double(min(bars, 4)) / 4
+    }
+
+    /// A size in bytes, as the Finder writes it.
+    public static func size(_ bytes: UInt64) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file)
+    }
+}

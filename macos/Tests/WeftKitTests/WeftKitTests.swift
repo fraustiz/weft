@@ -155,3 +155,177 @@ private extension Result {
         return false
     }
 }
+
+@Suite struct MediaClockTests {
+    @Test func aPlayingPlayerMovesOnWithTheClock() {
+        let position = MediaClock.position(
+            positionMs: 5_000, lengthMs: 60_000, playing: true, receivedAtMs: 1_000, nowMs: 4_500
+        )
+        #expect(position == 8_500)
+    }
+
+    @Test func aPausedPlayerStaysPut() {
+        let position = MediaClock.position(
+            positionMs: 5_000, lengthMs: 60_000, playing: false, receivedAtMs: 1_000, nowMs: 90_000
+        )
+        #expect(position == 5_000)
+    }
+
+    @Test func thePositionStopsAtTheLength() {
+        #expect(MediaClock.position(
+            positionMs: 59_000, lengthMs: 60_000, playing: true, receivedAtMs: 0, nowMs: 10_000
+        ) == 60_000)
+        // No length (a stream): it keeps going.
+        #expect(MediaClock.position(
+            positionMs: 59_000, lengthMs: nil, playing: true, receivedAtMs: 0, nowMs: 10_000
+        ) == 69_000)
+        // A clock that went back does not move it backwards.
+        #expect(MediaClock.position(
+            positionMs: 1_000, lengthMs: 60_000, playing: true, receivedAtMs: 5_000, nowMs: 4_000
+        ) == 1_000)
+        #expect(MediaClock.position(
+            positionMs: nil, lengthMs: 60_000, playing: true, receivedAtMs: 0, nowMs: 1
+        ) == nil)
+    }
+
+    @Test func timesReadLikeAPlayer() {
+        #expect(MediaClock.time(0) == "0:00")
+        #expect(MediaClock.time(187_400) == "3:07")
+        #expect(MediaClock.time(3_765_000) == "1:02:45")
+    }
+
+    @Test func onlyAMoveAwayFromTheClockIsASeek() {
+        #expect(!MediaClock.isSeek(from: 10_000, to: 11_000))
+        #expect(MediaClock.isSeek(from: 10_000, to: 12_000))
+        #expect(MediaClock.isSeek(from: 10_000, to: 2_000))
+        #expect(MediaClock.isSeek(from: nil, to: 0))
+    }
+}
+
+@Suite struct LinkTests {
+    @Test func webLinksOnly() {
+        #expect(Links.isShareable("https://example.org/a?b#c"))
+        #expect(Links.isShareable("HTTP://Example.org"))
+        #expect(Links.isShareable("  https://example.org  "))
+        #expect(Links.isShareable("https://user@example.org:8080/"))
+        #expect(!Links.isShareable("file:///etc/passwd"))
+        #expect(!Links.isShareable("javascript:alert(1)"))
+        #expect(!Links.isShareable("ftp://example.org"))
+        #expect(!Links.isShareable("https://"))
+        #expect(!Links.isShareable("https:///path"))
+        #expect(!Links.isShareable("https://?q"))
+        #expect(!Links.isShareable("https://:80"))
+        #expect(!Links.isShareable("https://exa mple.org"))
+        #expect(!Links.isShareable(""))
+    }
+
+    @Test func atMost2048Bytes() {
+        let base = "https://example.org/"
+        let longest = base + String(repeating: "a", count: 2048 - base.utf8.count)
+        #expect(Links.isShareable(longest))
+        #expect(!Links.isShareable(longest + "a"))
+    }
+
+    @Test func theClipboardOffersALinkOnlyWhenItIsOne() {
+        #expect(Links.candidate(fromClipboard: " https://example.org/x\n") == "https://example.org/x")
+        #expect(Links.candidate(fromClipboard: "some words") == nil)
+        #expect(Links.candidate(fromClipboard: nil) == nil)
+        #expect(Links.openable("https://example.org")?.host == "example.org")
+        #expect(Links.openable("file:///tmp") == nil)
+    }
+}
+
+@Suite struct PhoneNotificationTests {
+    private func chat(silent: Bool = false, actions: [String] = ["Like", "Archive", "Mark read", "Mute"]) -> NotificationPlan {
+        PhoneNotifications.notification(
+            deviceId: "ab12", device: "Pixel 8", id: "0|com.chat|7", app: "Chat",
+            title: "Ann", text: "On my way", actions: actions, reply: true, dismissable: true,
+            silent: silent, language: .english
+        )
+    }
+
+    @Test func titledAppAndDevice() {
+        let plan = chat()
+        #expect(plan.title == "Chat · Pixel 8")
+        #expect(plan.subtitle == "Ann")
+        #expect(plan.body == "On my way")
+        #expect(plan.identifier == "n.ab12.0|com.chat|7")
+        #expect(plan.threadIdentifier == "ab12")
+        let unnamed = PhoneNotifications.notification(
+            deviceId: "ab12", device: "Pixel 8", id: "1", app: " ", title: "", text: "",
+            actions: [], reply: false, dismissable: false, silent: false, language: .english
+        )
+        #expect(unnamed.title == "Pixel 8")
+        #expect(unnamed.buttons.isEmpty)
+        #expect(unnamed.categoryIdentifier == "weft.plain")
+    }
+
+    @Test func buttonsFollowThePhone() {
+        let plan = chat()
+        #expect(plan.buttons.map(\.kind) == [.action(0), .action(1), .action(2), .reply, .dismiss])
+        #expect(plan.buttons.map(\.title) == ["Like", "Archive", "Mark read", "Reply", "Dismiss on Phone"])
+        // Same buttons, same category; other buttons, another one.
+        #expect(plan.categoryIdentifier == chat().categoryIdentifier)
+        #expect(plan.categoryIdentifier != chat(actions: ["Like"]).categoryIdentifier)
+    }
+
+    @Test func silentUpdatesDoNotPopUp() {
+        #expect(chat().banner && chat().sound)
+        #expect(!chat(silent: true).banner && !chat(silent: true).sound)
+    }
+
+    @Test func pressesBecomeAnswers() {
+        let actions = ["Like", "Archive"]
+        #expect(PhoneNotifications.response(actionIdentifier: "action.1", replyText: nil, actions: actions) == .action("Archive"))
+        #expect(PhoneNotifications.response(actionIdentifier: "action.5", replyText: nil, actions: actions) == .nothing)
+        #expect(PhoneNotifications.response(actionIdentifier: "reply", replyText: "  ok ", actions: actions) == .reply("ok"))
+        #expect(PhoneNotifications.response(actionIdentifier: "reply", replyText: "  ", actions: actions) == .nothing)
+        #expect(PhoneNotifications.response(actionIdentifier: "dismiss", replyText: nil, actions: actions) == .dismiss)
+        #expect(PhoneNotifications.response(actionIdentifier: "mute", replyText: nil, actions: []) == .muteCall)
+        #expect(PhoneNotifications.response(actionIdentifier: "finder", replyText: nil, actions: []) == .showInFinder)
+        #expect(PhoneNotifications.response(
+            actionIdentifier: "com.apple.UNNotificationDefaultActionIdentifier", replyText: nil, actions: []
+        ) == .open)
+        #expect(PhoneNotifications.response(
+            actionIdentifier: "com.apple.UNNotificationDismissActionIdentifier", replyText: nil, actions: []
+        ) == .nothing)
+    }
+
+    @Test func callsRingThenGoMissed() throws {
+        let ringing = try #require(PhoneNotifications.call(
+            deviceId: "ab12", device: "Pixel 8", event: "ringing", caller: "Ann", language: .english
+        ))
+        #expect(ringing.title == "Incoming call: Ann")
+        #expect(ringing.identifier == PhoneNotifications.callIdentifier(deviceId: "ab12"))
+        #expect(ringing.buttons.map(\.kind) == [.muteCall])
+        #expect(!ringing.sound)
+        let missed = try #require(PhoneNotifications.call(
+            deviceId: "ab12", device: "Pixel 8", event: "missed", caller: nil, language: .french
+        ))
+        #expect(missed.title == "Appel manqué")
+        #expect(missed.identifier != ringing.identifier)
+        #expect(PhoneNotifications.call(deviceId: "ab12", device: "P", event: "ended", caller: nil) == nil)
+        #expect(PhoneNotifications.call(deviceId: "ab12", device: "P", event: "talking", caller: nil) == nil)
+    }
+
+    @Test func receivedFilesOfferTheFinder() {
+        let plan = PhoneNotifications.fileReceived(device: "Pixel 8", fileName: "photo.jpg", language: .english)
+        #expect(plan.title == "Received photo.jpg")
+        #expect(plan.body == "From Pixel 8, in Downloads")
+        #expect(plan.buttons.map(\.kind) == [.showInFinder])
+    }
+}
+
+@Suite struct NetworkWordsTests {
+    @Test func networksReadAsPeopleSayThem() {
+        #expect(Words.network("wifi") == "Wi-Fi")
+        #expect(Words.network("LTE") == "LTE")
+        #expect(Words.network("none", language: .english) == "No network")
+        #expect(Words.network(nil) == nil)
+        #expect(Words.networkSymbol("wifi") == "wifi")
+        #expect(Words.networkSymbol("5G") == "cellularbars")
+        #expect(Words.signalFraction(2) == 0.5)
+        #expect(Words.signalFraction(9) == 1)
+        #expect(Words.signalFraction(nil) == 1)
+    }
+}

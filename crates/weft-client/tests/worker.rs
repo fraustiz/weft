@@ -210,6 +210,7 @@ impl Tested {
             downloads: downloads.clone(),
             on_input: Box::new(move |input| input_sink.lock().unwrap().push(input)),
             run_command: Box::new(move |line| runner.lock().unwrap().push(line.to_owned())),
+            implemented: None,
         };
         let (worker, thread) = spawn_on(dir.clone(), relay_url, hooks).unwrap();
         Tested {

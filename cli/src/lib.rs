@@ -66,6 +66,8 @@ pub enum Error {
     NoAnswer,
     #[error("the inviting device did not send the welcome message in time")]
     NoWelcome,
+    #[error("not a packet: a JSON object with a string \"type\" is needed")]
+    InvalidPacket,
 }
 
 impl From<tokio_tungstenite::tungstenite::Error> for Error {

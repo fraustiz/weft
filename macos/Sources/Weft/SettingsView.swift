@@ -1,5 +1,5 @@
 // The Settings window: this Mac's name, opening at login and the group in
-// General; the relay in Advanced.
+// General; the feature switches in Features; the relay in Advanced.
 
 import AppKit
 import SwiftUI
@@ -10,13 +10,18 @@ struct SettingsView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        TabView {
+        TabView(selection: $model.settingsTab) {
             GeneralSettings(model: model)
                 .tabItem { Label(t("General", "Général"), systemImage: "gearshape") }
+                .tag("general")
+            FeatureSettings(model: model, notifier: model.notifier)
+                .tabItem { Label(t("Features", "Fonctions"), systemImage: "switch.2") }
+                .tag("features")
             AdvancedSettings(model: model)
                 .tabItem { Label(t("Advanced", "Avancé"), systemImage: "network") }
+                .tag("advanced")
         }
-        .frame(width: 480, height: 500)
+        .frame(width: 500, height: 560)
         .onAppear { NSApp.activate() }
     }
 }
@@ -149,6 +154,111 @@ private struct GeneralSettings: View {
 
     private func saveName() {
         model.rename(name.value)
+    }
+}
+
+/// The switches of docs/features.md section 10 the Mac has. A switched-off
+/// feature leaves the capabilities sent to the other devices at once.
+private struct FeatureSettings: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var notifier: Notifier
+
+    private struct Switch {
+        let path: WritableKeyPath<FeatureSwitches, Bool>
+        let title: String
+        let caption: String
+    }
+
+    private let switches: [Switch] = [
+        Switch(path: \.files, title: t("Files", "Fichiers"),
+               caption: t("Send files to your devices, and receive theirs in Downloads.",
+                          "Envoyez des fichiers à vos appareils et recevez les leurs dans Téléchargements.")),
+        Switch(path: \.links, title: t("Links", "Liens"),
+               caption: t("Links your devices share open in your browser.",
+                          "Les liens partagés par vos appareils s’ouvrent dans votre navigateur.")),
+        Switch(path: \.notifications, title: t("Notifications", "Notifications"),
+               caption: t("Your phone’s notifications show on this Mac, and you can answer them.",
+                          "Les notifications du téléphone s’affichent sur ce Mac, et vous pouvez y répondre.")),
+        Switch(path: \.calls, title: t("Calls", "Appels"),
+               caption: t("Incoming and missed calls of your phone show here.",
+                          "Les appels entrants et manqués du téléphone s’affichent ici.")),
+        Switch(path: \.battery, title: t("Battery and Network", "Batterie et réseau"),
+               caption: t("Show the battery and network of your devices.",
+                          "Affichez la batterie et le réseau de vos appareils.")),
+        Switch(path: \.ring, title: t("Ring", "Sonnerie"),
+               caption: t("Ring your devices to find them, and let them ring this Mac.",
+                          "Faites sonner vos appareils pour les retrouver, et laissez-les faire sonner ce Mac.")),
+        Switch(path: \.media, title: t("Media", "Média"),
+               caption: t("See and control what plays on your devices.",
+                          "Voyez et contrôlez ce qui joue sur vos appareils.")),
+        Switch(path: \.volume, title: t("Volume", "Volume"),
+               caption: t("Change the volume of your devices, and let them change this Mac’s.",
+                          "Changez le volume de vos appareils, et laissez-les changer celui de ce Mac.")),
+    ]
+
+    var body: some View {
+        Form {
+            if let features = model.snapshot?.features {
+                // A problem first: without permission, half of these
+                // cannot show anything.
+                if features.notifications || features.calls || features.files {
+                    notificationPermission
+                }
+                Section {
+                    ForEach(switches, id: \.title) { item in
+                        Toggle(isOn: Binding(
+                            get: { features[keyPath: item.path] },
+                            set: { on in
+                                var changed = features
+                                changed[keyPath: item.path] = on
+                                model.setFeatures(changed)
+                            }
+                        )) {
+                            Text(item.title)
+                            Text(item.caption)
+                        }
+                    }
+                } footer: {
+                    Text(t(
+                        "A feature turned off here is hidden from your other devices too.",
+                        "Une fonction coupée ici est aussi masquée sur vos autres appareils."
+                    ))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { notifier.refreshPermission() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            notifier.refreshPermission()
+        }
+    }
+
+    @ViewBuilder
+    private var notificationPermission: some View {
+        switch notifier.permission {
+        case .denied:
+            Section(t("macOS Notifications", "Notifications de macOS")) {
+                Text(t(
+                    "Notifications are off for Weft: the phone’s notifications, its calls and received files cannot show. Turn them on in System Settings › Notifications.",
+                    "Les notifications sont coupées pour Weft : celles du téléphone, ses appels et les fichiers reçus ne peuvent pas s’afficher. Activez-les dans Réglages Système › Notifications."
+                ))
+                .foregroundStyle(.secondary)
+                Button(t("Open System Settings", "Ouvrir Réglages Système"), action: notifier.openSystemSettings)
+            }
+        case .notAsked:
+            Section(t("macOS Notifications", "Notifications de macOS")) {
+                Text(t(
+                    "Weft needs your permission to show notifications.",
+                    "Weft a besoin de votre accord pour afficher des notifications."
+                ))
+                .foregroundStyle(.secondary)
+                Button(t("Allow Notifications…", "Autoriser les notifications…"), action: notifier.askIfNeeded)
+            }
+        case .allowed, .unknown:
+            EmptyView()
+        }
     }
 }
 

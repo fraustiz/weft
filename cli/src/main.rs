@@ -82,7 +82,24 @@ enum Command {
         /// Device id, or a unique prefix of it, in hex.
         device: String,
     },
+    /// Development tool: send a raw packet (`docs/features.md`), a JSON
+    /// object with a string `type`, to every trusted device.
+    #[command(hide = true)]
+    Packet {
+        /// The packet, e.g. '{"type":"ping"}'.
+        json: String,
+    },
+    /// Development tool: send a file to every trusted device, one chunk
+    /// at a time (`docs/features.md` section 4, without resume).
+    #[command(hide = true)]
+    SendFile {
+        /// The file to send.
+        path: PathBuf,
+    },
 }
+
+/// How long the development file transfer waits for each answer.
+const DEV_ANSWER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -159,6 +176,19 @@ async fn run(cli: Cli) -> Result<()> {
                 println!("{}  {name}", hex(&device.device_id()));
             }
         }
+        Command::Packet { json } => {
+            let packet: serde_json::Value =
+                serde_json::from_str(&json).map_err(|_| Error::InvalidPacket)?;
+            if !packet.get("type").is_some_and(serde_json::Value::is_string) {
+                return Err(Error::InvalidPacket);
+            }
+            let mut session = Session::connect(dir).await?;
+            let sent = session.send_packet_all(&json).await?;
+            session.settle().await?;
+            session.close().await;
+            tracing::info!("packet sent to {sent} device(s)");
+        }
+        Command::SendFile { path } => send_file(dir, &path).await?,
         Command::Remove { device } => {
             let mut session = Session::connect(dir).await?;
             let removed = session.remove(&device).await?;
@@ -166,6 +196,81 @@ async fn run(cli: Cli) -> Result<()> {
             tracing::info!(device = %short_id(&removed.device_id()), "device removed");
         }
     }
+    Ok(())
+}
+
+/// The next packet from `from` about the transfer `id`, as JSON, skipping
+/// everything else.
+async fn transfer_answer(
+    session: &mut Session,
+    from: [u8; 16],
+    id: &str,
+) -> Result<serde_json::Value> {
+    loop {
+        let event = session
+            .next_event(Some(DEV_ANSWER_TIMEOUT))
+            .await?
+            .ok_or(Error::Timeout("an answer to the file offer"))?;
+        if let Event::Packet { from: sender, json } = event
+            && sender == from
+            && let Ok(packet) = serde_json::from_str::<serde_json::Value>(&json)
+            && packet["id"] == id
+        {
+            return Ok(packet);
+        }
+    }
+}
+
+/// `weft send-file`: offer, then one chunk at a time, each acknowledged.
+async fn send_file(dir: StateDir, path: &std::path::Path) -> Result<()> {
+    let data = std::fs::read(path).map_err(|source| Error::Io {
+        context: format!("reading {}", path.display()),
+        source,
+    })?;
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    let mut session = Session::connect(dir).await?;
+    let devices: Vec<[u8; 16]> = session
+        .state()
+        .devices
+        .iter()
+        .map(|device| device.device_id())
+        .collect();
+    for to in devices {
+        let transfer = weft_protocol::random_message_id();
+        let id = hex(&transfer);
+        let offer = serde_json::json!({
+            "type": "file.offer", "id": id, "name": name, "size": data.len(),
+        });
+        session.send_packet(to, &offer.to_string()).await?;
+        let answer = transfer_answer(&mut session, to, &id).await?;
+        let mut offset = match (answer["type"].as_str(), answer["offset"].as_u64()) {
+            (Some("file.accept"), Some(offset)) => offset as usize,
+            _ => {
+                tracing::warn!(device = %short_id(&to), "file refused: {}", answer["reason"]);
+                continue;
+            }
+        };
+        while offset < data.len() {
+            let end = (offset + weft_protocol::MAX_FILE_CHUNK_DATA_LEN).min(data.len());
+            session
+                .send_file_chunk(to, transfer, offset as u64, &data[offset..end])
+                .await?;
+            let answer = transfer_answer(&mut session, to, &id).await?;
+            match (answer["type"].as_str(), answer["offset"].as_u64()) {
+                (Some("file.ack"), Some(acked)) => offset = acked as usize,
+                (Some("file.done"), _) => offset = data.len(),
+                _ => {
+                    tracing::warn!(device = %short_id(&to), "transfer stopped by the other device");
+                    break;
+                }
+            }
+        }
+        tracing::info!(device = %short_id(&to), bytes = data.len(), "file sent");
+    }
+    session.close().await;
     Ok(())
 }
 
