@@ -82,7 +82,8 @@ class MediaWatcher(
         for ((controller, callback) in callbacks) controller.unregisterCallback(callback)
         callbacks.clear()
         controllers.clear()
-        for (controller in list) {
+        // Weft's own sessions are the computers' players: never sent back to them.
+        for (controller in list.fromOtherApps(context.packageName) { it.packageName }) {
             // One id per app; a second session of the same app gets its token's hash.
             val id = if (controller.packageName in controllers) "${controller.packageName}:${controller.sessionToken.hashCode()}" else controller.packageName
             controllers[id] = controller

@@ -8,16 +8,20 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.drawable.Icon
+import android.media.session.MediaSession
 import android.net.Uri
 import android.os.Build
+import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
 import androidx.core.net.toUri
 import fr.frohub.weft.R
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * The notifications of this batch: ring, ping, links and file transfers, each kind on its own
- * channel so the user can tune them apart. Every one is skipped quietly while notifications are
- * not allowed.
+ * The notifications of this batch: ring, ping, links, file transfers and the computers' players,
+ * each kind on its own channel so the user can tune them apart. Every one is skipped quietly
+ * while notifications are not allowed.
  */
 class Notifier(private val context: Context) {
     private val manager = context.getSystemService(NotificationManager::class.java)
@@ -37,6 +41,10 @@ class Notifier(private val context: Context) {
                 },
                 NotificationChannel(CHANNEL_FILES, context.getString(R.string.channel_files), NotificationManager.IMPORTANCE_DEFAULT),
                 NotificationChannel(CHANNEL_UPDATES, context.getString(R.string.channel_updates), NotificationManager.IMPORTANCE_DEFAULT),
+                NotificationChannel(CHANNEL_MEDIA, context.getString(R.string.channel_media), NotificationManager.IMPORTANCE_LOW).apply {
+                    setSound(null, null)
+                    setShowBadge(false)
+                },
             ),
         )
     }
@@ -193,6 +201,64 @@ class Notifier(private val context: Context) {
 
     // endregion
 
+    // region Computers' media
+
+    /** Whether notifications may be posted now. */
+    fun canNotify(): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+
+    /** A computer's player with previous, play or pause and next, tied to its media session [token]. */
+    fun computerMedia(deviceIdHex: String, shown: ShownMedia, token: MediaSession.Token) {
+        val player = shown.player
+        val pause = player.playing && player.canPause
+        val buttons = listOfNotNull(
+            mediaButton(deviceIdHex, Packet.MEDIA_PREVIOUS, R.drawable.ic_skip_previous, R.string.action_previous).takeIf { player.canPrevious },
+            if (pause) {
+                mediaButton(deviceIdHex, Packet.MEDIA_PAUSE, R.drawable.ic_pause, R.string.action_pause)
+            } else {
+                mediaButton(deviceIdHex, Packet.MEDIA_PLAY, R.drawable.ic_play, R.string.action_play).takeIf { player.canPlay }
+            },
+            mediaButton(deviceIdHex, Packet.MEDIA_NEXT, R.drawable.ic_skip_next, R.string.action_next).takeIf { player.canNext },
+        )
+        val notification = Notification.Builder(context, CHANNEL_MEDIA)
+            .setSmallIcon(R.drawable.ic_tile)
+            .setContentTitle(player.title ?: context.getString(R.string.now_playing_untitled))
+            .setContentText(player.artist)
+            .setSubText(shown.source)
+            .setLargeIcon(shown.cover)
+            .setContentIntent(openDevice(deviceIdHex))
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .setCategory(Notification.CATEGORY_TRANSPORT)
+            .apply { buttons.forEach(::addAction) }
+            .setStyle(Notification.MediaStyle().setMediaSession(token).setShowActionsInCompactView(*buttons.indices.toList().toIntArray()))
+            .build()
+        notify(computerMediaId(deviceIdHex), notification)
+    }
+
+    fun cancelComputerMedia(deviceIdHex: String) = manager.cancel(computerMediaId(deviceIdHex))
+
+    /** Opens Weft on [deviceIdHex]'s page. */
+    fun openDevice(deviceIdHex: String): PendingIntent = PendingIntent.getActivity(
+        context,
+        computerMediaId(deviceIdHex),
+        Intent(context, fr.frohub.weft.MainActivity::class.java)
+            .putExtra(fr.frohub.weft.MainActivity.EXTRA_SHOW_DEVICE, deviceIdHex)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+
+    private fun mediaButton(deviceIdHex: String, action: String, @DrawableRes icon: Int, @StringRes title: Int) =
+        Notification.Action.Builder(
+            Icon.createWithResource(context, icon),
+            context.getString(title),
+            FeatureReceiver.computerMedia(context, deviceIdHex, action),
+        ).build()
+
+    // endregion
+
     private fun openApp(): PendingIntent = PendingIntent.getActivity(
         context,
         REQUEST_OPEN,
@@ -215,6 +281,7 @@ class Notifier(private val context: Context) {
         const val CHANNEL_TRANSFERS = "transfers"
         const val CHANNEL_FILES = "files"
         const val CHANNEL_UPDATES = "updates"
+        const val CHANNEL_MEDIA = "computer_media"
 
         // 1 is the service notification (WeftService.NOTIFICATION_ID).
         const val ID_RING = 2
@@ -226,5 +293,8 @@ class Notifier(private val context: Context) {
 
         /** Above every other id; one per transfer. */
         fun transferNotificationId(transferId: String) = 0x40000000 or (transferId.hashCode() and 0x3fffffff)
+
+        /** Between the message ids and the transfer ids; one per computer. */
+        fun computerMediaId(deviceIdHex: String) = 0x20000000 or (deviceIdHex.hashCode() and 0x1fffffff)
     }
 }

@@ -33,7 +33,8 @@ import fr.frohub.weft.features.Packet
  * a call permission is missing, [onAllowSmsAccess] and [onAllowContactsAccess] while those
  * permissions are, [onEnableKeyboard] while the Weft keyboard is off in Android's settings.
  * [updates] drives the Updates section of the settings; [showUpdates] opens the settings (from
- * the "update available" notification), then [onUpdatesShown] runs.
+ * the "update available" notification), then [onUpdatesShown] runs. [showDevice] opens that
+ * device's page (from a computer's media notification), then [onDeviceShown] runs.
  */
 @Composable
 fun WeftApp(
@@ -53,6 +54,8 @@ fun WeftApp(
     updates: UpdateControls? = null,
     showUpdates: Boolean = false,
     onUpdatesShown: () -> Unit = {},
+    showDevice: String? = null,
+    onDeviceShown: () -> Unit = {},
 ) {
     var route by rememberSaveable { mutableStateOf(Route.MAIN) }
     var leaving by rememberSaveable { mutableStateOf(false) }
@@ -66,6 +69,7 @@ fun WeftApp(
     val peers by model.peers.collectAsStateWithLifecycle()
     val features by model.features.collectAsStateWithLifecycle()
     val excludedApps by model.excludedApps.collectAsStateWithLifecycle()
+    val mediaControls by model.mediaControls.collectAsStateWithLifecycle()
 
     LaunchedEffect(joinState) {
         val done = joinState as? JoinState.Done ?: return@LaunchedEffect
@@ -83,6 +87,13 @@ fun WeftApp(
             route = Route.SETTINGS
             jumpToUpdates = true
             onUpdatesShown()
+        }
+    }
+
+    LaunchedEffect(showDevice) {
+        if (showDevice != null) {
+            route = Route.DEVICE + showDevice
+            onDeviceShown()
         }
     }
 
@@ -130,6 +141,8 @@ fun WeftApp(
                 onAllowSmsAccess = onAllowSmsAccess,
                 onAllowContactsAccess = onAllowContactsAccess,
                 onEnableKeyboard = onEnableKeyboard,
+                mediaControls = mediaControls,
+                onMediaControls = model::setMediaControls,
                 updates = updates,
                 scrollToUpdates = jumpToUpdates,
                 onScrolledToUpdates = { jumpToUpdates = false },

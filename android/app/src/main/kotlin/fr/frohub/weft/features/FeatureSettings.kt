@@ -9,17 +9,22 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * One switch per feature, saved in shared preferences. On by default except SMS, contacts and
  * input (docs/features.md, section 9). Not secret and not integrity-sensitive, so it does not
- * live in the state file. The remote control's pointer speed is kept here too.
+ * live in the state file. The remote control's pointer speed and the media notification switch
+ * are kept here too.
  */
 class FeatureSettings(context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val _enabled = MutableStateFlow(read())
     private val _pointerSpeed = MutableStateFlow(prefs.getFloat(POINTER_SPEED, DEFAULT_POINTER_SPEED))
+    private val _mediaControls = MutableStateFlow(prefs.getBoolean(MEDIA_CONTROLS, true))
 
     val enabled: StateFlow<Set<Feature>> = _enabled.asStateFlow()
 
     /** How far the computer's pointer moves per pixel on the touchpad, before acceleration. */
     val pointerSpeed: StateFlow<Float> = _pointerSpeed.asStateFlow()
+
+    /** Whether the computers' players show in media notifications here (with Media on). */
+    val mediaControls: StateFlow<Boolean> = _mediaControls.asStateFlow()
 
     fun isEnabled(feature: Feature) = feature in _enabled.value
 
@@ -35,11 +40,17 @@ class FeatureSettings(context: Context) {
         _pointerSpeed.value = value
     }
 
+    fun setMediaControls(on: Boolean) {
+        prefs.edit { putBoolean(MEDIA_CONTROLS, on) }
+        _mediaControls.value = on
+    }
+
     private fun read(): Set<Feature> = Feature.entries.filter { prefs.getBoolean(it.key, it.defaultOn) }.toSet()
 
     companion object {
         private const val PREFS = "features"
         private const val POINTER_SPEED = "pointer_speed"
+        private const val MEDIA_CONTROLS = "media_controls"
         const val MIN_POINTER_SPEED = 0.5f
         const val MAX_POINTER_SPEED = 3f
         const val DEFAULT_POINTER_SPEED = 1.5f

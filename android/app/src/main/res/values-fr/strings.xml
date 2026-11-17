@@ -200,6 +200,8 @@
     <string name="feature_media">Médias</string>
     <string name="feature_media_body">Contrôler ce qui joue sur ce téléphone depuis vos ordinateurs, et ce qui joue sur eux depuis ici</string>
     <string name="feature_media_permission">Android ne montre les lecteurs de ce téléphone qu’aux applis qui peuvent lire les notifications. Les lecteurs de vos ordinateurs fonctionnent sans.</string>
+    <string name="media_controls">Notification de contrôle multimédia</string>
+    <string name="media_controls_body">Lire, mettre en pause et passer ce qui joue sur vos ordinateurs depuis une notification</string>
     <string name="feature_volume">Volume</string>
     <string name="feature_volume_body">Régler le volume multimédia de ce téléphone depuis vos ordinateurs, et le leur depuis ici</string>
     <string name="excluded_apps">Choisir les applis</string>
@@ -235,6 +237,7 @@
     <string name="channel_messages">Pings et liens</string>
     <string name="channel_transfers">Transferts de fichiers en cours</string>
     <string name="channel_files">Fichiers reçus et envoyés</string>
+    <string name="channel_media">Contrôles multimédias des ordinateurs</string>
     <string name="ring_title">Votre téléphone sonne</string>
     <string name="ring_body">Sonnerie lancée depuis %1$s</string>
     <string name="ring_found">Trouvé</string>

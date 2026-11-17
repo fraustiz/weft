@@ -212,6 +212,8 @@
     <string name="feature_media">Media</string>
     <string name="feature_media_body">Control what plays on this phone from your computers, and what plays on them from here</string>
     <string name="feature_media_permission">Android shows this phone’s players only to apps that can read notifications. Your computers’ players work without it.</string>
+    <string name="media_controls">Media controls notification</string>
+    <string name="media_controls_body">Play, pause and skip what plays on your computers from a notification</string>
     <string name="feature_volume">Volume</string>
     <string name="feature_volume_body">Change this phone’s media volume from your computers, and theirs from here</string>
     <string name="excluded_apps">Choose apps</string>
@@ -251,6 +253,7 @@
     <string name="channel_messages">Pings and links</string>
     <string name="channel_transfers">File transfers in progress</string>
     <string name="channel_files">Files received and sent</string>
+    <string name="channel_media">Computers’ media controls</string>
     <string name="ring_title">Your phone is ringing</string>
     <!-- %1$s: the device that rings this phone. -->
     <string name="ring_body">Rung from %1$s</string>

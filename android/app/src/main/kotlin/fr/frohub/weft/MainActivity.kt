@@ -78,6 +78,9 @@ class MainActivity : ComponentActivity() {
     /** Set by the "update available" notification: open the settings, where Updates is. */
     private val showUpdates = mutableStateOf(false)
 
+    /** Set by a computer's media notification: open that device's page. */
+    private val showDevice = mutableStateOf<String?>(null)
+
     /** The device the file picker was opened for; kept across a recreation. */
     private var fileTarget: String? = null
 
@@ -94,7 +97,10 @@ class MainActivity : ComponentActivity() {
         val canAddTile = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
         val model = weft.model
         val updater = weft.updater
-        if (savedInstanceState == null) showUpdates.value = intent.getBooleanExtra(EXTRA_SHOW_UPDATES, false)
+        if (savedInstanceState == null) {
+            showUpdates.value = intent.getBooleanExtra(EXTRA_SHOW_UPDATES, false)
+            showDevice.value = intent.getStringExtra(EXTRA_SHOW_DEVICE)
+        }
         setContent {
             val updateState by updater.state.collectAsStateWithLifecycle()
             val autoCheck by updater.autoCheck.collectAsStateWithLifecycle()
@@ -130,6 +136,8 @@ class MainActivity : ComponentActivity() {
                     ),
                     showUpdates = showUpdates.value,
                     onUpdatesShown = { showUpdates.value = false },
+                    showDevice = showDevice.value,
+                    onDeviceShown = { showDevice.value = null },
                 )
             }
         }
@@ -144,6 +152,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.getBooleanExtra(EXTRA_SHOW_UPDATES, false)) showUpdates.value = true
+        intent.getStringExtra(EXTRA_SHOW_DEVICE)?.let { showDevice.value = it }
     }
 
     /** Android's page to let Weft install apps; the download goes on when the user is back. */
@@ -282,5 +291,6 @@ class MainActivity : ComponentActivity() {
 
         /** Boolean extra: open the settings on the Updates section. */
         const val EXTRA_SHOW_UPDATES = "fr.frohub.weft.SHOW_UPDATES"
+        const val EXTRA_SHOW_DEVICE = "fr.frohub.weft.SHOW_DEVICE"
     }
 }

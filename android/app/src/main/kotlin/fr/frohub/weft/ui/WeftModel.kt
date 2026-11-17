@@ -86,6 +86,11 @@ interface WeftModel {
     val pointerSpeed: StateFlow<Float> get() = DEFAULT_SPEED
 
     fun setPointerSpeed(speed: Float) = Unit
+
+    /** Whether the computers' players show in media notifications. */
+    val mediaControls: StateFlow<Boolean> get() = MEDIA_CONTROLS_ON
+
+    fun setMediaControls(on: Boolean) = Unit
 }
 
 private val NO_PEERS = MutableStateFlow<Map<String, PeerInfo>>(emptyMap())
@@ -93,6 +98,7 @@ private val NO_APPS = MutableStateFlow<List<SeenApp>>(emptyList())
 private val NO_EXCLUDED = MutableStateFlow<Set<String>>(emptySet())
 private val ALL_FEATURES = MutableStateFlow(Feature.entries.toSet())
 private val DEFAULT_SPEED = MutableStateFlow(FeatureSettings.DEFAULT_POINTER_SPEED)
+private val MEDIA_CONTROLS_ON = MutableStateFlow(true)
 
 class CoreModel(private val core: WeftCore, private val featureHub: Features) : WeftModel {
     override val status: StateFlow<ConnectionStatus> get() = core.status
@@ -145,4 +151,8 @@ class CoreModel(private val core: WeftCore, private val featureHub: Features) : 
     override val pointerSpeed: StateFlow<Float> get() = featureHub.settings.pointerSpeed
 
     override fun setPointerSpeed(speed: Float) = featureHub.settings.setPointerSpeed(speed)
+
+    override val mediaControls: StateFlow<Boolean> get() = featureHub.settings.mediaControls
+
+    override fun setMediaControls(on: Boolean) = featureHub.settings.setMediaControls(on)
 }

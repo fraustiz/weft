@@ -106,6 +106,7 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
     private val mediaGate = MediaGate()
     private val artDelivery = ArtDelivery()
     private val localCovers = LocalCovers(scope)
+    private val computerMedia = ComputerMedia(context, notifier) { device, command -> scope.launch { send(listOf(device), command) } }
 
     /** Guards [receiving]; held while a chunk is written, so chunks of one transfer stay in order. */
     private val receiveLock = Mutex()
@@ -136,6 +137,11 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
             // The keyboard's bar says whether a computer can type now.
             merge(core.status, _peers, core.devices).collect { withContext(Dispatchers.Main) { keyboard?.refresh() } }
         }
+        scope.launch {
+            merge(core.status, _peers, core.devices, settings.enabled, settings.mediaControls).collect {
+                withContext(Dispatchers.Main) { refreshComputerMedia() }
+            }
+        }
         scope.launch { for (job in serial) job() }
         scope.launch(Dispatchers.IO) { partials.expire() }
     }
@@ -148,6 +154,7 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
         connectivityMonitor.start()
         monitorsRunning = true
         refreshMonitors()
+        refreshComputerMedia()
     }
 
     fun stopMonitors() {
@@ -155,6 +162,7 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
         connectivityMonitor.stop()
         monitorsRunning = false
         refreshMonitors()
+        refreshComputerMedia()
     }
 
     /**
@@ -449,6 +457,33 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
         }
         send(deviceIds, Packet.Media(players))
     }
+
+    /**
+     * Main thread: each connected computer's player in a media notification, while the service
+     * runs, Media and its notification switch are on and notifications are allowed. Only
+     * computers that take `media.command`; another phone's players stay on its device page.
+     */
+    private fun refreshComputerMedia() {
+        val shows = monitorsRunning && settings.isEnabled(Feature.MEDIA) && settings.mediaControls.value &&
+            core.status.value == ConnectionStatus.Connected && notifier.canNotify()
+        if (!shows) {
+            computerMedia.show(emptyMap())
+            return
+        }
+        val peers = _peers.value
+        computerMedia.show(
+            core.devices.value.mapNotNull { device ->
+                val peer = peers[device.id] ?: return@mapNotNull null
+                if (!peer.handles(Packet.MEDIA_COMMAND) || peer.capabilities?.platform == Packet.PLATFORM_ANDROID) return@mapNotNull null
+                val player = shownPlayer(peer.media) ?: return@mapNotNull null
+                val source = listOfNotNull(player.app, device.name ?: device.shortId).joinToString(" · ")
+                device.id to ShownMedia(player, peer.mediaAt, player.art?.let { peer.covers[it] }, source)
+            }.toMap(),
+        )
+    }
+
+    /** From a button of a computer's media notification, main thread. */
+    fun computerMediaAction(deviceIdHex: String, action: String) = computerMedia.run(deviceIdHex, action)
 
     // endregion
 

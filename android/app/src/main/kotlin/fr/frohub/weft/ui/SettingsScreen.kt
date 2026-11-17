@@ -40,7 +40,8 @@ import kotlinx.coroutines.flow.first
  * [onAllowNotificationAccess] notification access (Notifications, Media), [onAllowCallAccess]
  * the call permissions, [onAllowSmsAccess] the SMS permissions, [onAllowContactsAccess] the
  * contacts permission, [onEnableKeyboard] the Weft keyboard (Remote input). [onExcludedApps]
- * opens the list of apps whose notifications stay here. [updates] adds the Updates section at the
+ * opens the list of apps whose notifications stay here. [mediaControls] is the switch under
+ * Media for the computers' media notifications, [onMediaControls] changes it. [updates] adds the Updates section at the
  * end; [scrollToUpdates] scrolls down to it once laid out, then [onScrolledToUpdates] runs.
  */
 @Composable
@@ -56,6 +57,8 @@ fun SettingsScreen(
     onAllowSmsAccess: (() -> Unit)? = null,
     onAllowContactsAccess: (() -> Unit)? = null,
     onEnableKeyboard: (() -> Unit)? = null,
+    mediaControls: Boolean = true,
+    onMediaControls: ((Boolean) -> Unit)? = null,
     updates: UpdateControls? = null,
     scrollToUpdates: Boolean = false,
     onScrolledToUpdates: () -> Unit = {},
@@ -96,8 +99,11 @@ fun SettingsScreen(
                     } else if (onExcludedApps != null) {
                         ExcludedAppsRow(excludedApps, onExcludedApps)
                     }
-                    Feature.MEDIA -> onAllowNotificationAccess?.let {
-                        PermissionNote(R.string.feature_media_permission, R.string.action_open_settings, it)
+                    Feature.MEDIA -> {
+                        onAllowNotificationAccess?.let {
+                            PermissionNote(R.string.feature_media_permission, R.string.action_open_settings, it)
+                        }
+                        onMediaControls?.let { MediaControlsRow(mediaControls, it) }
                     }
                     Feature.CALLS -> onAllowCallAccess?.let {
                         PermissionNote(R.string.feature_calls_permission, R.string.action_allow, it)
@@ -169,6 +175,22 @@ private fun ExcludedAppsRow(count: Int, onClick: () -> Unit) {
     )
 }
 
+/** Under Media: the computers' players in media notifications. */
+@Composable
+private fun MediaControlsRow(on: Boolean, onToggle: (Boolean) -> Unit) {
+    ListItem(
+        headlineContent = { Text(stringResource(R.string.media_controls)) },
+        supportingContent = { Text(stringResource(R.string.media_controls_body)) },
+        trailingContent = { Switch(checked = on, onCheckedChange = null) },
+        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
+        modifier = Modifier
+            .heightIn(min = 72.dp)
+            .toggleable(value = on, role = Role.Switch, onValueChange = onToggle)
+            .padding(start = 16.dp)
+            .testTag(MEDIA_CONTROLS_SWITCH),
+    )
+}
+
 @get:StringRes
 private val Feature.title: Int
     get() = when (this) {
@@ -212,6 +234,7 @@ private val Feature.description: Int
 /** Test tags. */
 const val FEATURE_SWITCH_PREFIX = "feature_"
 const val EXCLUDED_APPS_ROW = "excluded_apps"
+const val MEDIA_CONTROLS_SWITCH = "media_controls"
 
 @Preview
 @Composable

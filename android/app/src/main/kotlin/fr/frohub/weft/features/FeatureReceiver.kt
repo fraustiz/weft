@@ -7,9 +7,9 @@ import android.content.Intent
 import fr.frohub.weft.weft
 
 /**
- * Notification actions that need no screen: "Found it" (and dismissing the ring notice) and
- * cancelling a transfer; and the result of each SMS part sent for a computer. Not exported:
- * only this app's pending intents reach it.
+ * Notification actions that need no screen: "Found it" (and dismissing the ring notice),
+ * cancelling a transfer and the computers' media buttons; and the result of each SMS part sent
+ * for a computer. Not exported: only this app's pending intents reach it.
  */
 class FeatureReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -20,6 +20,11 @@ class FeatureReceiver : BroadcastReceiver() {
                 val device = intent.getStringExtra(EXTRA_DEVICE) ?: return
                 val id = intent.getStringExtra(EXTRA_TRANSFER) ?: return
                 features.cancelTransfer(device, id)
+            }
+            ACTION_COMPUTER_MEDIA -> {
+                val device = intent.getStringExtra(EXTRA_DEVICE) ?: return
+                val action = intent.getStringExtra(EXTRA_MEDIA_ACTION) ?: return
+                features.computerMediaAction(device, action)
             }
             ACTION_SMS_SENT -> {
                 val device = intent.getStringExtra(EXTRA_DEVICE) ?: return
@@ -36,6 +41,8 @@ class FeatureReceiver : BroadcastReceiver() {
         private const val EXTRA_TRANSFER = "transfer"
         private const val ACTION_SMS_SENT = "fr.frohub.weft.action.SMS_SENT"
         private const val EXTRA_REQUEST = "request"
+        private const val ACTION_COMPUTER_MEDIA = "fr.frohub.weft.action.COMPUTER_MEDIA"
+        private const val EXTRA_MEDIA_ACTION = "media_action"
 
         fun stopRing(context: Context): PendingIntent = PendingIntent.getBroadcast(
             context,
@@ -53,6 +60,19 @@ class FeatureReceiver : BroadcastReceiver() {
                 .setData(android.net.Uri.fromParts("weft", transferId, null))
                 .putExtra(EXTRA_DEVICE, deviceIdHex)
                 .putExtra(EXTRA_TRANSFER, transferId),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
+        /** A button of [deviceIdHex]'s media notification: [action] is a `media.command` action. */
+        fun computerMedia(context: Context, deviceIdHex: String, action: String): PendingIntent = PendingIntent.getBroadcast(
+            context,
+            0,
+            Intent(context, FeatureReceiver::class.java)
+                .setAction(ACTION_COMPUTER_MEDIA)
+                // Distinct data, so each device and button keeps its own pending intent.
+                .setData(android.net.Uri.fromParts("weft-media", "$deviceIdHex/$action", null))
+                .putExtra(EXTRA_DEVICE, deviceIdHex)
+                .putExtra(EXTRA_MEDIA_ACTION, action),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
