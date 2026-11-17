@@ -8,7 +8,9 @@ use clap::{Parser, Subcommand};
 use qrcode::QrCode;
 use qrcode::render::unicode::Dense1x2;
 use weft_cli::session::{JOIN_TIMEOUT, NAME_TIMEOUT, PAIRING_TIMEOUT};
-use weft_cli::{Error, Event, Result, Session, State, StateDir, default_state_dir, hex, short_id};
+use weft_cli::{
+    Error, Event, PairOutcome, Result, Session, State, StateDir, default_state_dir, hex, short_id,
+};
 use weft_protocol::PairingCode;
 
 #[derive(Parser)]
@@ -49,6 +51,12 @@ enum Command {
     Pair,
     /// Join the group of the device showing a pairing code.
     Join {
+        /// The WEFT1: code.
+        code: String,
+    },
+    /// Add the device showing a pairing code to this device's group (this
+    /// device must already be in one).
+    Invite {
         /// The WEFT1: code.
         code: String,
     },
@@ -128,6 +136,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Pair => pair(dir).await?,
         Command::Join { code } => join(dir, &code).await?,
+        Command::Invite { code } => invite(dir, &code).await?,
         Command::Listen { copy } => listen(dir, copy).await?,
         Command::Send { text, stdin } => {
             let text = match text {
@@ -179,15 +188,51 @@ async fn pair(dir: StateDir) -> Result<()> {
     tracing::info!(
         "scan the QR code, or run `weft join <code>` on the other device; waiting up to 5 minutes"
     );
-    let device = session.wait_pair_request(&code, PAIRING_TIMEOUT).await?;
-    tracing::info!(device = %short_id(&device), "device added");
-    // The new device announces its name as soon as it has the Welcome.
-    if !session
-        .wait_names(&[device], NAME_TIMEOUT, log_event)
-        .await?
-    {
-        tracing::warn!(device = %short_id(&device), "the new device did not send its name");
+    match session.wait_pair_request(&code, PAIRING_TIMEOUT).await? {
+        PairOutcome::Joined { device } => {
+            tracing::info!(device = %short_id(&device), "device added");
+            // The new device announces its name as soon as it has the Welcome.
+            if !session
+                .wait_names(&[device], NAME_TIMEOUT, log_event)
+                .await?
+            {
+                tracing::warn!(device = %short_id(&device), "the new device did not send its name");
+            }
+            session.close().await;
+            println!("{}", short_id(&device));
+        }
+        PairOutcome::Invited { inviter, devices } => {
+            tracing::info!(
+                inviter = %short_id(&inviter),
+                "invited into the group of the device that used the code: {} trusted device(s)",
+                devices.len()
+            );
+            // The inviter sends its name right after the Welcome.
+            if !session
+                .wait_names(&[inviter], NAME_TIMEOUT, log_event)
+                .await?
+            {
+                tracing::warn!(device = %short_id(&inviter), "the device did not send its name");
+            }
+            session.close().await;
+            for device in devices {
+                println!("{}", short_id(&device));
+            }
+        }
     }
+    Ok(())
+}
+
+async fn invite(dir: StateDir, code: &str) -> Result<()> {
+    let code = PairingCode::decode(code.trim())?;
+    let mut session = Session::connect(dir).await?;
+    let device = session.invite(&code, JOIN_TIMEOUT).await?;
+    let name = session
+        .state()
+        .device(&device)
+        .and_then(|device| device.name.clone())
+        .unwrap_or_default();
+    tracing::info!(device = %short_id(&device), %name, "device added to the group");
     session.close().await;
     println!("{}", short_id(&device));
     Ok(())

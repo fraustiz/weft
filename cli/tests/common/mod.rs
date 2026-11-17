@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use tempfile::TempDir;
 use tokio::net::TcpListener;
-use weft_cli::{Event, Session, State, StateDir};
+use weft_cli::{Event, PairOutcome, Session, State, StateDir};
 use weft_relay::Config;
 
 /// Timeout for a single step.
@@ -98,10 +98,15 @@ pub async fn pair(owner: &mut Session, joiner: &mut Session) -> [u8; 16] {
     );
     let added = added.expect("owner side of the pairing");
     joined.expect("joiner side of the pairing");
-    assert_eq!(added, joiner.device_id());
+    assert_eq!(
+        added,
+        PairOutcome::Joined {
+            device: joiner.device_id()
+        }
+    );
     expect_name(owner, joiner).await;
     expect_name(joiner, owner).await;
-    added
+    added.device()
 }
 
 /// Asserts that the next event is `from`'s name, and that it is saved.

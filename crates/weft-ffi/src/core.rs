@@ -315,6 +315,7 @@ impl WeftCore {
             last: Mutex::new(Published {
                 generation: 0,
                 snapshot: Arc::new(placeholder()),
+                paired: None,
             }),
             restarting: Mutex::new(()),
             sync: Mutex::new(sync),

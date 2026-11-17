@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use weft_protocol::ControlError;
 
-pub use session::{DropReason, Event, Next, Session};
+pub use session::{DropReason, Event, Next, PairOutcome, Session};
 pub use state::{State, StateDir, TrustedDevice};
 
 /// Everything that can go wrong in the client.
@@ -58,6 +58,14 @@ pub enum Error {
     NoStateDir,
     #[error("the pairing code was made by this device")]
     OwnCode,
+    #[error("this device is in no group: join the other device instead (`weft join <code>`)")]
+    NoGroup,
+    #[error(
+        "the device did not answer: it may already belong to a group (pair from that group instead)"
+    )]
+    NoAnswer,
+    #[error("the inviting device did not send the welcome message in time")]
+    NoWelcome,
 }
 
 impl From<tokio_tungstenite::tungstenite::Error> for Error {

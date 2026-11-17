@@ -17,10 +17,16 @@ pub const CONTROL_PAIR_REQUEST: u8 = 0xB1;
 pub const CONTROL_GROUP_ADD: u8 = 0xB2;
 /// First byte of the frame that removes a device from the group.
 pub const CONTROL_GROUP_REMOVE: u8 = 0xB3;
+/// First byte of the frame by which the slot owner accepts an invitation.
+pub const CONTROL_GROUP_JOIN: u8 = 0xB4;
+/// First byte of the frame a device sends to invite the slot owner into its
+/// group.
+pub const CONTROL_PAIR_INVITE: u8 = 0xB5;
 /// First byte of the relay's error frame.
 pub const CONTROL_ERROR: u8 = 0xBE;
 
 const PAIR_CONTEXT: &[u8] = b"weft-pair-v1";
+const INVITE_CONTEXT: &[u8] = b"weft-invite-v1";
 /// `pairing_id (16) || sign_pk (32) || kx_pk (32) || secret (32)`.
 const PAIRING_CODE_FIXED_LEN: usize = 16 + 32 + 32 + 32;
 const PAIR_REQUEST_LEN: usize = 1 + 16 + 32 + 32 + 32;
@@ -139,15 +145,40 @@ pub fn pair_request_mac(
     sign_pk: &[u8; 32],
     kx_pk: &[u8; 32],
 ) -> [u8; 32] {
-    let mut input = Vec::with_capacity(PAIR_CONTEXT.len() + 16 + 32 + 32);
-    input.extend_from_slice(PAIR_CONTEXT);
+    request_mac(PAIR_CONTEXT, secret, pairing_id, sign_pk, kx_pk)
+}
+
+/// MAC of an invitation (`0xB5`): the same as [`pair_request_mac`] with the
+/// context `"weft-invite-v1"`, so a join request can never pass for an
+/// invitation or the other way round. The keys are those of the inviting
+/// device.
+pub fn invite_request_mac(
+    secret: &[u8; 32],
+    pairing_id: &[u8; 16],
+    sign_pk: &[u8; 32],
+    kx_pk: &[u8; 32],
+) -> [u8; 32] {
+    request_mac(INVITE_CONTEXT, secret, pairing_id, sign_pk, kx_pk)
+}
+
+fn request_mac(
+    context: &[u8],
+    secret: &[u8; 32],
+    pairing_id: &[u8; 16],
+    sign_pk: &[u8; 32],
+    kx_pk: &[u8; 32],
+) -> [u8; 32] {
+    let mut input = Vec::with_capacity(context.len() + 16 + 32 + 32);
+    input.extend_from_slice(context);
     input.extend_from_slice(pairing_id);
     input.extend_from_slice(sign_pk);
     input.extend_from_slice(kx_pk);
     sodium::generichash_32_keyed(&input, secret)
 }
 
-/// Body of the `0xB1` frame: a device asking to join a group.
+/// Body of the `0xB1` frame (a device asking to join a group) and of the
+/// `0xB5` frame (a device inviting the slot owner into its group). Only the
+/// MAC context tells them apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairRequest {
     pub pairing_id: [u8; 16],
@@ -174,6 +205,22 @@ impl PairRequest {
             mac: pair_request_mac(secret, &pairing_id, &sign_pk, &kx_pk),
         }
     }
+
+    /// Builds the invitation of the inviting device, computing the MAC with
+    /// the invitation context and the secret read from the pairing code.
+    pub fn invite(
+        secret: &[u8; 32],
+        pairing_id: [u8; 16],
+        sign_pk: [u8; 32],
+        kx_pk: [u8; 32],
+    ) -> PairRequest {
+        PairRequest {
+            pairing_id,
+            sign_pk,
+            kx_pk,
+            mac: invite_request_mac(secret, &pairing_id, &sign_pk, &kx_pk),
+        }
+    }
 }
 
 /// Checks the MAC of a received pair request in constant time.
@@ -183,6 +230,21 @@ impl PairRequest {
 /// the id of the code it is showing.
 pub fn verify_pair_request(secret: &[u8; 32], request: &PairRequest) -> bool {
     let expected = pair_request_mac(
+        secret,
+        &request.pairing_id,
+        &request.sign_pk,
+        &request.kx_pk,
+    );
+    sodium::memcmp_32(&expected, &request.mac)
+}
+
+/// Checks the MAC of a received invitation (`0xB5`) in constant time, with
+/// the invitation context. A join request's MAC never verifies here.
+///
+/// As for [`verify_pair_request`], the caller must also check that
+/// `request.pairing_id` is the id of the code it is showing.
+pub fn verify_invite_request(secret: &[u8; 32], request: &PairRequest) -> bool {
+    let expected = invite_request_mac(
         secret,
         &request.pairing_id,
         &request.sign_pk,
@@ -224,6 +286,13 @@ pub enum ControlFrame {
     GroupAdd { device_id: [u8; 16] },
     /// `0xB3`, device → relay: removes that device from the group.
     GroupRemove { device_id: [u8; 16] },
+    /// `0xB4`, slot owner → relay: accepts the invitation of that device,
+    /// moving the sender into its group.
+    GroupJoin { device_id: [u8; 16] },
+    /// `0xB5`, inviting device → relay → slot owner: invites the slot owner
+    /// into the sender's group. Same body as `0xB1`, MAC with the invitation
+    /// context.
+    PairInvite(PairRequest),
     /// `0xBE`, relay → device.
     Error(ControlError),
 }
@@ -233,17 +302,11 @@ impl ControlFrame {
     pub fn encode(&self) -> Vec<u8> {
         match self {
             ControlFrame::PairOpen { pairing_id } => tagged(CONTROL_PAIR_OPEN, pairing_id),
-            ControlFrame::PairRequest(request) => {
-                let mut out = Vec::with_capacity(PAIR_REQUEST_LEN);
-                out.push(CONTROL_PAIR_REQUEST);
-                out.extend_from_slice(&request.pairing_id);
-                out.extend_from_slice(&request.sign_pk);
-                out.extend_from_slice(&request.kx_pk);
-                out.extend_from_slice(&request.mac);
-                out
-            }
+            ControlFrame::PairRequest(request) => encode_request(CONTROL_PAIR_REQUEST, request),
             ControlFrame::GroupAdd { device_id } => tagged(CONTROL_GROUP_ADD, device_id),
             ControlFrame::GroupRemove { device_id } => tagged(CONTROL_GROUP_REMOVE, device_id),
+            ControlFrame::GroupJoin { device_id } => tagged(CONTROL_GROUP_JOIN, device_id),
+            ControlFrame::PairInvite(request) => encode_request(CONTROL_PAIR_INVITE, request),
             ControlFrame::Error(code) => vec![CONTROL_ERROR, *code as u8],
         }
     }
@@ -256,30 +319,47 @@ impl ControlFrame {
             CONTROL_PAIR_OPEN => Ok(ControlFrame::PairOpen {
                 pairing_id: exact(body)?,
             }),
-            CONTROL_PAIR_REQUEST => {
-                let body: [u8; PAIR_REQUEST_LEN - 1] = exact(body)?;
-                Ok(ControlFrame::PairRequest(PairRequest {
-                    pairing_id: body[..16].try_into().unwrap(),
-                    sign_pk: body[16..48].try_into().unwrap(),
-                    kx_pk: body[48..80].try_into().unwrap(),
-                    mac: body[80..].try_into().unwrap(),
-                }))
-            }
+            CONTROL_PAIR_REQUEST => Ok(ControlFrame::PairRequest(decode_request(body)?)),
             CONTROL_GROUP_ADD => Ok(ControlFrame::GroupAdd {
                 device_id: exact(body)?,
             }),
             CONTROL_GROUP_REMOVE => Ok(ControlFrame::GroupRemove {
                 device_id: exact(body)?,
             }),
+            CONTROL_GROUP_JOIN => Ok(ControlFrame::GroupJoin {
+                device_id: exact(body)?,
+            }),
+            CONTROL_PAIR_INVITE => Ok(ControlFrame::PairInvite(decode_request(body)?)),
             CONTROL_ERROR => {
                 let [code] = exact(body)?;
                 Ok(ControlFrame::Error(ControlError::from_byte(code)?))
             }
             // The rest of the control range is reserved.
-            0xB4..=0xBD | 0xBF => Err(Error::UnknownControlFrame(tag)),
+            0xB6..=0xBD | 0xBF => Err(Error::UnknownControlFrame(tag)),
             other => Err(Error::UnexpectedFrameType(other)),
         }
     }
+}
+
+fn encode_request(tag: u8, request: &PairRequest) -> Vec<u8> {
+    let mut out = Vec::with_capacity(PAIR_REQUEST_LEN);
+    out.push(tag);
+    out.extend_from_slice(&request.pairing_id);
+    out.extend_from_slice(&request.sign_pk);
+    out.extend_from_slice(&request.kx_pk);
+    out.extend_from_slice(&request.mac);
+    out
+}
+
+/// The body of a `0xB1` or `0xB5` frame.
+fn decode_request(body: &[u8]) -> Result<PairRequest, Error> {
+    let body: [u8; PAIR_REQUEST_LEN - 1] = exact(body)?;
+    Ok(PairRequest {
+        pairing_id: body[..16].try_into().unwrap(),
+        sign_pk: body[16..48].try_into().unwrap(),
+        kx_pk: body[48..80].try_into().unwrap(),
+        mac: body[80..].try_into().unwrap(),
+    })
 }
 
 fn tagged(tag: u8, body: &[u8]) -> Vec<u8> {

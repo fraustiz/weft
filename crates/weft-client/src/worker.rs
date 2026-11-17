@@ -37,7 +37,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use weft_cli::session::{
     JOIN_TIMEOUT, KEEPALIVE_INTERVAL, MAX_BACKOFF, MIN_BACKOFF, PAIRING_TIMEOUT, is_fatal,
 };
-use weft_cli::{Error, Event, Next, Result, Session, State, StateDir, hex, short_id};
+use weft_cli::{Error, Event, Next, PairOutcome, Result, Session, State, StateDir, hex, short_id};
 use weft_protocol::{ControlError, PairingCode, device_id_from_sign_pk, random_message_id};
 
 use crate::features::{Features, Settings, UserCommand};
@@ -331,6 +331,20 @@ pub enum PairingState {
     Failed(PairingFailure),
 }
 
+/// How the pairing shown as [`PairingState::Success`] went, so an interface
+/// can say who joined whose group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairingKind {
+    /// A device used the code shown here and joined this device's group.
+    Joined,
+    /// A device used the code shown here to invite this device into its
+    /// group, which this device is now in.
+    Invited,
+    /// This device used the code of the other device
+    /// ([`Command::Join`]) and joined its group.
+    JoinedOther,
+}
+
 /// Why a pairing failed, in terms an interface can put into words.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PairingFailure {
@@ -363,7 +377,7 @@ impl PairingFailure {
             Error::Relay(ControlError::GroupFull) | Error::GroupFull => PairingFailure::GroupFull,
             Error::OwnCode => PairingFailure::OwnCode,
             Error::RelayUrlMismatch { .. } => PairingFailure::OtherRelay,
-            Error::Timeout(_) => PairingFailure::NoAnswer,
+            Error::Timeout(_) | Error::NoAnswer | Error::NoWelcome => PairingFailure::NoAnswer,
             err => PairingFailure::Other(err.to_string()),
         }
     }
@@ -438,6 +452,9 @@ impl Snapshot {
 pub struct Published {
     pub generation: u64,
     pub snapshot: Arc<Snapshot>,
+    /// How the pairing went, while `snapshot.pairing` is
+    /// [`PairingState::Success`]; `None` otherwise.
+    pub paired: Option<PairingKind>,
 }
 
 struct Board {
@@ -546,6 +563,7 @@ pub fn spawn_on(dir: StateDir, relay_url: &str, hooks: Hooks) -> Result<(Handle,
             published: Published {
                 generation: 0,
                 snapshot: Arc::new(view.clone()),
+                paired: None,
             },
             stopped: false,
         }),
@@ -561,6 +579,7 @@ pub fn spawn_on(dir: StateDir, relay_url: &str, hooks: Hooks) -> Result<(Handle,
         partial_dir,
         view,
         pairing: None,
+        pairing_kind: PairingKind::Joined,
         ring_until: None,
         outgoing: Vec::new(),
         incoming: Vec::new(),
@@ -643,6 +662,8 @@ struct Worker {
     /// The next snapshot, published by [`Worker::publish`].
     view: Snapshot,
     pairing: Option<OpenPairing>,
+    /// How the last successful pairing went.
+    pairing_kind: PairingKind,
     /// When the ring of this computer stops by itself.
     ring_until: Option<Instant>,
     outgoing: Vec<Sending>,
@@ -699,6 +720,9 @@ fn is_refusal(err: &Error) -> bool {
             | Error::AmbiguousDevice(_)
             | Error::OwnCode
             | Error::RelayUrlMismatch { .. }
+            | Error::NoGroup
+            | Error::NoAnswer
+            | Error::NoWelcome
     ) && !is_fatal(err)
 }
 
@@ -740,10 +764,13 @@ impl Worker {
     /// Publishes the view if it differs from the last snapshot.
     fn publish(&self) {
         let mut board = self.shared.board.lock().unwrap();
-        if *board.published.snapshot != self.view {
+        let paired =
+            matches!(self.view.pairing, PairingState::Success { .. }).then_some(self.pairing_kind);
+        if *board.published.snapshot != self.view || board.published.paired != paired {
             board.published = Published {
                 generation: board.published.generation + 1,
                 snapshot: Arc::new(self.view.clone()),
+                paired,
             };
             self.shared.changed.notify_all();
         }
@@ -1105,11 +1132,30 @@ impl Worker {
         }
         let slice = PAIRING_SLICE.min(pairing.expires_at - now);
         match session.wait_pair_request(&pairing.code, slice).await {
-            Ok(device) => {
-                tracing::info!(device = %short_id(&device), "device added");
+            Ok(outcome) => {
+                match &outcome {
+                    PairOutcome::Joined { device } => {
+                        tracing::info!(device = %short_id(device), "device added");
+                        self.pairing_kind = PairingKind::Joined;
+                    }
+                    PairOutcome::Invited { inviter, devices } => {
+                        tracing::info!(
+                            inviter = %short_id(inviter),
+                            "invited into a group: {} trusted device(s)",
+                            devices.len()
+                        );
+                        self.pairing_kind = PairingKind::Invited;
+                    }
+                }
                 self.pairing = None;
-                self.view.pairing = PairingState::Success { device };
-                self.send_capabilities(session, device).await?;
+                self.view.pairing = PairingState::Success {
+                    device: outcome.device(),
+                };
+                describe(&mut self.view, session.state());
+                // Capabilities go with the names the session sent.
+                for device in outcome.new_devices() {
+                    self.send_capabilities(session, device).await?;
+                }
             }
             // Nobody yet.
             Err(Error::Timeout(_)) => {}
@@ -2461,6 +2507,7 @@ impl Worker {
         match session.join(&code, JOIN_TIMEOUT).await {
             Ok(devices) => {
                 tracing::info!("joined the group: {} trusted device(s)", devices.len());
+                self.pairing_kind = PairingKind::JoinedOther;
                 self.view.pairing = PairingState::Success {
                     device: device_id_from_sign_pk(&code.sign_pk),
                 };

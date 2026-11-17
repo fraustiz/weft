@@ -518,6 +518,7 @@ mod tests {
         Published {
             generation: 7,
             snapshot: Arc::new(view),
+            paired: None,
         }
     }
 

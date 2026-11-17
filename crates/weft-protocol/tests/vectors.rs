@@ -223,3 +223,63 @@ fn committed_feature_vectors_decode() {
         plaintext
     );
 }
+
+/// A receives B's invitation from the committed file and answers it.
+#[test]
+fn committed_invitation_vectors_decode() {
+    use weft_protocol::{
+        ControlFrame, PairingCode, device_id_from_sign_pk, invite_request_mac,
+        verify_invite_request, verify_pair_request,
+    };
+
+    let doc: serde_json::Value = serde_json::from_str(include_str!("../vectors/v1.json")).unwrap();
+    let section = &doc["invitation"];
+    let pairing = &doc["pairing"];
+    let (a, b) = (&doc["devices"]["a"], &doc["devices"]["b"]);
+    assert_eq!(section["code"], pairing["code"]);
+    assert_eq!(section["shown_by"], "a");
+    assert_eq!(section["inviter"], "b");
+
+    let code = PairingCode::decode(section["code"].as_str().unwrap()).unwrap();
+    assert_eq!(code.pairing_id, unhex::<16>(&section["pairing_id"]));
+    assert_eq!(code.secret, unhex::<32>(&section["secret"]));
+    assert_eq!(code.sign_pk, unhex::<32>(&a["sign_pk"]));
+
+    let mut mac_input = b"weft-invite-v1".to_vec();
+    mac_input.extend_from_slice(&code.pairing_id);
+    mac_input.extend_from_slice(&unhex::<32>(&b["sign_pk"]));
+    mac_input.extend_from_slice(&unhex::<32>(&b["kx_pk"]));
+    assert_eq!(unhex_vec(&section["mac_input"]), mac_input);
+
+    let frames = &section["control_frames"];
+    let frame = unhex_vec(&frames["pair_invite"]);
+    assert_eq!(frame[0], 0xB5);
+    let ControlFrame::PairInvite(request) = ControlFrame::decode(&frame).unwrap() else {
+        panic!("pair_invite is not an invitation");
+    };
+    assert_eq!(request.pairing_id, code.pairing_id);
+    assert_eq!(request.sign_pk, unhex::<32>(&b["sign_pk"]));
+    assert_eq!(request.kx_pk, unhex::<32>(&b["kx_pk"]));
+    assert_eq!(request.mac, unhex::<32>(&section["mac"]));
+    assert_eq!(
+        request.mac,
+        invite_request_mac(
+            &code.secret,
+            &request.pairing_id,
+            &request.sign_pk,
+            &request.kx_pk
+        )
+    );
+    assert!(verify_invite_request(&code.secret, &request));
+    assert!(!verify_pair_request(&code.secret, &request));
+    assert_ne!(section["mac"], pairing["mac"]);
+
+    let b_id = device_id_from_sign_pk(&request.sign_pk);
+    assert_eq!(b_id, unhex::<16>(&b["device_id"]));
+    let frame = unhex_vec(&frames["group_join"]);
+    assert_eq!(
+        ControlFrame::decode(&frame).unwrap(),
+        ControlFrame::GroupJoin { device_id: b_id }
+    );
+    assert_eq!(ControlFrame::GroupJoin { device_id: b_id }.encode(), frame);
+}

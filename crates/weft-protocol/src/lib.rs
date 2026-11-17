@@ -12,9 +12,10 @@ mod pairing;
 mod sodium;
 
 pub use pairing::{
-    CONTROL_ERROR, CONTROL_GROUP_ADD, CONTROL_GROUP_REMOVE, CONTROL_PAIR_OPEN,
-    CONTROL_PAIR_REQUEST, ControlError, ControlFrame, MAX_RELAY_URL_LEN, PAIRING_CODE_PREFIX,
-    PairRequest, PairingCode, pair_request_mac, random_pairing_id, random_pairing_secret,
+    CONTROL_ERROR, CONTROL_GROUP_ADD, CONTROL_GROUP_JOIN, CONTROL_GROUP_REMOVE,
+    CONTROL_PAIR_INVITE, CONTROL_PAIR_OPEN, CONTROL_PAIR_REQUEST, ControlError, ControlFrame,
+    MAX_RELAY_URL_LEN, PAIRING_CODE_PREFIX, PairRequest, PairingCode, invite_request_mac,
+    pair_request_mac, random_pairing_id, random_pairing_secret, verify_invite_request,
     verify_pair_request,
 };
 use sodium::KxRole;

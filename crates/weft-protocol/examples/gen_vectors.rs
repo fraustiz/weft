@@ -79,6 +79,20 @@
 //!     device_removed_a_to_b  kind 5, plaintext = device id of C,
 //!                            key = `session.a.tx`
 //!
+//! `invitation` (device A shows the pairing code of the `pairing` section;
+//! device B, already in a group, scans it and invites A into its group):
+//!   code          the QR code string, the same as `pairing.code`
+//!   pairing_id    the same as `pairing.pairing_id`
+//!   secret        the same as `pairing.secret`
+//!   shown_by      "a": the code carries A's sign_pk and kx_pk
+//!   inviter       "b": the device that scans the code and sends 0xB5
+//!   mac_input     "weft-invite-v1" || pairing_id || sign_pk_B || kx_pk_B
+//!   mac           `crypto_generichash(outlen = 32, mac_input, key = secret)`
+//!   control_frames:
+//!     pair_invite  0xB5 || pairing_id || sign_pk_B || kx_pk_B || mac
+//!                  (B → relay → A)
+//!     group_join   0xB4 || device id of B                 (A → relay)
+//!
 //! `device_name` (device B announces its name to A, as it does right after
 //! receiving A's Welcome):
 //!   name          the name, as a string (UTF-8, 1 to 64 bytes, no control
@@ -300,6 +314,38 @@ fn pairing_json(a: &Identity, b: &Identity, a_b_keys: &SessionKeys) -> Value {
     })
 }
 
+/// The `invitation` section: A shows the code of the `pairing` section, B
+/// invites A into its group.
+fn invitation_json(a: &Identity, b: &Identity) -> Value {
+    let code = PairingCode {
+        relay_url: "wss://weft.frohub.eu/v1".to_owned(),
+        pairing_id: seq::<16>(0x50),
+        sign_pk: a.sign_pk(),
+        kx_pk: a.kx_pk(),
+        secret: seq::<32>(0xc0),
+    };
+    let request = PairRequest::invite(&code.secret, code.pairing_id, b.sign_pk(), b.kx_pk());
+    let mut mac_input = b"weft-invite-v1".to_vec();
+    mac_input.extend_from_slice(&request.pairing_id);
+    mac_input.extend_from_slice(&request.sign_pk);
+    mac_input.extend_from_slice(&request.kx_pk);
+    let mac = request.mac;
+    let frame = |frame: ControlFrame| hex(&frame.encode());
+    json!({
+        "code": code.encode().expect("valid pairing code"),
+        "pairing_id": hex(&code.pairing_id),
+        "secret": hex(&code.secret),
+        "shown_by": "a",
+        "inviter": "b",
+        "mac_input": hex(&mac_input),
+        "mac": hex(&mac),
+        "control_frames": {
+            "pair_invite": frame(ControlFrame::PairInvite(request)),
+            "group_join": frame(ControlFrame::GroupJoin { device_id: b.device_id() }),
+        },
+    })
+}
+
 /// The `device_name` section: B tells A its name.
 fn device_name_json(a: &Identity, b: &Identity, b_a_keys: &SessionKeys) -> Value {
     let name = "Téléphone de test";
@@ -438,6 +484,7 @@ pub fn vectors_json() -> String {
         "pairing": pairing_json(&a, &b, &a_keys),
         "device_name": device_name_json(&a, &b, &b_keys),
         "features": features_json(&a, &b, &a_keys, &b_keys),
+        "invitation": invitation_json(&a, &b),
     });
     let mut out = serde_json::to_string_pretty(&doc).expect("serialize vectors");
     out.push('\n');

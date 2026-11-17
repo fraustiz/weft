@@ -5,9 +5,9 @@ use weft_protocol::{
     Challenge, ControlError, ControlFrame, Error, FrameType, HEADER_LEN, Header, Identity, Kind,
     MAX_WELCOME_DEVICES, NONCE_LEN, PairRequest, PairingCode, PeerKeys, SessionKeys, TAG_LEN,
     VERSION, check_relay_name, classify, decode_device_added, decode_device_removed,
-    decode_welcome, encode_device_added, encode_device_removed, encode_welcome, open,
-    pair_request_mac, random_message_id, random_pairing_id, random_pairing_secret, seal,
-    session_keys, verify_pair_request,
+    decode_welcome, encode_device_added, encode_device_removed, encode_welcome, invite_request_mac,
+    open, pair_request_mac, random_message_id, random_pairing_id, random_pairing_secret, seal,
+    session_keys, verify_invite_request, verify_pair_request,
 };
 
 fn pair() -> (Identity, Identity, SessionKeys, SessionKeys) {
@@ -673,6 +673,96 @@ fn pair_request_mac_covers_every_field() {
     assert!(!verify_pair_request(&secret, &other_pairing_id));
 }
 
+// --- Invitation MAC -------------------------------------------------------
+
+fn invite_request(secret: &[u8; 32]) -> PairRequest {
+    PairRequest::invite(secret, [0x11; 16], [0x22; 32], [0x33; 32])
+}
+
+#[test]
+fn invite_request_mac_verifies() {
+    let secret = random_pairing_secret();
+    let request = invite_request(&secret);
+    assert_eq!(
+        request.mac,
+        invite_request_mac(&secret, &[0x11; 16], &[0x22; 32], &[0x33; 32])
+    );
+    assert!(verify_invite_request(&secret, &request));
+
+    // Still valid after a trip through the relay.
+    let frame = ControlFrame::PairInvite(request).encode();
+    let ControlFrame::PairInvite(received) = ControlFrame::decode(&frame).unwrap() else {
+        panic!("not an invitation");
+    };
+    assert!(verify_invite_request(&secret, &received));
+}
+
+#[test]
+fn join_and_invite_macs_never_verify_as_each_other() {
+    let secret = [0x44; 32];
+    let join = pair_request(&secret);
+    let invite = invite_request(&secret);
+    assert_ne!(join.mac, invite.mac);
+    assert!(verify_pair_request(&secret, &join));
+    assert!(verify_invite_request(&secret, &invite));
+    assert!(!verify_invite_request(&secret, &join));
+    assert!(!verify_pair_request(&secret, &invite));
+
+    // The relay re-tagging a frame does not change its MAC: the slot owner
+    // checks the MAC with the context of the tag it received.
+    let mut retagged = ControlFrame::PairRequest(join.clone()).encode();
+    retagged[0] = 0xB5;
+    let ControlFrame::PairInvite(as_invite) = ControlFrame::decode(&retagged).unwrap() else {
+        panic!("not an invitation");
+    };
+    assert!(!verify_invite_request(&secret, &as_invite));
+    let mut retagged = ControlFrame::PairInvite(invite).encode();
+    retagged[0] = 0xB1;
+    let ControlFrame::PairRequest(as_join) = ControlFrame::decode(&retagged).unwrap() else {
+        panic!("not a pair request");
+    };
+    assert!(!verify_pair_request(&secret, &as_join));
+}
+
+#[test]
+fn invite_request_mac_rejects_any_flipped_bit() {
+    let secret = [0x44; 32];
+    let request = invite_request(&secret);
+    for byte in 0..32 {
+        for bit in 0..8 {
+            let mut bad = request.clone();
+            bad.mac[byte] ^= 1 << bit;
+            assert!(
+                !verify_invite_request(&secret, &bad),
+                "mac accepted with bit {bit} of byte {byte} flipped"
+            );
+        }
+    }
+    // Any flipped bit in the covered fields too.
+    for field in 0..3 {
+        for byte in [0, 15] {
+            let mut bad = request.clone();
+            match field {
+                0 => bad.pairing_id[byte] ^= 1,
+                1 => bad.sign_pk[byte] ^= 1,
+                _ => bad.kx_pk[byte] ^= 1,
+            }
+            assert!(!verify_invite_request(&secret, &bad));
+        }
+    }
+}
+
+#[test]
+fn invite_request_mac_rejects_wrong_secret() {
+    let secret = [0x44; 32];
+    let request = invite_request(&secret);
+    let mut one_bit_off = secret;
+    one_bit_off[0] ^= 0x01;
+    assert!(!verify_invite_request(&one_bit_off, &request));
+    assert!(!verify_invite_request(&[0; 32], &request));
+    assert!(!verify_invite_request(&random_pairing_secret(), &request));
+}
+
 // --- Control frames -------------------------------------------------------
 
 fn control_frames() -> Vec<(ControlFrame, u8, usize)> {
@@ -691,6 +781,12 @@ fn control_frames() -> Vec<(ControlFrame, u8, usize)> {
         ),
         (ControlFrame::GroupAdd { device_id: [2; 16] }, 0xB2, 17),
         (ControlFrame::GroupRemove { device_id: [3; 16] }, 0xB3, 17),
+        (ControlFrame::GroupJoin { device_id: [4; 16] }, 0xB4, 17),
+        (
+            ControlFrame::PairInvite(invite_request(&[0x44; 32])),
+            0xB5,
+            113,
+        ),
         (ControlFrame::Error(ControlError::UnknownPairing), 0xBE, 2),
         (ControlFrame::Error(ControlError::NotAllowed), 0xBE, 2),
         (ControlFrame::Error(ControlError::RateLimited), 0xBE, 2),
@@ -732,7 +828,19 @@ fn control_frame_layouts() {
     expected.extend_from_slice(&[2; 32]);
     expected.extend_from_slice(&[3; 32]);
     expected.extend_from_slice(&[4; 32]);
-    assert_eq!(ControlFrame::PairRequest(request).encode(), expected);
+    assert_eq!(
+        ControlFrame::PairRequest(request.clone()).encode(),
+        expected
+    );
+    expected[0] = 0xB5;
+    assert_eq!(ControlFrame::PairInvite(request).encode(), expected);
+
+    let mut expected = vec![0xB4];
+    expected.extend_from_slice(&[5; 16]);
+    assert_eq!(
+        ControlFrame::GroupJoin { device_id: [5; 16] }.encode(),
+        expected
+    );
 
     for (code, byte) in [
         (ControlError::UnknownPairing, 0x01),
@@ -768,7 +876,7 @@ fn control_frame_decode_rejects_wrong_lengths() {
 
 #[test]
 fn control_frame_decode_rejects_unknown_control_bytes() {
-    for tag in 0xB4..=0xBF_u8 {
+    for tag in 0xB6..=0xBF_u8 {
         if tag == 0xBE {
             continue;
         }

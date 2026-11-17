@@ -179,7 +179,7 @@ async fn pair_request_with_a_wrong_mac_is_ignored() {
 
         // The code still works for the device that really scanned it.
         let (added, joined) = tokio::join!(a.wait_pair_request(&code, STEP), b.join(&code, STEP),);
-        assert_eq!(added.unwrap(), b.device_id());
+        assert_eq!(added.unwrap().device(), b.device_id());
         assert_eq!(joined.unwrap(), vec![a.device_id()]);
         assert_eq!(trusted(&a), vec![b.device_id()]);
         expect_nothing(&mut mallory).await;

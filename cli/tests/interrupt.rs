@@ -145,7 +145,7 @@ async fn frames_kept_while_pairing_are_handled_from_the_queue() {
         let c_dev = TestDevice::new(&url);
         let mut c = c_dev.connect().await;
         let (added, joined) = tokio::join!(a.wait_pair_request(&code, STEP), c.join(&code, STEP));
-        assert_eq!(added.unwrap(), c.device_id());
+        assert_eq!(added.unwrap().device(), c.device_id());
         joined.unwrap();
     })
     .await;

@@ -271,6 +271,18 @@ impl Device {
         ControlFrame::PairRequest(request).encode()
     }
 
+    /// The encoded invitation this device sends for the code
+    /// (`pairing_id`, `secret`).
+    pub fn pair_invite(&self, secret: &[u8; 32], pairing_id: [u8; 16]) -> Vec<u8> {
+        let request = PairRequest::invite(
+            secret,
+            pairing_id,
+            self.identity.sign_pk(),
+            self.identity.kx_pk(),
+        );
+        ControlFrame::PairInvite(request).encode()
+    }
+
     /// Asserts that `text`, sent in an envelope, reaches `recipient`
     /// unchanged and readable.
     pub async fn assert_delivers(&mut self, recipient: &mut Device, text: &str) {
@@ -305,6 +317,26 @@ pub async fn request_join(owner: &mut Device, joiner: &mut Device) {
     let request = joiner.pair_request(&secret, pairing_id);
     joiner.send(request.clone()).await;
     assert_eq!(owner.recv().await, request);
+}
+
+/// First half of an invitation: `owner` opens a slot, `inviter` invites it
+/// and `owner` receives the invitation unchanged.
+pub async fn request_invite(owner: &mut Device, inviter: &mut Device) {
+    let (pairing_id, secret) = (random_pairing_id(), random_pairing_secret());
+    owner.open_slot(pairing_id).await;
+    let invitation = inviter.pair_invite(&secret, pairing_id);
+    inviter.send(invitation.clone()).await;
+    assert_eq!(owner.recv().await, invitation);
+}
+
+/// Puts `owner` in the group of `inviter` through a full invitation.
+pub async fn invite(owner: &mut Device, inviter: &mut Device) {
+    request_invite(owner, inviter).await;
+    let device_id = inviter.id();
+    owner
+        .send_control(ControlFrame::GroupJoin { device_id })
+        .await;
+    owner.settle().await;
 }
 
 /// Puts `joiner` in the group of `owner` through a full pairing.

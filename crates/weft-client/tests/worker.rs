@@ -22,8 +22,8 @@ use weft_client::packets::{
 use weft_client::sms::SendState;
 use weft_client::transfer::{CHUNK, Stage, WINDOW};
 use weft_client::worker::{
-    Command, Device, Direction, Handle, Hooks, Notice, PairingFailure, PairingState, Snapshot,
-    Status, spawn_on,
+    Command, Device, Direction, Handle, Hooks, Notice, PairingFailure, PairingKind, PairingState,
+    Snapshot, Status, spawn_on,
 };
 use weft_protocol::PairingCode;
 use weft_relay::Config;
@@ -313,6 +313,7 @@ impl Tested {
                     .any(|device| device.id == joined && device.name.as_deref() == Some(peer_name))
         })
         .await;
+        assert_eq!(self.worker.published().paired, Some(PairingKind::Joined));
         peer.expect_name(self.id(), "Test PC").await;
         code
     }
@@ -497,7 +498,7 @@ async fn joins_a_group_from_a_pasted_code() {
         let pasted = format!("  {}\n", code.encode().unwrap());
         tested.worker.send(Command::Join(pasted));
         let added = phone.session.wait_pair_request(&code, STEP).await.unwrap();
-        assert_eq!(added, tested.id());
+        assert_eq!(added.device(), tested.id());
         let owner = phone.id();
         tested
             .wait(|snapshot| {
@@ -509,10 +510,84 @@ async fn joins_a_group_from_a_pasted_code() {
                         }]
             })
             .await;
+        assert_eq!(
+            tested.worker.published().paired,
+            Some(PairingKind::JoinedOther)
+        );
         phone.expect_name(tested.id(), "Test PC").await;
 
         phone.session.send_text("to the new member").await.unwrap();
         tested.expect_clipboard(&["to the new member"]).await;
+        tested.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn accepts_an_invitation_into_a_group() {
+    timed(async {
+        let url = start_relay().await;
+        let tested = Tested::connected(&url).await;
+        let mut phone = Peer::connect(&url, "Test phone").await;
+        let mut tablet = Peer::connect(&url, "Test tablet").await;
+        // The phone and the tablet are a group; the phone invites the
+        // worker into it by scanning its code.
+        let code = phone.session.open_pairing().await.unwrap();
+        let (added, joined) = tokio::join!(
+            phone.session.wait_pair_request(&code, STEP),
+            tablet.session.join(&code, STEP)
+        );
+        added.unwrap();
+        joined.unwrap();
+        tablet.expect_name(phone.id(), "Test phone").await;
+        phone.expect_name(tablet.id(), "Test tablet").await;
+
+        let code = tested.show_code().await;
+        let invited = phone.session.invite(&code, STEP).await.unwrap();
+        assert_eq!(invited, tested.id());
+        let (phone_id, tablet_id) = (phone.id(), tablet.id());
+        tested
+            .wait(|snapshot| {
+                snapshot.pairing == PairingState::Success { device: phone_id }
+                    && snapshot.devices.len() == 2
+                    && snapshot.devices.iter().any(|device| {
+                        device.id == phone_id && device.name.as_deref() == Some("Test phone")
+                    })
+                    && snapshot.devices.iter().any(|device| device.id == tablet_id)
+            })
+            .await;
+        assert_eq!(tested.worker.published().paired, Some(PairingKind::Invited));
+
+        // The tablet learns about the worker from the phone and answers
+        // with its name, then gets the worker's name and capabilities; the
+        // phone gets its capabilities.
+        assert_eq!(
+            tablet.next_event().await,
+            Event::DeviceAdded {
+                by: phone_id,
+                device: tested.id(),
+            }
+        );
+        tablet.expect_name(tested.id(), "Test PC").await;
+        tablet.expect_packet(tested.id(), is_capabilities).await;
+        phone.expect_packet(tested.id(), is_capabilities).await;
+        tested
+            .wait(|snapshot| {
+                snapshot.devices.iter().any(|device| {
+                    device.id == tablet_id && device.name.as_deref() == Some("Test tablet")
+                })
+            })
+            .await;
+
+        tablet.session.send_text("from the tablet").await.unwrap();
+        tested.expect_clipboard(&["from the tablet"]).await;
+
+        // Dismissed: no longer a success, so no kind either.
+        tested.worker.send(Command::CancelPairing);
+        tested
+            .wait(|snapshot| snapshot.pairing == PairingState::Idle)
+            .await;
+        assert_eq!(tested.worker.published().paired, None);
         tested.stop().await;
     })
     .await;

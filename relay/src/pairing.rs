@@ -20,8 +20,9 @@ pub struct Pairing {
     slot_ttl: Duration,
     pending_join_ttl: Duration,
     slots: HashMap<PairingId, Slot>,
-    /// `(owner, joiner)` → expiry: `joiner` sent a pair request to a slot of
-    /// `owner`, which may now add it to its group.
+    /// `(owner, joiner)` → expiry: `joiner` sent a pair request (or an
+    /// invitation) to a slot of `owner`, which may now add it to its group
+    /// (or join its group).
     pending_joins: HashMap<(DeviceId, DeviceId), Instant>,
 }
 

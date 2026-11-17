@@ -25,7 +25,8 @@ use weft_protocol::{
     decode_device_name, decode_device_removed, decode_file_chunk, decode_welcome,
     device_id_from_sign_pk, encode_device_added, encode_device_name, encode_device_removed,
     encode_file_chunk, encode_welcome, open, random_message_id, random_pairing_id,
-    random_pairing_secret, seal, session_keys, sign_auth, verify_pair_request,
+    random_pairing_secret, seal, session_keys, sign_auth, verify_invite_request,
+    verify_pair_request,
 };
 
 use crate::state::{ReplayError, State, StateDir, TrustedDevice};
@@ -38,7 +39,9 @@ pub type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a pairing code stays valid (spec §5).
 pub const PAIRING_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-/// How long a joining device waits for the Welcome envelope.
+/// How long a joining device waits for the Welcome envelope; also how long
+/// an invited device waits for it, and how long an inviting device waits
+/// for the invited one's name (spec §5, « Invitation »).
 pub const JOIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long `weft pair` and `weft join` wait for the names of the devices
 /// they just started trusting before exiting.
@@ -100,6 +103,47 @@ fn tls_connector() -> Connector {
         .with_root_certificates(roots)
         .with_no_client_auth();
     Connector::Rustls(Arc::new(config))
+}
+
+/// How a pairing code shown by this device was used, as returned by
+/// [`Session::wait_pair_request`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PairOutcome {
+    /// `device` sent a join request (`0xB1`): it is now in this device's
+    /// group.
+    Joined { device: [u8; 16] },
+    /// `inviter` sent an invitation (`0xB5`): this device is now in the
+    /// group of `inviter`. `devices` are the devices it now trusts: the
+    /// inviter first, then the members its Welcome listed.
+    Invited {
+        inviter: [u8; 16],
+        devices: Vec<[u8; 16]>,
+    },
+}
+
+impl PairOutcome {
+    /// The device at the other end of the pairing: the one that joined, or
+    /// the one that invited.
+    pub fn device(&self) -> [u8; 16] {
+        match self {
+            PairOutcome::Joined { device } => *device,
+            PairOutcome::Invited { inviter, .. } => *inviter,
+        }
+    }
+
+    /// The devices this device started trusting.
+    pub fn new_devices(&self) -> Vec<[u8; 16]> {
+        match self {
+            PairOutcome::Joined { device } => vec![*device],
+            PairOutcome::Invited { devices, .. } => devices.clone(),
+        }
+    }
+}
+
+/// A valid request received on an open pairing slot.
+enum SlotRequest {
+    Join(PairRequest),
+    Invite(PairRequest),
 }
 
 /// How a call to [`Session::next_event_or`] ended.
@@ -630,23 +674,39 @@ impl Session {
         Ok(code)
     }
 
-    /// Waits for a valid pair request for `code`, then adds the device to
-    /// the group: trust, `0xB2`, Welcome to it, Device added to the other
-    /// members and this device's name to it. Requests with another pairing
-    /// id or a wrong MAC are ignored (with a warning) and the wait goes on.
-    /// Returns the new device's id.
+    /// Waits for a valid request for `code` and acts on it.
+    ///
+    /// A join request (`0xB1`) adds the device to the group: trust, `0xB2`,
+    /// Welcome to it, Device added to the other members and this device's
+    /// name to it.
+    ///
+    /// An invitation (`0xB5`) is accepted only while this device trusts no
+    /// other one (spec §5, « Invitation »): trust the inviter, `0xB4`, this
+    /// device's name to it, then wait up to [`JOIN_TIMEOUT`] for its
+    /// Welcome, trust the members it lists and send them this device's
+    /// name. A device that already trusts others ignores invitations.
+    ///
+    /// Requests with another pairing id or a wrong MAC, and ignored
+    /// invitations, are logged and the wait goes on. `timeout` only bounds
+    /// the wait for a request, not the steps after it.
     pub async fn wait_pair_request(
         &mut self,
         code: &PairingCode,
         timeout: Duration,
-    ) -> Result<[u8; 16]> {
+    ) -> Result<PairOutcome> {
         let deadline = Instant::now() + timeout;
         let mut deferred = Vec::new();
         let result = self
             .wait_pair_request_until(code, deadline, &mut deferred)
             .await;
         self.requeue(deferred);
-        self.accept_join(result?).await
+        match result? {
+            SlotRequest::Join(request) => {
+                let device = self.accept_join(request).await?;
+                Ok(PairOutcome::Joined { device })
+            }
+            SlotRequest::Invite(request) => self.accept_invite(request).await,
+        }
     }
 
     async fn wait_pair_request_until(
@@ -654,7 +714,7 @@ impl Session {
         code: &PairingCode,
         deadline: Instant,
         deferred: &mut Vec<Vec<u8>>,
-    ) -> Result<PairRequest> {
+    ) -> Result<SlotRequest> {
         loop {
             let Some(frame) = self.next_frame(Some(deadline)).await? else {
                 return Err(Error::Timeout("a device to join"));
@@ -668,15 +728,33 @@ impl Session {
                             tracing::warn!(%joiner, "ignored a pair request for another pairing");
                         } else if !verify_pair_request(&code.secret, &request) {
                             tracing::warn!(%joiner, "ignored a pair request with an invalid MAC");
-                            // The relay closed the slot when it forwarded the
-                            // request: reopen it so the code keeps working.
-                            let pairing_id = code.pairing_id;
-                            self.send_frame(ControlFrame::PairOpen { pairing_id }.encode())
-                                .await?;
+                            self.reopen_slot(code).await?;
                         } else if request.sign_pk == self.identity.sign_pk() {
                             tracing::warn!("ignored a pair request from this device");
                         } else {
-                            return Ok(request);
+                            return Ok(SlotRequest::Join(request));
+                        }
+                    }
+                    Ok(ControlFrame::PairInvite(request)) => {
+                        let inviter = short_id(&device_id_from_sign_pk(&request.sign_pk));
+                        if request.pairing_id != code.pairing_id {
+                            tracing::warn!(%inviter, "ignored an invitation for another pairing");
+                        } else if !verify_invite_request(&code.secret, &request) {
+                            tracing::warn!(%inviter, "ignored an invitation with an invalid MAC");
+                            self.reopen_slot(code).await?;
+                        } else if request.sign_pk == self.identity.sign_pk() {
+                            tracing::warn!("ignored an invitation from this device");
+                        } else if !self.dir.load()?.devices.is_empty() {
+                            // Scanning the code of a device in a group must
+                            // never pull it out of that group.
+                            tracing::warn!(
+                                %inviter,
+                                "ignored an invitation: this device already belongs to a group; \
+                                 the other device can join it instead"
+                            );
+                            self.reopen_slot(code).await?;
+                        } else {
+                            return Ok(SlotRequest::Invite(request));
                         }
                     }
                     Ok(ControlFrame::Error(code)) => {
@@ -684,6 +762,225 @@ impl Session {
                     }
                     _ => {}
                 },
+                FrameType::Unknown => {}
+            }
+        }
+    }
+
+    /// The relay closes the slot when it forwards a request: reopens it
+    /// after an ignored one, so the code keeps working.
+    async fn reopen_slot(&mut self, code: &PairingCode) -> Result<()> {
+        let pairing_id = code.pairing_id;
+        self.send_frame(ControlFrame::PairOpen { pairing_id }.encode())
+            .await
+    }
+
+    /// Accepts the invitation `request` of a device this one does not trust
+    /// yet, this device trusting no other one.
+    async fn accept_invite(&mut self, request: PairRequest) -> Result<PairOutcome> {
+        let inviter_keys = PeerKeys {
+            sign_pk: request.sign_pk,
+            kx_pk: request.kx_pk,
+        };
+        let inviter = inviter_keys.device_id();
+        self.state = self.dir.update(|state| state.trust(inviter_keys))?.1;
+
+        self.send_frame(ControlFrame::GroupJoin { device_id: inviter }.encode())
+            .await?;
+        if let Err(err) = self.settle().await {
+            self.state = self.dir.update(|state| state.untrust(&inviter))?.1;
+            return Err(match err {
+                Error::Relay(ControlError::GroupFull) => Error::GroupFull,
+                err => err,
+            });
+        }
+
+        // In the inviter's group now. This name tells the inviter so: it
+        // answers with the Welcome.
+        self.send_name(&[inviter]).await?;
+        let deadline = Instant::now() + JOIN_TIMEOUT;
+        let mut deferred = Vec::new();
+        let result = self
+            .wait_welcome(&inviter_keys, deadline, &mut deferred)
+            .await;
+        self.requeue(deferred);
+        let (header, members) = match result {
+            Ok(welcome) => welcome,
+            Err(err) => {
+                self.leave_failed_invitation(&inviter).await?;
+                return Err(match err {
+                    Error::Timeout(_) => Error::NoWelcome,
+                    err => err,
+                });
+            }
+        };
+
+        let identity = &self.identity;
+        let (devices, state) = self.dir.update(|state| {
+            trust_welcome(state, identity, &inviter, &header, members);
+            state
+                .devices
+                .iter()
+                .map(|d| d.device_id())
+                .collect::<Vec<_>>()
+        })?;
+        self.state = state;
+        let members: Vec<[u8; 16]> = devices
+            .iter()
+            .copied()
+            .filter(|device| *device != inviter)
+            .collect();
+        self.send_name(&members).await?;
+        self.settle().await?;
+        let mut devices = devices;
+        // The inviter first.
+        devices.retain(|device| *device != inviter);
+        devices.insert(0, inviter);
+        Ok(PairOutcome::Invited { inviter, devices })
+    }
+
+    /// Undoes an accepted invitation whose Welcome never came: stops
+    /// trusting the inviter and leaves its group on the relay, so this
+    /// device is back to trusting nobody and can be invited or joined
+    /// again.
+    async fn leave_failed_invitation(&mut self, inviter: &[u8; 16]) -> Result<()> {
+        self.state = self.dir.update(|state| state.untrust(inviter))?.1;
+        let device_id = self.device_id();
+        self.send_frame(ControlFrame::GroupRemove { device_id }.encode())
+            .await?;
+        match self.settle().await {
+            Ok(()) => Ok(()),
+            Err(Error::Relay(code)) => {
+                tracing::warn!(error = %Error::Relay(code), "while leaving the inviter's group");
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Invites the device that showed `code` into this device's group
+    /// (spec §5, « Invitation »): trusts it, sends `0xB5`, waits up to
+    /// `timeout` for its Device name (the sign that it accepted and is in
+    /// the group), then sends it the Welcome, sends the other members a
+    /// Device added with its keys, and sends it this device's name.
+    ///
+    /// This device must already be in a group: otherwise the other device
+    /// should be joined instead ([`Session::join`]). A device that already
+    /// belongs to a group ignores invitations: it then never answers, and
+    /// this fails with [`Error::NoAnswer`]; it is no longer trusted then.
+    /// Returns the invited device's id.
+    pub async fn invite(&mut self, code: &PairingCode, timeout: Duration) -> Result<[u8; 16]> {
+        if code.sign_pk == self.identity.sign_pk() {
+            return Err(Error::OwnCode);
+        }
+        self.state = self.dir.load()?;
+        if code.relay_url != self.state.relay_url {
+            return Err(Error::RelayUrlMismatch {
+                state: self.state.relay_url.clone(),
+                code: code.relay_url.clone(),
+            });
+        }
+        if self.state.devices.is_empty() {
+            return Err(Error::NoGroup);
+        }
+        let keys = PeerKeys {
+            sign_pk: code.sign_pk,
+            kx_pk: code.kx_pk,
+        };
+        let invitee = keys.device_id();
+        let was_trusted = self.state.device(&invitee).is_some();
+        if !was_trusted && self.state.devices.len() + 1 >= MAX_GROUP_SIZE {
+            return Err(Error::GroupFull);
+        }
+        // Trusted first, so its name can be read.
+        self.state = self.dir.update(|state| state.trust(keys))?.1;
+        let request = PairRequest::invite(
+            &code.secret,
+            code.pairing_id,
+            self.identity.sign_pk(),
+            self.identity.kx_pk(),
+        );
+        let deadline = Instant::now() + timeout;
+        let mut deferred = Vec::new();
+        let result = match self
+            .send_frame(ControlFrame::PairInvite(request).encode())
+            .await
+        {
+            Ok(()) => {
+                self.wait_invitee_name(&invitee, deadline, &mut deferred)
+                    .await
+            }
+            Err(err) => Err(err),
+        };
+        self.requeue(deferred);
+        if let Err(err) = result {
+            if !was_trusted {
+                self.state = self.dir.update(|state| state.untrust(&invitee))?.1;
+            }
+            return Err(match err {
+                Error::Timeout(_) => Error::NoAnswer,
+                err => err,
+            });
+        }
+
+        let invited = self.trusted_device(&invitee)?;
+        let others: Vec<TrustedDevice> = self
+            .state
+            .devices
+            .iter()
+            .filter(|device| device.device_id() != invitee)
+            .cloned()
+            .collect();
+        let members: Vec<PeerKeys> = others.iter().map(TrustedDevice::keys).collect();
+        // Device added first: the relay then queues it for each member
+        // before the invited device can read the Welcome and send them its
+        // name, so the members trust it by the time its name arrives.
+        for other in &others {
+            self.send_envelope(other, Kind::DeviceAdded, &encode_device_added(&keys))
+                .await?;
+        }
+        self.send_envelope(&invited, Kind::Welcome, &encode_welcome(&members)?)
+            .await?;
+        self.send_name(&[invitee]).await?;
+        self.settle().await?;
+        Ok(invitee)
+    }
+
+    /// Waits for the Device name of `invitee` and saves it. Fails on the
+    /// first relay error (the code expired, the group is full...). Other
+    /// envelopes are kept in `deferred`.
+    async fn wait_invitee_name(
+        &mut self,
+        invitee: &[u8; 16],
+        deadline: Instant,
+        deferred: &mut Vec<Vec<u8>>,
+    ) -> Result<()> {
+        loop {
+            let Some(frame) = self.next_frame(Some(deadline)).await? else {
+                return Err(Error::Timeout("the invited device"));
+            };
+            match classify(&frame) {
+                FrameType::Control => {
+                    if let Ok(ControlFrame::Error(code)) = ControlFrame::decode(&frame) {
+                        return Err(Error::Relay(code));
+                    }
+                }
+                FrameType::Envelope => {
+                    let Some(Ok(header)) = frame.get(..HEADER_LEN).map(Header::decode) else {
+                        continue;
+                    };
+                    if header.sender != *invitee || header.kind != Kind::DeviceName {
+                        deferred.push(frame);
+                        continue;
+                    }
+                    match self.handle(&frame).await? {
+                        Event::DeviceName { .. } => return Ok(()),
+                        Event::Dropped { reason, .. } => {
+                            tracing::warn!(%reason, "dropped a frame from the invited device");
+                        }
+                        _ => {}
+                    }
+                }
                 FrameType::Unknown => {}
             }
         }
@@ -759,28 +1056,20 @@ impl Session {
             .await?;
         let deadline = Instant::now() + timeout;
         let mut deferred = Vec::new();
-        let result = self.wait_welcome(code, deadline, &mut deferred).await;
-        self.requeue(deferred);
-        let (header, members) = result?;
-
         let owner = PeerKeys {
             sign_pk: code.sign_pk,
             kx_pk: code.kx_pk,
         };
+        let result = self.wait_welcome(&owner, deadline, &mut deferred).await;
+        self.requeue(deferred);
+        let (header, members) = result?;
+
         let owner_id = owner.device_id();
-        let own_sign_pk = self.identity.sign_pk();
+        let identity = &self.identity;
         let (dropped, state) = self.dir.update(|state| {
             let before: Vec<TrustedDevice> = std::mem::take(&mut state.devices);
             state.trust(owner);
-            for member in members {
-                if member.sign_pk != own_sign_pk {
-                    state.trust(member);
-                }
-            }
-            // Checked in `wait_welcome`, under the same keys.
-            let _ = state
-                .peer_mut(&owner_id)
-                .accept(header.counter, &header.message_id);
+            trust_welcome(state, identity, &owner_id, &header, members);
             before
                 .into_iter()
                 .filter(|device| state.device(&device.device_id()).is_none())
@@ -797,14 +1086,16 @@ impl Session {
         Ok(trusted)
     }
 
+    /// Waits for the Welcome of `owner` (a device whose keys are known but
+    /// that may not be trusted yet) and checks it, without applying it.
     async fn wait_welcome(
         &mut self,
-        code: &PairingCode,
+        owner: &PeerKeys,
         deadline: Instant,
         deferred: &mut Vec<Vec<u8>>,
     ) -> Result<(Header, Vec<PeerKeys>)> {
-        let owner_id = device_id_from_sign_pk(&code.sign_pk);
-        let keys = session_keys(&self.identity, &owner_id, &code.kx_pk)?;
+        let owner_id = owner.device_id();
+        let keys = session_keys(&self.identity, &owner_id, &owner.kx_pk)?;
         loop {
             let Some(frame) = self.next_frame(Some(deadline)).await? else {
                 return Err(Error::Timeout("the welcome message"));
@@ -886,6 +1177,27 @@ fn check_packet_len(json: &str) -> Result<()> {
         len if len > MAX_PACKET_LEN => Err(weft_protocol::Error::PlaintextTooLarge(len).into()),
         _ => Ok(()),
     }
+}
+
+/// Trusts the members a Welcome from `owner` lists (this device excepted)
+/// and records the Welcome in the replay state of `owner`.
+fn trust_welcome(
+    state: &mut State,
+    identity: &Identity,
+    owner: &[u8; 16],
+    header: &Header,
+    members: Vec<PeerKeys>,
+) {
+    let own_sign_pk = identity.sign_pk();
+    for member in members {
+        if member.sign_pk != own_sign_pk {
+            state.trust(member);
+        }
+    }
+    // Checked in `wait_welcome`, under the same keys.
+    let _ = state
+        .peer_mut(owner)
+        .accept(header.counter, &header.message_id);
 }
 
 /// Applies an authenticated envelope to the state and describes it.

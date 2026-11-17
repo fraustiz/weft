@@ -142,13 +142,17 @@ impl Relay {
                 }
                 self.pair_open(sender, pairing_id, now)
             }
-            ControlFrame::PairRequest(request) => {
+            // An invitation is handled exactly like a join request: the
+            // relay cannot tell them apart (the MAC binds the intent) and
+            // does not try to.
+            ControlFrame::PairRequest(request) | ControlFrame::PairInvite(request) => {
                 if !limits.pair_request.allow(now) {
                     return Some(ControlError::RateLimited);
                 }
                 self.pair_request(sender, &request, frame, now)
             }
             ControlFrame::GroupAdd { device_id } => self.group_add(sender, &device_id, now),
+            ControlFrame::GroupJoin { device_id } => self.group_join(sender, &device_id, now),
             ControlFrame::GroupRemove { device_id } => self.group_remove(sender, &device_id),
             ControlFrame::Error(_) => {
                 tracing::debug!(from = %short_id(sender), "dropped frame: error frame from a device");
@@ -220,6 +224,27 @@ impl Relay {
         match state.groups.add(owner, joiner) {
             Ok(true) => state.pairing.consume_pending_join(owner, joiner),
             // The pending join is kept: the owner may make room and retry.
+            Ok(false) => return Err(ControlError::GroupFull),
+            Err(err) => tracing::error!(%err, "group change not saved, ignored"),
+        }
+        Ok(())
+    }
+
+    /// The slot owner accepts the invitation of `inviter`: it moves into the
+    /// group of `inviter` (created if `inviter` has none), leaving its own.
+    fn group_join(
+        &self,
+        owner: &DeviceId,
+        inviter: &DeviceId,
+        now: Instant,
+    ) -> Result<(), ControlError> {
+        let mut state = self.state.lock().unwrap();
+        if !state.pairing.has_pending_join(owner, inviter, now) {
+            return Err(ControlError::NotAllowed);
+        }
+        match state.groups.add(inviter, owner) {
+            Ok(true) => state.pairing.consume_pending_join(owner, inviter),
+            // The pending join is kept, as for a group add.
             Ok(false) => return Err(ControlError::GroupFull),
             Err(err) => tracing::error!(%err, "group change not saved, ignored"),
         }
