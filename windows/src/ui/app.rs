@@ -98,8 +98,11 @@ pub enum Message {
     FilesPicked(Vec<PathBuf>),
     /// Reads copied files from the clipboard for the device shown.
     PasteFiles,
+    /// A thread-local Ctrl+V request; focus must remain unchanged until read.
+    PasteShortcutRequested(u64, u64),
+    FilesPasteSkipped,
     /// Clipboard file paste finished with these expanded files, maybe none.
-    FilesPasted([u8; 16], Vec<PathBuf>),
+    FilesPasted([u8; 16], Vec<PathBuf>, Option<u64>),
     /// Files were dropped on the device shown.
     Dropped(DroppedData),
     /// Files were dropped on the Win32 window (`WM_DROPFILES`).
@@ -283,10 +286,14 @@ fn watch_settings_nav(context: &ComponentContext<Weft>, generation: u64) {
 }
 
 fn watch_drops(context: &ComponentContext<Weft>, generation: u64) {
-    context.spawn_background(move |_| {
-        let dropped = window::wait_drops(generation)
-            .map(|(generation, paths)| (generation, picker::expand_paths(paths)));
-        Message::FilesDropped(dropped)
+    context.spawn_background(move |_| match window::wait_drops(generation) {
+        Some((generation, window::DropEvent::Paths(paths))) => {
+            Message::FilesDropped(Some((generation, picker::expand_paths(paths))))
+        }
+        Some((generation, window::DropEvent::Paste { focus_epoch })) => {
+            Message::PasteShortcutRequested(generation, focus_epoch)
+        }
+        None => Message::FilesDropped(None),
     });
 }
 
@@ -502,6 +509,28 @@ impl Weft {
             && !paths.is_empty()
         {
             self.shell.worker.send(Command::SendFiles(device, paths));
+        }
+    }
+
+    /// Captures the destination before clipboard work leaves the UI thread.
+    fn begin_file_paste(&mut self, context: &ComponentContext<Weft>, shortcut_epoch: Option<u64>) {
+        if !self.pasting
+            && let Some(device) = self.viewed_device()
+            && self.snapshot.features.files
+            && self.snapshot.peer(&device).handles("file.offer")
+        {
+            self.pasting = true;
+            context.spawn_background(move |_| {
+                if shortcut_epoch.is_some_and(|epoch| !window::can_paste_files(epoch)) {
+                    return Message::FilesPasteSkipped;
+                }
+                let raw = crate::clipboard::read_clipboard_files(std::ptr::null_mut());
+                let paths = picker::expand_paths(raw);
+                if shortcut_epoch.is_some_and(|epoch| !window::paste_focus_unchanged(epoch)) {
+                    return Message::FilesPasteSkipped;
+                }
+                Message::FilesPasted(device, paths, shortcut_epoch)
+            });
         }
     }
 
@@ -800,21 +829,17 @@ impl Component for Weft {
                 }
                 self.send_files(paths);
             }
-            Message::PasteFiles => {
-                if !self.pasting
-                    && let Some(device) = self.viewed_device()
-                    && self.snapshot.features.files
-                    && self.snapshot.peer(&device).handles("file.offer")
-                {
-                    self.pasting = true;
-                    context.spawn_background(move |_| {
-                        let raw = crate::clipboard::read_clipboard_files(std::ptr::null_mut());
-                        Message::FilesPasted(device, picker::expand_paths(raw))
-                    });
-                }
+            Message::PasteFiles => self.begin_file_paste(context, None),
+            Message::PasteShortcutRequested(generation, focus_epoch) => {
+                watch_drops(context, generation);
+                self.begin_file_paste(context, Some(focus_epoch));
             }
-            Message::FilesPasted(device, paths) => {
+            Message::FilesPasteSkipped => self.pasting = false,
+            Message::FilesPasted(device, paths, shortcut_epoch) => {
                 self.pasting = false;
+                if shortcut_epoch.is_some_and(|epoch| !window::paste_focus_unchanged(epoch)) {
+                    return;
+                }
                 if paths.is_empty() {
                     self.paste_empty_until = Some(Instant::now() + PASTE_NOTICE_HOLD);
                 } else {
