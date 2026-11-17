@@ -1094,7 +1094,8 @@ public final class MobileSession: ObservableObject {
 
         let connected = await awaitConnected()
         guard pendingJoin?.ownerHex == ownerHex else { return }
-        if !connected || !(await sendControl(.pairRequest(request))) {
+        let requested = connected ? await sendControl(.pairRequest(request)) : false
+        if !requested {
             failPendingJoin(ownerHex: ownerHex, failure: .connectionFailed(.timedOut))
         }
     }
