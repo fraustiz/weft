@@ -111,11 +111,13 @@ The base64url decoding is strict, as libsodium's `sodium_base642bin` does it: no
 | `0xB1` | B → relay → A | `pairing_id (16) || sign_pk_B (32) || kx_pk_B (32) || mac (32)` | B asks to join; the relay checks that `sign_pk_B` is the key B authenticated with, forwards the frame unchanged to the slot owner and closes the slot |
 | `0xB2` | A → relay | `device_id (16)` | A confirms B: the relay puts B in A's group (creating it if A had none; B leaves its previous group) |
 | `0xB3` | device → relay | `device_id (16)` | Removes that device (itself or another member) from the relay group |
+| `0xB4` | A → relay | `device_id (16)` | Invitation accepted: the relay puts A (the slot owner) in the group of that device (A leaves its previous group) — see « Invitation » |
+| `0xB5` | B → relay → A | same body as `0xB1`, MAC with the invitation context | B, already in a group, invites A into it; the relay handles it exactly like `0xB1` (key check, forward unchanged, close the slot, record the pending join) |
 | `0xBE` | relay → device | `code (1)` | Error: `0x01` unknown or expired pairing, `0x02` not allowed, `0x03` rate limited, `0x04` group full |
 
-The relay accepts `0xB2` only for a device that sent a matching `0xB1` to this slot owner in the last 5 minutes; otherwise it answers `0xBE 0x02`.
+The relay accepts `0xB2` (and `0xB4`) only for a device that sent a matching `0xB1` (or `0xB5`) to this slot owner in the last 5 minutes; otherwise it answers `0xBE 0x02`. The relay does not know which of the two frames the slot owner will answer with: the intent is bound by the MAC, which the relay cannot check.
 
-`mac = crypto_generichash(outlen = 32, input = "weft-pair-v1" || pairing_id || sign_pk_B || kx_pk_B, key = secret)` (keyed BLAKE2b). Without the secret, the relay cannot produce a valid request, so it cannot slip its own key in.
+`mac = crypto_generichash(outlen = 32, input = "weft-pair-v1" || pairing_id || sign_pk_B || kx_pk_B, key = secret)` (keyed BLAKE2b). Without the secret, the relay cannot produce a valid request, so it cannot slip its own key in. An invitation (`0xB5`) uses the context `"weft-invite-v1"` instead of `"weft-pair-v1"`, so the relay cannot turn a join request into an invitation or the other way round: the slot owner would reject the MAC.
 
 ### Flow
 1. A opens a slot (`0xB0`) and shows the QR code.
@@ -124,6 +126,18 @@ The relay accepts `0xB2` only for a device that sent a matching `0xB1` to this s
 4. A sends B a **Welcome** envelope (`0x03`) listing the other members (not A, not B), and sends each other member a **Device added** envelope (`0x04`) with B's keys. Each recipient adds the keys to its trusted list.
 5. Removing a device: any member sends `0xB3` to the relay and a **Device removed** envelope (`0x05`) to the remaining members, which drop that device from their list.
 6. **Device names**: a device has a name its owner chose (for example « Pixel 8 », « MacBook Air »). Whenever a device starts trusting another one — it receives a Welcome, accepts a join, or receives a Device added — it sends that device a **Device name** envelope (`0x06`) with its own name. When its name changes, it sends the new name to every trusted device. A receiver stores the name next to the sender's keys and shows it; it never changes trust. The name travels end-to-end encrypted, so the relay never sees it.
+
+### Invitation
+
+A device B that is already in a group can **invite** a device A into it by scanning A's code, instead of leaving its group to join A's. This is how a phone adds a new computer to the group it is in.
+
+1. A opens a slot (`0xB0`) and shows the QR code, as for a join. Nothing tells A in advance whether it will be joined or invited.
+2. B scans it and trusts A's keys from the code. Its user chose « add this device to my group ». B sends `0xB5` with `mac = crypto_generichash(outlen = 32, input = "weft-invite-v1" || pairing_id || sign_pk_B || kx_pk_B, key = secret)`.
+3. A checks the `pairing_id` and the MAC with the invitation context. **A accepts an invitation only if it trusts no device yet**: a device already in a group ignores invitations, so scanning its code can never pull it out of its group without its user. If accepted, A trusts B and sends `0xB4` with B's device id: the relay moves A into B's group (`0xBE 0x04` if it is full).
+4. A then sends B its Device name (`0x06`). That envelope is the signal that A is in the group: B, which waits for it up to 30 s after sending `0xB5`, now sends A a **Welcome** listing the other members (not A, not B) and sends each other member a **Device added** with A's keys, as the slot owner does after a join.
+5. A waits up to 30 s for that Welcome from B, trusts the listed members and sends them its name; everyone continues as in step 6 above.
+
+If B gets no Device name from A within 30 s, it tells its user that the device did not answer (it may already belong to a group: pair from that group instead).
 
 Offline delivery comes in a later revision of this document.
 
@@ -135,6 +149,7 @@ Offline delivery comes in a later revision of this document.
 - the encoded envelope;
 - the authentication signature;
 - a pairing code, a pairing request MAC and the control frames;
+- an invitation MAC and the `0xB4` / `0xB5` frames, in the `invitation` section;
 - a third device C and the three group envelopes (welcome, device added, device removed), in the `pairing` section.
 - a Device name envelope from B to A, in the `device_name` section.
 - a Packet envelope from A to B and a File chunk envelope from B to A, in the `features` section.
