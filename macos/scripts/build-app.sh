@@ -10,11 +10,19 @@
 #    or later, version from Cargo and Git), the app icon rendered from
 #    brand/final/weft-icon-dark.svg and the menu bar template from
 #    brand/final/weft-mark.svg (headless Chrome, then sips and iconutil);
-# 4. an ad-hoc signature (codesign -s -): not signed by a developer, so the
-#    first launch from Finder needs right-click › Open.
+# 4. mediaremote-adapter (BSD-3-Clause, macos/THIRD_PARTY_NOTICES.md), which
+#    reads what plays on this Mac: fetched at a pinned commit into
+#    build/vendor, built with CMake (universal), and bundled as
+#    Contents/Frameworks/MediaRemoteAdapter.framework,
+#    Contents/Helpers/MediaRemoteAdapterTestClient and
+#    Contents/Resources/MediaRemoteAdapter/ (its Perl script and licence);
+# 5. an ad-hoc signature (codesign -s -), inside out: not signed by a
+#    developer, so the first launch from Finder needs right-click › Open.
 #
 # Idempotent: run it again after any change. The icons are rendered again
 # only when their SVG changed. Prints the path of the app.
+#
+# Needs CMake for the adapter (brew install cmake).
 #
 # Environment: WEFT_ARCHS="aarch64-apple-darwin" for an arm64-only build;
 # CHROME=/path/to/chrome if Chrome is elsewhere; WEFT_DEV_BUNDLE=1 for
@@ -52,6 +60,44 @@ for rust_arch in "${rust_archs[@]}"; do
 done
 (cd "$macos" && swift build -c release "${swift_archs[@]}" --product Weft)
 binary="$(cd "$macos" && swift build -c release "${swift_archs[@]}" --show-bin-path)/Weft"
+
+# mediaremote-adapter v0.7.7. To move to another version, change the commit
+# and read its README for changes to the `stream`, `send` and `seek`
+# commands (Sources/Weft/NowPlaying.swift, Sources/WeftKit/NowPlayingAdapter.swift).
+adapter_repo=https://github.com/ungive/mediaremote-adapter.git
+adapter_commit=e3ff5021eb0875858bd05f48d2e9ba2e962d1cf6
+adapter_src="$build/vendor/mediaremote-adapter"
+adapter_build="$build/vendor/mediaremote-adapter-build"
+echo "==> mediaremote-adapter ${adapter_commit:0:12}"
+command -v cmake >/dev/null || { echo "CMake is needed to build mediaremote-adapter: brew install cmake" >&2; exit 1; }
+if [[ "$(git -C "$adapter_src" rev-parse HEAD 2>/dev/null)" != "$adapter_commit" ]]; then
+    if [[ ! -d "$adapter_src/.git" ]]; then
+        rm -rf "$adapter_src"
+        mkdir -p "$build/vendor"
+        git clone --quiet "$adapter_repo" "$adapter_src"
+    fi
+    git -C "$adapter_src" cat-file -e "$adapter_commit^{commit}" 2>/dev/null \
+        || git -C "$adapter_src" fetch --quiet origin
+    git -C "$adapter_src" -c advice.detachedHead=false checkout --quiet --force "$adapter_commit"
+    rm -rf "$adapter_build"
+fi
+# Exactly the pinned sources, nothing changed in them.
+[[ "$(git -C "$adapter_src" rev-parse HEAD)" == "$adapter_commit" \
+    && -z "$(git -C "$adapter_src" status --porcelain)" ]] \
+    || { echo "$adapter_src is not a clean checkout of $adapter_commit" >&2; exit 1; }
+# Its CMakeLists builds x86_64 and arm64 whatever WEFT_ARCHS says.
+# Its compiler warnings are upstream's: shown only if the build fails.
+adapter_log="$build/vendor/mediaremote-adapter-build.log"
+if ! { cmake -S "$adapter_src" -B "$adapter_build" -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 && cmake --build "$adapter_build"; } >"$adapter_log" 2>&1; then
+    cat "$adapter_log" >&2
+    exit 1
+fi
+adapter_framework="$adapter_build/MediaRemoteAdapter.framework"
+adapter_test_client="$adapter_build/MediaRemoteAdapterTestClient"
+for file in "$adapter_framework/MediaRemoteAdapter" "$adapter_test_client"; do
+    [[ -x "$file" ]] || { echo "the adapter build made no $file" >&2; exit 1; }
+done
 
 # Renders an HTML page with headless Chrome into a PNG of size $3.
 render() {
@@ -108,6 +154,12 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/Weft"
 cp "$icons/Weft.icns" "$icons/MenuBarIcon.png" "$icons/MenuBarIcon@2x.png" "$app/Contents/Resources/"
+# The adapter: the framework is loaded by /usr/bin/perl, never linked.
+mkdir -p "$app/Contents/Frameworks" "$app/Contents/Helpers" "$app/Contents/Resources/MediaRemoteAdapter"
+ditto "$adapter_framework" "$app/Contents/Frameworks/MediaRemoteAdapter.framework"
+cp "$adapter_test_client" "$app/Contents/Helpers/"
+cp "$adapter_src/bin/mediaremote-adapter.pl" "$adapter_src/LICENSE" "$app/Contents/Resources/MediaRemoteAdapter/"
+cp "$macos/THIRD_PARTY_NOTICES.md" "$app/Contents/Resources/"
 # The languages of the interface (WeftKit/Language.swift), so the system's
 # own menus and panels follow them too.
 for language in en fr; do
@@ -141,8 +193,12 @@ EOF
 plutil -lint -s "$app/Contents/Info.plist"
 
 echo "==> codesign (ad hoc)"
+# Inside out: what the app holds first, the app last.
+codesign --force --sign - --timestamp=none "$app/Contents/Frameworks/MediaRemoteAdapter.framework"
+codesign --force --sign - --timestamp=none "$app/Contents/Helpers/MediaRemoteAdapterTestClient"
 codesign --force --sign - --timestamp=none "$app"
-codesign --verify --strict "$app"
+codesign --verify --deep --strict "$app"
 
 echo "==> $(lipo -archs "$app/Contents/MacOS/Weft"), version $version ($build_number)"
+echo "    adapter: $(lipo -archs "$app/Contents/Frameworks/MediaRemoteAdapter.framework/MediaRemoteAdapter")"
 echo "$app"

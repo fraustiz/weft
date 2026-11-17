@@ -240,16 +240,20 @@ private struct MediaSection: View {
         Section(t("Now Playing", "En lecture")) {
             if let player = device.currentPlayer {
                 VStack(alignment: .leading, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        if !player.app.trimmingCharacters(in: .whitespaces).isEmpty {
-                            Text(player.app).font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 12) {
+                        CoverTile(image: player.art.flatMap { model.cover(deviceId: device.id, art: $0) })
+                        VStack(alignment: .leading, spacing: 2) {
+                            if !player.app.trimmingCharacters(in: .whitespaces).isEmpty {
+                                Text(player.app).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Text(player.title.isEmpty ? t("Untitled", "Sans titre") : player.title)
+                                .font(.headline)
+                                .lineLimit(1)
+                            if !player.artist.isEmpty {
+                                Text(player.artist).foregroundStyle(.secondary).lineLimit(1)
+                            }
                         }
-                        Text(player.title.isEmpty ? t("Untitled", "Sans titre") : player.title)
-                            .font(.headline)
-                            .lineLimit(1)
-                        if !player.artist.isEmpty {
-                            Text(player.artist).foregroundStyle(.secondary).lineLimit(1)
-                        }
+                        Spacer(minLength: 0)
                     }
                     if player.canSeek, let length = player.lengthMs, length > 0 {
                         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -365,6 +369,33 @@ private struct MediaSection: View {
         .disabled(!enabled)
         .help(name)
         .accessibilityLabel(name)
+    }
+}
+
+/// A player's cover, or a neutral tile with a note when there is none.
+private struct CoverTile: View {
+    let image: NSImage?
+    static let side: CGFloat = 64
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
+        ZStack {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                shape.fill(Color(nsColor: .quaternaryLabelColor).opacity(0.5))
+                Image(systemName: "music.note")
+                    .font(.system(size: 24, weight: .regular))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: Self.side, height: Self.side)
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1))
+        .accessibilityHidden(true)
     }
 }
 

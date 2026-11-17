@@ -14,7 +14,7 @@ struct SettingsView: View {
             GeneralSettings(model: model)
                 .tabItem { Label(t("General", "Général"), systemImage: "gearshape") }
                 .tag("general")
-            FeatureSettings(model: model, notifier: model.notifier)
+            FeatureSettings(model: model, notifier: model.notifier, nowPlaying: model.nowPlaying)
                 .tabItem { Label(t("Features", "Fonctions"), systemImage: "switch.2") }
                 .tag("features")
             AdvancedSettings(model: model)
@@ -162,6 +162,7 @@ private struct GeneralSettings: View {
 private struct FeatureSettings: View {
     @ObservedObject var model: AppModel
     @ObservedObject var notifier: Notifier
+    @ObservedObject var nowPlaying: NowPlaying
 
     private struct Switch {
         let path: WritableKeyPath<FeatureSwitches, Bool>
@@ -216,6 +217,16 @@ private struct FeatureSettings: View {
                         )) {
                             Text(item.title)
                             Text(item.caption)
+                        }
+                        if item.path == \.media, features.media, nowPlaying.status == .unavailable {
+                            // What plays on this Mac cannot be read: the
+                            // rest of the feature still works.
+                            Text(t(
+                                "This Mac cannot read what plays on this version of macOS.",
+                                "Ce Mac ne peut pas lire ce qui joue sur cette version de macOS."
+                            ))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                         }
                     }
                 } footer: {

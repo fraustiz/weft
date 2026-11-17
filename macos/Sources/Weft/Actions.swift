@@ -150,10 +150,11 @@ extension AppModel {
             }
         case .setVolume(_, let level, let muted):
             volume.set(level: level, muted: muted)
-        case .mediaCommand:
-            // Not announced: macOS has no public way to drive other apps'
-            // players. Nothing should come; what does is ignored.
-            break
+        case .mediaCommand(_, let player, let control):
+            // To the player this Mac announced (NowPlaying.swift).
+            if snapshot?.features.media ?? false {
+                nowPlaying.command(control, player: player)
+            }
         case .smsReceived, .commandRan:
             // Not announced by the Mac either.
             break

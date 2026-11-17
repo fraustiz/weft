@@ -27,6 +27,12 @@ final class AppModel: ObservableObject {
     let notifier = Notifier()
     let ringer = Ringer()
     let volume = SystemVolume()
+    let nowPlaying = NowPlaying()
+    /// The covers of the other devices' players, by device and art id,
+    /// decoded once: the last `coverLimit` looked up (a failed one too).
+    private var covers: [String: NSImage?] = [:]
+    private var coverOrder: [String] = []
+    static let coverLimit = 16
     private(set) var core: WeftCore?
     /// Devices `WEFT_DEV_SEND_FILE` was offered to.
     private var developmentFileSent: Set<String> = []
@@ -64,6 +70,7 @@ final class AppModel: ObservableObject {
         ringer.foundIt = { [weak self] in self?.core?.foundIt() }
         volume.onChange = { [weak self] level, muted in self?.core?.localVolume(level: level, muted: muted) }
         volume.start()
+        nowPlaying.onChange = { [weak self] players in self?.core?.setLocalMedia(players: players) }
         refresh()
         hadDevices = !devices.isEmpty
         let timer = Timer(timeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
@@ -82,6 +89,7 @@ final class AppModel: ObservableObject {
 
     func stop() {
         timer?.invalidate()
+        nowPlaying.stop()
         core?.stop()
     }
 
@@ -106,7 +114,26 @@ final class AppModel: ObservableObject {
         if snapshot.ringing == nil, ringer.isRinging {
             ringer.stop()
         }
+        // What plays here is read only while the media feature is on.
+        if snapshot.features.media != nowPlaying.isRunning {
+            snapshot.features.media ? nowPlaying.start() : nowPlaying.stop()
+        }
         developmentHooks(snapshot)
+    }
+
+    /// The cover `art` of one of `deviceId`'s players, once the core holds
+    /// it. Asked of the core only the first time this id is seen.
+    func cover(deviceId: String, art: String) -> NSImage? {
+        let key = "\(deviceId)\u{0}\(art)"
+        if let known = covers[key] { return known }
+        guard let core else { return nil }
+        let image = core.mediaArt(deviceId: deviceId, art: art).flatMap { NSImage(data: $0.data) }
+        covers[key] = .some(image)
+        coverOrder.append(key)
+        if coverOrder.count > Self.coverLimit {
+            covers[coverOrder.removeFirst()] = nil
+        }
+        return image
     }
 
     func pollPasteboard() {
