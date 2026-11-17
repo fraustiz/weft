@@ -1,0 +1,40 @@
+name: iOS app
+
+on:
+  push:
+    branches: [main, windows-app, wt/ios-app]
+    paths:
+      - "ios/**"
+      - "swift/**"
+      - ".gitattributes"
+      - ".github/workflows/ios.yml"
+  pull_request:
+    paths:
+      - "ios/**"
+      - "swift/**"
+      - ".gitattributes"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test the mobile core on macOS
+        run: swift test --package-path ios
+      - name: Install XcodeGen
+        run: command -v xcodegen || brew install xcodegen
+      - name: Build the iOS app and share extension
+        run: bash ios/scripts/build-sim.sh
+      - name: Clean build outputs
+        if: always()
+        run: rm -rf ios/.build ios/build ios/Weft.xcodeproj
