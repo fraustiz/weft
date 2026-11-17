@@ -145,9 +145,18 @@ impl Peer {
         }
     }
 
+    /// Skips names: the worker sends its name again with its capabilities.
     async fn expect_text(&mut self, from: [u8; 16], text: &str) {
         let text = text.to_owned();
-        assert_eq!(self.next_event().await, Event::Clipboard { from, text });
+        loop {
+            match self.next_event().await {
+                Event::DeviceName { .. } => continue,
+                event => {
+                    assert_eq!(event, Event::Clipboard { from, text });
+                    return;
+                }
+            }
+        }
     }
 
     async fn expect_name(&mut self, from: [u8; 16], name: &str) {
@@ -920,6 +929,46 @@ async fn pings_and_links_go_to_the_phone() {
                 .any(|packet| matches!(packet, Packet::ShareUrl { .. })),
             "{seen:?}"
         );
+        tested.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn names_go_again_with_the_capabilities() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut phone) = paired(&url).await;
+        let (pc, phone_id) = (tested.id(), phone.id());
+
+        // A device that missed a rename while offline learns the name on
+        // its next connection: it comes before the capabilities.
+        phone.send(pc, &Packet::StateRequest {}).await;
+        let mut named = false;
+        loop {
+            match phone.next_any().await {
+                Event::DeviceName { from, .. } if from == pc => named = true,
+                Event::Packet { from, json } if from == pc => {
+                    if let Parsed::Known(packet) = packets::parse(&json)
+                        && is_capabilities(&packet)
+                    {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(named, "no name before the capabilities");
+
+        // A name received is shown at once.
+        phone.session.rename("Renamed phone").await.unwrap();
+        tested
+            .wait(|snapshot| {
+                snapshot.devices.iter().any(|device| {
+                    device.id == phone_id && device.name.as_deref() == Some("Renamed phone")
+                })
+            })
+            .await;
         tested.stop().await;
     })
     .await;

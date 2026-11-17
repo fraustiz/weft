@@ -19,7 +19,7 @@ Both use the envelope, keys, counters and replay protection of `protocol.md` unc
 
 ## 2. Capabilities
 
-Whenever a device sends its Device name (kind `0x06`, `protocol.md` section 5), it also sends a `capabilities` packet to the same device:
+Whenever a device sends its Device name (kind `0x06`, `protocol.md` section 5), it also sends a `capabilities` packet to the same device. The other way round too: each time a device sends a peer its capabilities and state on a connection (after its own reconnection, a `state.request`, or a first `capabilities` from that peer), it sends its Device name right before, so a device that was offline when the name changed learns it on its next connection (the relay keeps nothing for offline devices). It may send its name with other `capabilities` packets too. The packet looks like this:
 
 ```json
 {"type": "capabilities", "platform": "android", "incoming": ["ring", "file.offer", ...], "outgoing": ["battery", "notification", ...]}

@@ -491,6 +491,13 @@ impl Session {
         Ok(())
     }
 
+    /// Sends this device's name to `to` if it is trusted, without waiting
+    /// for the relay: a device that was offline when it changed learns it
+    /// on its next connection (`docs/features.md` section 2).
+    pub async fn send_name_to(&mut self, to: [u8; 16]) -> Result<()> {
+        self.send_name(&[to]).await
+    }
+
     /// Changes this device's name, saves it, then sends it to every trusted
     /// device and waits until the relay has handled it. Returns how many
     /// devices it was sent to. The name is saved even if sending fails.

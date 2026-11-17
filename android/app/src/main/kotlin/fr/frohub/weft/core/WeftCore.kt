@@ -564,6 +564,18 @@ class WeftCore internal constructor(
         return sent
     }
 
+    /**
+     * Sends this phone's name again to [deviceIds], without telling [packetListener]: it does so
+     * before its capabilities, so a device that was offline during a rename learns the name on
+     * its next connection (docs/features.md, section 2). Returns how many envelopes the relay
+     * connection took.
+     */
+    suspend fun resendName(deviceIds: List<String>): Int {
+        if (deviceIds.isEmpty() || !relay.isConnected) return 0
+        val plaintext = encodeDeviceName(repository.load().name ?: defaultName)
+        return sender.sendEnvelope(deviceIds, Kind.DEVICE_NAME, plaintext)
+    }
+
     // endregion
 
     // region Packets and file chunks (docs/features.md, section 1)

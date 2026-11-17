@@ -1210,6 +1210,7 @@ impl Worker {
             }
             Event::DeviceName { from, name } => {
                 tracing::info!(device = %short_id(&from), %name, "device name received");
+                describe(&mut self.view, session.state());
             }
             Event::Ping { from } => tracing::debug!(from = %short_id(&from), "ping"),
             Event::Packet { from, json } => {
@@ -1287,6 +1288,8 @@ impl Worker {
     /// players and volume are, when it knows them and the feature is on.
     /// The device may have restarted: it gets the covers again.
     async fn send_capabilities(&mut self, session: &mut Session, to: [u8; 16]) -> Result<()> {
+        // The name first: a device offline when it changed still learns it.
+        session.send_name_to(to).await?;
         let packet = Packet::Capabilities(self.capabilities_for(&to));
         self.send(session, to, &packet).await?;
         self.art_sent.remove(&to);

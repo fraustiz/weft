@@ -244,11 +244,13 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
     }
 
     /**
-     * Our capabilities, then our current state packets, to each of [deviceIds]. [fresh]: they
-     * just came back, so they get the current covers again.
+     * Our name, capabilities, then current state packets, to each of [deviceIds]. [fresh]: they
+     * just came back, so they get the current covers again. [withName]: false when the name was
+     * just sent (a rename).
      */
-    private suspend fun sendCapabilitiesAndState(deviceIds: List<String>, fresh: Boolean) {
+    private suspend fun sendCapabilitiesAndState(deviceIds: List<String>, fresh: Boolean, withName: Boolean = true) {
         if (deviceIds.isEmpty()) return
+        if (withName) core.resendName(deviceIds)
         send(deviceIds, capabilitiesOf(settings.enabled.value))
         if (settings.isEnabled(Feature.BATTERY)) battery.current?.let { send(deviceIds, it) }
         if (settings.isEnabled(Feature.CONNECTIVITY)) connectivity.current?.let { send(deviceIds, it) }
@@ -265,7 +267,8 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
         }
     }
 
-    override suspend fun onNameSent(deviceIds: List<String>) = sendCapabilitiesAndState(deviceIds, fresh = false)
+    override suspend fun onNameSent(deviceIds: List<String>) =
+        sendCapabilitiesAndState(deviceIds, fresh = false, withName = false)
 
     // endregion
 
