@@ -31,7 +31,7 @@ struct WeftApp: App {
         Window("Weft", id: Self.mainWindow) {
             MainWindow(model: model)
                 .tint(.weftOrange)
-                .onAppear { delegate.model = model }
+                .onAppear { AppDelegate.model = model }
         }
         .defaultSize(width: 720, height: 640)
         .windowResizability(.contentMinSize)
@@ -45,7 +45,7 @@ struct WeftApp: App {
     /// At launch: the main window on a first run (nothing paired yet), or
     /// what `WEFT_DEV_SHOW` asks for; otherwise only the menu bar icon.
     @MainActor static func launchShow(model: AppModel) {
-        AppDelegate.shared?.model = model
+        AppDelegate.model = model
         switch Development.show {
         case "main":
             model.showMainWindow()
@@ -67,7 +67,9 @@ struct WeftApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static weak var shared: AppDelegate?
-    @MainActor weak var model: AppModel?
+    /// Static: the menu bar icon can appear before the delegate is told
+    /// the app finished launching, so before `shared` is set.
+    @MainActor static weak var model: AppModel?
 
     @MainActor func applicationDidFinishLaunching(_ notification: Notification) {
         Self.shared = self
@@ -81,7 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor func applicationWillTerminate(_ notification: Notification) {
-        model?.stop()
+        Self.model?.stop()
     }
 
     /// Closing the last window leaves the menu bar icon.

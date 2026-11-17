@@ -199,6 +199,10 @@ codesign --force --sign - --timestamp=none "$app/Contents/Helpers/MediaRemoteAda
 codesign --force --sign - --timestamp=none "$app"
 codesign --verify --deep --strict "$app"
 
+# A build is not an install: Launch Services must not take it for the
+# copy in Applications ("Open at Login" would find two and give up).
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$app" 2>/dev/null || true
+
 echo "==> $(lipo -archs "$app/Contents/MacOS/Weft"), version $version ($build_number)"
 echo "    adapter: $(lipo -archs "$app/Contents/Frameworks/MediaRemoteAdapter.framework/MediaRemoteAdapter")"
 echo "$app"

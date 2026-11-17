@@ -28,6 +28,15 @@ struct MainWindow: View {
             }
         }
         .frame(minWidth: 560, minHeight: 500)
+        .toolbar {
+            // In every state, so the settings stay one click away.
+            ToolbarItem(placement: .primaryAction) {
+                SettingsLink {
+                    Label(t("Settings", "Réglages"), systemImage: "gearshape")
+                }
+                .help(t("Settings", "Réglages"))
+            }
+        }
         .sheet(isPresented: $model.showingPairing, onDismiss: model.closePairing) {
             PairingSheet(model: model)
         }
