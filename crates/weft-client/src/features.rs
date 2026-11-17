@@ -12,15 +12,8 @@ use crate::packets::{Capabilities, CommandItem, PLATFORM};
 
 const FILE_NAME: &str = "features.json";
 
-/// The packet types of a file transfer, both ways.
-const FILE_PACKETS: &[&str] = &[
-    "file.offer",
-    "file.accept",
-    "file.reject",
-    "file.ack",
-    "file.done",
-    "file.cancel",
-];
+/// Transfer controls shared by files and clipboard images, both ways.
+const TRANSFER_CONTROLS: &[&str] = &["file.reject", "file.ack", "file.done", "file.cancel"];
 
 /// What a computer sends about the phone's notifications.
 const NOTIFICATION_ANSWERS: &[&str] = &[
@@ -107,7 +100,8 @@ impl Features {
     }
 
     /// What this device announces to a device: a switched-off feature is
-    /// in neither list. Pings and state requests always go both ways, and
+    /// in neither list, except transfer controls shared with clipboard images.
+    /// Pings and state requests always go both ways, and
     /// typing on the phone is always offered: the phone decides whether it
     /// types. Pointer, keyboard and slideshow input are taken only from a
     /// device allowed to `control` this computer, so only such a device is
@@ -135,9 +129,12 @@ impl Features {
             outgoing.push("share.url");
         }
         if self.files {
-            incoming.extend(FILE_PACKETS);
-            outgoing.extend(FILE_PACKETS);
+            incoming.extend(["file.offer", "file.accept"]);
+            outgoing.extend(["file.offer", "file.accept"]);
         }
+        // Clipboard images remain available when ordinary file sharing is off.
+        incoming.extend(TRANSFER_CONTROLS);
+        outgoing.extend(TRANSFER_CONTROLS);
         if self.battery {
             incoming.extend(["battery", "connectivity"]);
         }
@@ -370,7 +367,7 @@ mod tests {
             commands: false,
         };
         assert_eq!(
-            none.capabilities(true).incoming[4..],
+            none.capabilities(true).incoming[8..],
             ["input.pointer", "input.click", "input.key", "presenter"]
         );
         let none = none.capabilities(false);
@@ -380,7 +377,11 @@ mod tests {
                 "state.request",
                 "ping",
                 "clipboard.image.offer",
-                "clipboard.image.accept"
+                "clipboard.image.accept",
+                "file.reject",
+                "file.ack",
+                "file.done",
+                "file.cancel"
             ]
         );
         assert_eq!(
@@ -390,9 +391,41 @@ mod tests {
                 "ping",
                 "input.key",
                 "clipboard.image.offer",
-                "clipboard.image.accept"
+                "clipboard.image.accept",
+                "file.reject",
+                "file.ack",
+                "file.done",
+                "file.cancel"
             ]
         );
+    }
+
+    #[test]
+    fn images_keep_transfer_controls_without_enabling_file_offers() {
+        for files in [false, true] {
+            let capabilities = Features {
+                files,
+                ..Features::default()
+            }
+            .capabilities(false);
+            for kinds in [&capabilities.incoming, &capabilities.outgoing] {
+                assert!(kinds.iter().any(|kind| kind == "clipboard.image.offer"));
+                for control in TRANSFER_CONTROLS {
+                    assert_eq!(
+                        kinds
+                            .iter()
+                            .filter(|kind| kind.as_str() == *control)
+                            .count(),
+                        1,
+                        "{control}"
+                    );
+                }
+                for kind in ["file.offer", "file.accept"] {
+                    assert_eq!(kinds.iter().any(|value| value == kind), files, "{kind}");
+                }
+                assert_eq!(kinds.iter().collect::<BTreeSet<_>>().len(), kinds.len());
+            }
+        }
     }
 
     #[test]

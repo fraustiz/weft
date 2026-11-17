@@ -98,6 +98,19 @@
             </intent-filter>
         </activity-alias>
 
+        <activity-alias
+            android:name=".ShareClipboardImageActivity"
+            android:exported="true"
+            android:label="@string/share_clipboard_image_label"
+            android:targetActivity=".ClipboardSendActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/png" />
+                <data android:mimeType="image/jpeg" />
+            </intent-filter>
+        </activity-alias>
+
         <!--
             Share target for files of any type. A share with text only is handed to the text
             share target above.

@@ -403,4 +403,6 @@
     <string name="updates_error_install">The update could not be installed.</string>
     <string name="updates_auto">Check automatically</string>
     <string name="updates_auto_body">At most once a day, when Weft starts</string>
+    <string name="share_clipboard_image_label">Copy image to devices</string>
+    <string name="toast_image_requested">Image transfer requested</string>
 </resources>

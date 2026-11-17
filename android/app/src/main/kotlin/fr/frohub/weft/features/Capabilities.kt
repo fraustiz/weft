@@ -61,7 +61,10 @@ private val FILE_TYPES = setOf(
 )
 
 /** Handled whatever the settings say. */
-private val BASE_TYPES = setOf(Packet.CAPABILITIES, Packet.STATE_REQUEST)
+private val BASE_TYPES = setOf(
+    Packet.CAPABILITIES, Packet.STATE_REQUEST, Packet.CLIPBOARD_IMAGE_OFFER, Packet.CLIPBOARD_IMAGE_ACCEPT,
+    Packet.FILE_ACK, Packet.FILE_DONE, Packet.FILE_CANCEL, Packet.FILE_REJECT,
+)
 
 /** This phone's `capabilities` packet: switched-off features are left out of both lists. */
 fun capabilitiesOf(enabled: Set<Feature>): Packet.Capabilities = Packet.Capabilities(

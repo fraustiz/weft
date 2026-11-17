@@ -4,7 +4,9 @@ This branch adds clipboard images to the shared Rust worker and the Windows
 and Linux adapters. Images use offer/accept negotiation, bounded memory,
 integrity checks, acknowledgements, and the existing encrypted envelope and
 replay protection. Windows also accepts shell file drops and has a Paste files
-button. A Ctrl+V file shortcut is not implemented.
+button. Ctrl+V file paste is limited to known noneditable controls in the
+focused Weft window; changing focus cancels pending shortcut handling. Native
+text paste is preserved. Manual validation on a Windows desktop is pending.
 
 The Linux client is a daemon and CLI using the desktop's installed utilities;
 see `linux/README.md` for dependencies. Its adapter tests use fake utilities;
@@ -18,7 +20,11 @@ are **not enabled automatically**. This branch does not claim forward secrecy:
 restart recovery and control-channel negotiation still need implementation
 and end-to-end tests before enabling key rotation.
 
-Android and macOS image adapters remain to be connected. Older clients retain
-text synchronization and do not advertise image support. The iOS client is on
-the separate `wt/ios-app` branch and is undergoing Apple compiler validation.
+Android image support adds an explicit clipboard action and a separate image
+clipboard share target; ordinary file sharing keeps its existing meaning.
+See `clipboard-images.md` for the wire contract. Android interoperability on a
+real device and the macOS image adapter remain to be validated/completed.
+Older clients retain text synchronization and do not advertise image support.
+The iOS client is on the separate `wt/ios-app` branch; Swift tests and its
+simulator app/extension build pass CI, while real-device validation is pending.
 No new public app release is implied by these development branches.

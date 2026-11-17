@@ -8,7 +8,9 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.annotation.StringRes
+import androidx.core.content.IntentCompat
 import fr.frohub.weft.features.isShareableUrl
+import fr.frohub.weft.features.readClipboardImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -38,6 +40,10 @@ class ClipboardSendActivity : Activity() {
         val launchedDirectly = intent.component?.className == ClipboardSendActivity::class.java.name
         if (!launchedDirectly || intent.action == Intent.ACTION_SEND) {
             done = true
+            if (intent.action == Intent.ACTION_SEND && intent.type in setOf("image/png", "image/jpeg")) {
+                sendSharedImage()
+                return
+            }
             if (intent.action == Intent.ACTION_SEND) sendShared()
             finish()
         }
@@ -65,6 +71,25 @@ class ClipboardSendActivity : Activity() {
         if (isShareableUrl(link)) sendLink(link) else send(text, R.string.toast_text_sent)
     }
 
+    private fun sendSharedImage() {
+        if (intent.clipData?.description?.extras?.getBoolean(EXTRA_IS_SENSITIVE) == true) {
+            toast(R.string.toast_sensitive)
+            return finish()
+        }
+        val uri = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, android.net.Uri::class.java)
+        if (uri == null) { toast(R.string.toast_clipboard_not_text); return finish() }
+        val app = weft
+        app.core.scope.launch {
+            val image = readClipboardImage(app, uri)
+            val result = image?.let { app.features.sendClipboardImage(it.first, it.second) }
+            val message = result?.let { toastFor(it, R.string.toast_image_requested) } ?: R.string.toast_clipboard_not_text
+            withContext(Dispatchers.Main) {
+                Toast.makeText(app, message, Toast.LENGTH_SHORT).show()
+                finish()
+            }
+        }
+    }
+
     private fun sendLink(url: String) {
         val app = weft
         app.core.scope.launch {
@@ -81,7 +106,19 @@ class ClipboardSendActivity : Activity() {
         if (clip.description.extras?.getBoolean(EXTRA_IS_SENSITIVE) == true) {
             return toast(R.string.toast_sensitive)
         }
-        val text = clip.getItemAt(0).text?.toString() ?: return toast(R.string.toast_clipboard_not_text)
+        val item = clip.getItemAt(0)
+        if (item.text == null && item.uri != null) {
+            val app = weft
+            val uri = item.uri
+            app.core.scope.launch {
+                val image = readClipboardImage(app, uri)
+                val result = image?.let { app.features.sendClipboardImage(it.first, it.second) }
+                val message = result?.let { toastFor(it, R.string.toast_image_requested) } ?: R.string.toast_clipboard_not_text
+                withContext(Dispatchers.Main) { Toast.makeText(app, message, Toast.LENGTH_SHORT).show() }
+            }
+            return
+        }
+        val text = item.text?.toString() ?: return toast(R.string.toast_clipboard_not_text)
         if (text.isEmpty()) return toast(R.string.toast_clipboard_empty)
         send(text, R.string.toast_clipboard_sent)
     }

@@ -57,6 +57,13 @@ sealed interface Packet {
         override val type get() = FILE_OFFER
     }
 
+    data class ClipboardImageOffer(val id: String, val mime: String, val size: Long, val hash: String) : Packet {
+        override val type get() = CLIPBOARD_IMAGE_OFFER
+    }
+    data class ClipboardImageAccept(val id: String) : Packet {
+        override val type get() = CLIPBOARD_IMAGE_ACCEPT
+    }
+
     data class FileAccept(val id: String, val offset: Long) : Packet {
         override val type get() = FILE_ACCEPT
     }
@@ -270,6 +277,8 @@ sealed interface Packet {
         const val RING_STOP = "ring.stop"
         const val PING = "ping"
         const val SHARE_URL = "share.url"
+        const val CLIPBOARD_IMAGE_OFFER = "clipboard.image.offer"
+        const val CLIPBOARD_IMAGE_ACCEPT = "clipboard.image.accept"
         const val FILE_OFFER = "file.offer"
         const val FILE_ACCEPT = "file.accept"
         const val FILE_REJECT = "file.reject"
@@ -451,6 +460,13 @@ fun decodePacket(plaintext: ByteArray): Packet? {
         Packet.RING_STOP -> Packet.RingStop
         Packet.PING -> Packet.Ping(json.string("message"))
         Packet.SHARE_URL -> Packet.ShareUrl(json.string("url")?.takeIf(::isShareableUrl) ?: return null)
+        Packet.CLIPBOARD_IMAGE_OFFER -> Packet.ClipboardImageOffer(
+            json.transferId() ?: return null,
+            json.string("mime")?.takeIf { it in setOf("image/png", "image/jpeg") } ?: return null,
+            json.long("size")?.takeIf { it in 1..MAX_CLIPBOARD_IMAGE_BYTES.toLong() } ?: return null,
+            json.string("hash")?.takeIf { it.matches(Regex("[0-9a-f]{32}")) } ?: return null,
+        )
+        Packet.CLIPBOARD_IMAGE_ACCEPT -> Packet.ClipboardImageAccept(json.transferId() ?: return null)
         Packet.FILE_OFFER -> Packet.FileOffer(
             id = json.transferId() ?: return null,
             name = json.string("name") ?: return null,
@@ -611,6 +627,8 @@ fun encodePacket(packet: Packet): ByteArray {
             .apply { packet.signal?.let { put("signal", it) } }
         is Packet.Ping -> packet.message?.let { json.put("message", it) }
         is Packet.ShareUrl -> json.put("url", packet.url)
+        is Packet.ClipboardImageOffer -> json.put("id", packet.id).put("mime", packet.mime).put("size", packet.size).put("hash", packet.hash)
+        is Packet.ClipboardImageAccept -> json.put("id", packet.id)
         is Packet.FileOffer -> json
             .put("id", packet.id)
             .put("name", packet.name)
