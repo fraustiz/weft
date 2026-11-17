@@ -34,11 +34,12 @@ private fun Context.has(permission: String) = checkSelfPermission(permission) ==
 /**
  * The phone's media sessions, read with the notification listener permission (docs/features.md,
  * section 6). Reports every change through [onChange] after 300 ms of quiet, so a track change
- * (metadata, then state) leaves as one packet. Main thread only.
+ * (metadata, then state) leaves as one packet. Covers come from [covers]. Main thread only.
  */
 class MediaWatcher(
     private val context: Context,
     private val listener: ComponentName,
+    private val covers: LocalCovers,
     private val onChange: (Packet.Media) -> Unit,
 ) {
     private val sessions = context.getSystemService(MediaSessionManager::class.java)
@@ -128,6 +129,8 @@ class MediaWatcher(
             canPrevious = can(PlaybackState.ACTION_SKIP_TO_PREVIOUS),
             // Many apps drop their actions while they buffer after a seek: keep the last answer then.
             canSeek = length != null && (can(PlaybackState.ACTION_SEEK_TO) || (buffering(state) && lastCanSeek[id] == true)),
+            // Not known yet when the cover is still being encoded: the packet leaves again once it is.
+            art = metadata?.let { covers.idFor(it) { handler.post { changed() } } },
         ).also {
             it.position?.let { position -> lastPosition[id] = position }
             if (!buffering(state)) lastCanSeek[id] = it.canSeek

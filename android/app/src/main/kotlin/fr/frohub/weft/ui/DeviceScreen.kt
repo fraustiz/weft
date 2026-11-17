@@ -1,5 +1,6 @@
 package fr.frohub.weft.ui
 
+import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
 import androidx.compose.foundation.clickable
@@ -85,11 +86,13 @@ class DeviceActions(
 
 /**
  * The other device's media players and volume, with the commands to control them. A null
- * command is not offered (the feature is off, or the other side does not take it).
+ * command is not offered (the feature is off, or the other side does not take it). [covers]:
+ * the covers received from it, by `art` id.
  */
 class DeviceMedia(
     val media: Packet.Media? = null,
     val mediaAt: Long = 0,
+    val covers: Map<String, Bitmap> = emptyMap(),
     val volume: Packet.Volume? = null,
     val command: (suspend (Packet.MediaCommand) -> Boolean)? = null,
     val setVolume: (suspend (Packet.VolumeSet) -> Boolean)? = null,
@@ -220,7 +223,7 @@ private fun Media(media: DeviceMedia, snackbar: SnackbarHostState) {
         val command = media.command
         val players = media.media
         if (media.showsMedia && command != null && players != null) {
-            NowPlayingCard(players, media.mediaAt, onCommand = { run(command, it) })
+            NowPlayingCard(players, media.mediaAt, media.covers, onCommand = { run(command, it) })
         }
         val setVolume = media.setVolume
         val volume = media.volume

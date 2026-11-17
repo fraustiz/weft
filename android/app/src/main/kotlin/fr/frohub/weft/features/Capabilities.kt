@@ -1,5 +1,7 @@
 package fr.frohub.weft.features
 
+import android.graphics.Bitmap
+
 /**
  * The features of docs/features.md (sections 3 to 9), each with the packet types it receives and
  * sends. [key] is how its switch is saved, [defaultOn] its state until the user changes it. The
@@ -20,7 +22,11 @@ enum class Feature(val key: String, val incoming: Set<String>, val outgoing: Set
     ),
     CALLS("calls", setOf(Packet.CALL_MUTE), setOf(Packet.CALL)),
     // Both ways: the phone's players for the computers, and the computers' players on the device screen.
-    MEDIA("media", setOf(Packet.MEDIA, Packet.MEDIA_COMMAND), setOf(Packet.MEDIA, Packet.MEDIA_COMMAND)),
+    MEDIA(
+        "media",
+        setOf(Packet.MEDIA, Packet.MEDIA_COMMAND, Packet.MEDIA_ART),
+        setOf(Packet.MEDIA, Packet.MEDIA_COMMAND, Packet.MEDIA_ART),
+    ),
     VOLUME("volume", setOf(Packet.VOLUME, Packet.VOLUME_SET), setOf(Packet.VOLUME, Packet.VOLUME_SET)),
     SMS(
         "sms",
@@ -67,6 +73,7 @@ fun capabilitiesOf(enabled: Set<Feature>): Packet.Capabilities = Packet.Capabili
 /**
  * What is known about another device from its packets. Null members: nothing received yet.
  * [mediaAt] is when [media] arrived (ms since epoch), to move the positions of playing players on.
+ * [covers]: its last [MAX_COVERS] covers by `art` id, oldest first.
  */
 data class PeerInfo(
     val capabilities: Packet.Capabilities? = null,
@@ -74,6 +81,7 @@ data class PeerInfo(
     val connectivity: Packet.Connectivity? = null,
     val media: Packet.Media? = null,
     val mediaAt: Long = 0,
+    val covers: Map<String, Bitmap> = emptyMap(),
     val volume: Packet.Volume? = null,
     val commands: List<Command>? = null,
 ) {

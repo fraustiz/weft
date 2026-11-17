@@ -271,6 +271,7 @@
     <string name="now_playing">En cours · %1$s</string>
     <string name="now_playing_untitled">Sans titre</string>
     <string name="media_position">Position</string>
+    <string name="media_cover">Pochette</string>
     <string name="action_play">Lire</string>
     <string name="action_pause">Pause</string>
     <string name="action_next">Suivant</string>

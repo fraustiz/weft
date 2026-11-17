@@ -174,6 +174,7 @@ fun WeftApp(
                     val media = DeviceMedia(
                         media = peer?.media,
                         mediaAt = peer?.mediaAt ?: 0,
+                        covers = peer?.covers.orEmpty(),
                         volume = peer?.volume,
                         command = if (offers(Feature.MEDIA, Packet.MEDIA_COMMAND)) ({ model.mediaCommand(id, it) }) else null,
                         setVolume = if (offers(Feature.VOLUME, Packet.VOLUME_SET)) ({ model.setVolume(id, it) }) else null,

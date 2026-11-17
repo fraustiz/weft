@@ -4,6 +4,7 @@ import fr.frohub.weft.core.hexToBytesOrNull
 import fr.frohub.weft.core.toHex
 import fr.frohub.weft.protocol.Weft
 import java.math.BigInteger
+import java.util.Base64
 import kotlin.math.abs
 import org.json.JSONArray
 import org.json.JSONException
@@ -141,11 +142,28 @@ sealed interface Packet {
         val canPrevious: Boolean,
         val canSeek: Boolean,
         val volume: Int? = null,
+        /** The id of its cover, sent before in a `media.art`; null when it has none. */
+        val art: String? = null,
     )
 
     /** Every player of the sender; empty when nothing plays. */
     data class Media(val players: List<MediaPlayer>) : Packet {
         override val type get() = MEDIA
+    }
+
+    /**
+     * The cover a player's `art` names: [mime] is one of [ART_MIMES], [data] the image, at most
+     * [MAX_ART_BYTES] bytes.
+     */
+    class MediaArt(val art: String, val mime: String, val data: ByteArray) : Packet {
+        override val type get() = MEDIA_ART
+
+        override fun equals(other: Any?) =
+            other is MediaArt && art == other.art && mime == other.mime && data.contentEquals(other.data)
+
+        override fun hashCode() = (art.hashCode() * 31 + mime.hashCode()) * 31 + data.contentHashCode()
+
+        override fun toString() = "MediaArt(art=$art, mime=$mime, ${data.size} bytes)"
     }
 
     /** [action]: one of the `MEDIA_*` values; [value]: ms for a seek, 0 to 100 for a volume. */
@@ -268,6 +286,7 @@ sealed interface Packet {
         const val CALL_MUTE = "call.mute"
         const val MEDIA = "media"
         const val MEDIA_COMMAND = "media.command"
+        const val MEDIA_ART = "media.art"
         const val VOLUME = "volume"
         const val VOLUME_SET = "volume.set"
         const val SMS_CONVERSATIONS_REQUEST = "sms.conversations.request"
@@ -314,6 +333,16 @@ sealed interface Packet {
         const val MEDIA_SEEK = "seek"
         const val MEDIA_SET_VOLUME = "setVolume"
         val MEDIA_ACTIONS = setOf(MEDIA_PLAY, MEDIA_PAUSE, MEDIA_PLAY_PAUSE, MEDIA_NEXT, MEDIA_PREVIOUS, MEDIA_SEEK, MEDIA_SET_VOLUME)
+
+        const val MIME_JPEG = "image/jpeg"
+        const val MIME_PNG = "image/png"
+        val ART_MIMES = setOf(MIME_JPEG, MIME_PNG)
+
+        /** Largest `media.art` image, decoded from its base64: 128 KiB. */
+        const val MAX_ART_BYTES = 128 * 1024
+
+        /** Longest `art` id. */
+        const val MAX_ART_ID_LENGTH = 64
 
         const val SMS_STATUS_SENT = "sent"
         const val SMS_STATUS_PENDING = "pending"
@@ -466,6 +495,11 @@ fun decodePacket(plaintext: ByteArray): Packet? {
             val array = json.opt("players") as? JSONArray ?: return null
             Packet.Media((0 until array.length()).mapNotNull { (array.opt(it) as? JSONObject)?.toPlayer() })
         }
+        Packet.MEDIA_ART -> Packet.MediaArt(
+            art = json.string("art")?.takeIf(::isArtId) ?: return null,
+            mime = json.string("mime")?.takeIf { it in Packet.ART_MIMES } ?: return null,
+            data = json.string("data")?.let(::decodeArtData) ?: return null,
+        )
         Packet.MEDIA_COMMAND -> Packet.MediaCommand(
             player = json.string("player") ?: return null,
             action = json.string("action")?.takeIf { it in Packet.MEDIA_ACTIONS } ?: return null,
@@ -605,6 +639,10 @@ fun encodePacket(packet: Packet): ByteArray {
         Packet.NotificationRequest, Packet.CallMute -> Unit
         is Packet.Call -> json.put("event", packet.event).putOpt("number", packet.number).putOpt("name", packet.name)
         is Packet.Media -> json.put("players", JSONArray(packet.players.map { it.toJson() }))
+        is Packet.MediaArt -> json
+            .put("art", packet.art)
+            .put("mime", packet.mime)
+            .put("data", Base64.getEncoder().encodeToString(packet.data))
         is Packet.MediaCommand -> json.put("player", packet.player).put("action", packet.action).putOpt("value", packet.value)
         is Packet.Volume -> json.put("level", packet.level).put("muted", packet.muted)
         is Packet.VolumeSet -> json.putOpt("level", packet.level).putOpt("muted", packet.muted)
@@ -661,6 +699,22 @@ fun isShareableUrl(text: String): Boolean {
     return rest.isNotEmpty() && rest[0] != '/'
 }
 
+/** An `art` id: 1 to 64 ASCII letters, digits, `-` or `_`. */
+fun isArtId(text: String): Boolean =
+    text.length in 1..Packet.MAX_ART_ID_LENGTH && text.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '-' || it == '_' }
+
+/** Standard base64 of 1 to [Packet.MAX_ART_BYTES] bytes; null for anything else. */
+private fun decodeArtData(text: String): ByteArray? {
+    // Checked before decoding, so a huge member costs no allocation.
+    if (text.length > (Packet.MAX_ART_BYTES + 2) / 3 * 4) return null
+    val data = try {
+        Base64.getDecoder().decode(text)
+    } catch (_: IllegalArgumentException) {
+        return null
+    }
+    return data.takeIf { it.size in 1..Packet.MAX_ART_BYTES }
+}
+
 /** A transfer id as it travels in packets: 32 lowercase hex characters. */
 fun transferIdHex(id: ByteArray): String = id.toHex()
 
@@ -679,6 +733,7 @@ private fun JSONObject.toPlayer(): Packet.MediaPlayer? = Packet.MediaPlayer(
     canPrevious = bool("canPrevious") ?: false,
     canSeek = bool("canSeek") ?: false,
     volume = percent("volume"),
+    art = string("art")?.takeIf(::isArtId),
 )
 
 private fun Packet.MediaPlayer.toJson(): JSONObject = JSONObject()
@@ -696,6 +751,7 @@ private fun Packet.MediaPlayer.toJson(): JSONObject = JSONObject()
     .put("canPrevious", canPrevious)
     .put("canSeek", canSeek)
     .putOpt("volume", volume)
+    .putOpt("art", art)
 
 private fun SmsConversation.toJson(): JSONObject = JSONObject()
     .put("thread", thread)

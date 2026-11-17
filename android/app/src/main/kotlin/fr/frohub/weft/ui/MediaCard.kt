@@ -1,10 +1,14 @@
 package fr.frohub.weft.ui
 
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -29,6 +33,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -46,10 +52,16 @@ import kotlinx.coroutines.delay
 /**
  * The other device's media players ([media], received at [receivedAt]) with play, pause, next,
  * previous and a seek bar when the player allows it. [onCommand] returns false when the command
- * did not leave. Shows the playing player, or the one picked when there are several.
+ * did not leave. Shows the playing player, or the one picked when there are several, with its
+ * cover when [covers] has the one its `art` names.
  */
 @Composable
-fun NowPlayingCard(media: Packet.Media, receivedAt: Long, onCommand: (Packet.MediaCommand) -> Unit) {
+fun NowPlayingCard(
+    media: Packet.Media,
+    receivedAt: Long,
+    covers: Map<String, Bitmap> = emptyMap(),
+    onCommand: (Packet.MediaCommand) -> Unit,
+) {
     if (media.players.isEmpty()) return
     var picked by rememberSaveable { mutableStateOf<String?>(null) }
     val player = media.players.firstOrNull { it.id == picked }
@@ -72,29 +84,35 @@ fun NowPlayingCard(media: Packet.Media, receivedAt: Long, onCommand: (Packet.Med
             .testTag(NOW_PLAYING_CARD),
     ) {
         Column(Modifier.padding(16.dp)) {
-            Text(
-                stringResource(R.string.now_playing, player.app ?: player.id),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                player.title ?: stringResource(R.string.now_playing_untitled),
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            val byline = listOfNotNull(player.artist, player.album).joinToString(" · ")
-            if (byline.isNotEmpty()) {
-                Text(
-                    byline,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CoverArt(player.art?.let { covers[it] })
+                Spacer(Modifier.width(16.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        stringResource(R.string.now_playing, player.app ?: player.id),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        player.title ?: stringResource(R.string.now_playing_untitled),
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val byline = listOfNotNull(player.artist, player.album).joinToString(" · ")
+                    if (byline.isNotEmpty()) {
+                        Text(
+                            byline,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
             }
             val length = player.length
             val position = extrapolatedPosition(player, receivedAt, now)
@@ -116,6 +134,37 @@ fun NowPlayingCard(media: Packet.Media, receivedAt: Long, onCommand: (Packet.Med
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+/** The player's cover, or a note on a plain tile while there is none. */
+@Composable
+private fun CoverArt(cover: Bitmap?) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier
+            .size(COVER_SIZE)
+            .testTag(MEDIA_COVER),
+    ) {
+        if (cover != null) {
+            val image = remember(cover) { cover.asImageBitmap() }
+            Image(
+                image,
+                contentDescription = stringResource(R.string.media_cover),
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    painterResource(R.drawable.ic_music_note),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(28.dp),
+                )
             }
         }
     }
@@ -233,6 +282,7 @@ fun formatDuration(millis: Long): String {
 
 /** Test tags. */
 const val NOW_PLAYING_CARD = "now_playing"
+const val MEDIA_COVER = "media_cover"
 const val MEDIA_PLAY_BUTTON = "media_play"
 const val MEDIA_NEXT_BUTTON = "media_next"
 const val MEDIA_PREVIOUS_BUTTON = "media_previous"
@@ -240,6 +290,7 @@ const val VOLUME_ROW = "volume_row"
 const val MUTE_BUTTON = "mute_button"
 
 private const val TICK_MILLIS = 1_000L
+private val COVER_SIZE = 72.dp
 
 @Preview
 @Composable

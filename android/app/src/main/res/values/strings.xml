@@ -294,6 +294,7 @@
     <string name="now_playing">Now playing · %1$s</string>
     <string name="now_playing_untitled">Untitled</string>
     <string name="media_position">Position</string>
+    <string name="media_cover">Cover</string>
     <string name="action_play">Play</string>
     <string name="action_pause">Pause</string>
     <string name="action_next">Next</string>

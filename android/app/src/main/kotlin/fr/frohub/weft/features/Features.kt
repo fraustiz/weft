@@ -101,8 +101,11 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
     /** Set while Android has Weft's notification listener bound. Main thread. */
     private var listener: WeftNotificationListener? = null
     private var mediaWatcher: MediaWatcher? = null
+    /** Guards [mediaGate] and [artDelivery], and keeps `media.art` before the `media` naming it. */
     private val mediaLock = Mutex()
     private val mediaGate = MediaGate()
+    private val artDelivery = ArtDelivery()
+    private val localCovers = LocalCovers(scope)
 
     /** Guards [receiving]; held while a chunk is written, so chunks of one transfer stay in order. */
     private val receiveLock = Mutex()
@@ -126,7 +129,7 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
                     keyboard?.refresh()
                 }
                 if (Feature.NOTIFICATIONS !in enabled) serial.trySend { mirror.clear() }
-                sendCapabilitiesAndState(trustedIds())
+                sendCapabilitiesAndState(trustedIds(), fresh = false)
             }
         }
         scope.launch {
@@ -225,7 +228,9 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
     private suspend fun onConnected() {
         val ids = trustedIds()
         send(ids, Packet.StateRequest)
-        sendCapabilitiesAndState(ids)
+        // A new connection: every device gets the covers again.
+        mediaLock.withLock { artDelivery.forgetAll() }
+        sendCapabilitiesAndState(ids, fresh = false)
         battery.markSent()
         connectivity.markSent()
         volume.markSent()
@@ -238,8 +243,11 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
         for (job in sending.values) if (job.deviceIdHex == deviceIdHex) job.events.trySend(Event.Reconnected)
     }
 
-    /** Our capabilities, then our current state packets, to each of [deviceIds]. */
-    private suspend fun sendCapabilitiesAndState(deviceIds: List<String>) {
+    /**
+     * Our capabilities, then our current state packets, to each of [deviceIds]. [fresh]: they
+     * just came back, so they get the current covers again.
+     */
+    private suspend fun sendCapabilitiesAndState(deviceIds: List<String>, fresh: Boolean) {
         if (deviceIds.isEmpty()) return
         send(deviceIds, capabilitiesOf(settings.enabled.value))
         if (settings.isEnabled(Feature.BATTERY)) battery.current?.let { send(deviceIds, it) }
@@ -247,11 +255,17 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
         if (settings.isEnabled(Feature.VOLUME)) volume.current?.let { send(deviceIds, it) }
         if (settings.isEnabled(Feature.MEDIA)) {
             // Read again: the positions have moved on since the last packet.
-            withContext(Dispatchers.Main) { mediaWatcher?.takeIf { listener != null }?.current() }?.let { send(deviceIds, it) }
+            val media = withContext(Dispatchers.Main) { mediaWatcher?.takeIf { listener != null }?.current() }
+            if (media != null) {
+                mediaLock.withLock {
+                    if (fresh) deviceIds.forEach(artDelivery::forget)
+                    sendMedia(deviceIds, media)
+                }
+            }
         }
     }
 
-    override suspend fun onNameSent(deviceIds: List<String>) = sendCapabilitiesAndState(deviceIds)
+    override suspend fun onNameSent(deviceIds: List<String>) = sendCapabilitiesAndState(deviceIds, fresh = false)
 
     // endregion
 
@@ -274,12 +288,12 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
                 updatePeer(senderHex) { it.copy(capabilities = packet) }
                 // A device that restarted: both sides converge.
                 if (!known) {
-                    sendCapabilitiesAndState(listOf(senderHex))
+                    sendCapabilitiesAndState(listOf(senderHex), fresh = true)
                     offerAgain(senderHex)
                 }
             }
             Packet.StateRequest -> {
-                sendCapabilitiesAndState(listOf(senderHex))
+                sendCapabilitiesAndState(listOf(senderHex), fresh = true)
                 // It (re)connected: our transfers to it resume from what it has.
                 offerAgain(senderHex)
             }
@@ -314,6 +328,14 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
             }
             Packet.CallMute -> withContext(Dispatchers.Main) { callMonitor.muteRinger() }
             is Packet.Media -> updatePeer(senderHex) { it.copy(media = packet, mediaAt = System.currentTimeMillis()) }
+            is Packet.MediaArt -> {
+                val cover = withContext(Dispatchers.Default) { decodeCover(packet) }
+                if (cover == null) {
+                    Log.d(TAG, "dropped a cover from ${shortId(senderHex)}")
+                    return
+                }
+                updatePeer(senderHex) { it.copy(covers = it.covers.plusCover(packet.art, cover)) }
+            }
             is Packet.MediaCommand -> withContext(Dispatchers.Main) {
                 mediaWatcher?.takeIf { listener != null }?.controller(packet.player)?.run(packet)
             }
@@ -391,7 +413,8 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
     /** Main thread: media sessions are read while the listener is bound and Media is on. */
     private fun refreshMedia() {
         if (listener != null && settings.isEnabled(Feature.MEDIA)) {
-            val watcher = mediaWatcher ?: MediaWatcher(context, WeftNotificationListener.component(context), ::onLocalMedia).also { mediaWatcher = it }
+            val watcher = mediaWatcher
+                ?: MediaWatcher(context, WeftNotificationListener.component(context), localCovers, ::onLocalMedia).also { mediaWatcher = it }
             watcher.start()
         } else {
             mediaWatcher?.stop()
@@ -401,9 +424,27 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
     private fun onLocalMedia(media: Packet.Media) {
         scope.launch {
             if (!settings.isEnabled(Feature.MEDIA)) return@launch
-            val changed = mediaLock.withLock { mediaGate.offer(media, System.currentTimeMillis()) }
-            if (changed) send(trustedIds(), media)
+            val ids = trustedIds()
+            mediaLock.withLock {
+                if (mediaGate.offer(media, System.currentTimeMillis())) sendMedia(ids, media)
+            }
         }
+    }
+
+    /**
+     * Under [mediaLock]: [media] to [deviceIds], each cover it names first to those that show
+     * covers and have not got it on this connection. A cover no longer at hand is left out.
+     */
+    private suspend fun sendMedia(deviceIds: List<String>, media: Packet.Media) {
+        val takers = deviceIds.filter { _peers.value[it]?.handles(Packet.MEDIA_ART) == true }
+        val players = media.players.map { player ->
+            val id = player.art ?: return@map player
+            val cover = localCovers.cover(id) ?: return@map player.copy(art = null)
+            val due = artDelivery.due(id, takers)
+            if (due.isNotEmpty()) send(due, Packet.MediaArt(id, cover.mime, cover.data))
+            player
+        }
+        send(deviceIds, Packet.Media(players))
     }
 
     // endregion
