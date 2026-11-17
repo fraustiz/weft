@@ -667,26 +667,22 @@ public final class MobileSession: ObservableObject {
         }
         ensureConnectionLoop(forceRestart: false)
         let waiterID = UUID()
-        return await withTaskGroup(of: Bool.self) { group in
-            group.addTask { @MainActor [weak self] in
-                guard let self else { return false }
-                if self.connectionState.isConnected && self.activeSocket != nil {
-                    return true
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: false)
+                    return
                 }
-                return await withCheckedContinuation { cont in
-                    self.connectionWaiters[waiterID] = cont
+                connectionWaiters[waiterID] = continuation
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                    self?.connectionWaiters.removeValue(forKey: waiterID)?.resume(returning: false)
                 }
             }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
-                return false
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.connectionWaiters.removeValue(forKey: waiterID)?.resume(returning: false)
             }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            if let leftover = connectionWaiters.removeValue(forKey: waiterID) {
-                leftover.resume(returning: first)
-            }
-            return first
         }
     }
 
