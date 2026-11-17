@@ -6,6 +6,8 @@ mod common;
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::{Error, Message};
@@ -212,4 +214,48 @@ async fn shutdown_does_not_wait_for_clients_that_never_close() {
     for device in &mut idle {
         assert_closed(&mut device.ws).await;
     }
+}
+
+async fn http_get(ws_url: &str, path: &str) -> (String, String) {
+    let addr = ws_url
+        .strip_prefix("ws://")
+        .and_then(|rest| rest.strip_suffix("/v1"))
+        .expect("expected ws://addr/v1");
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut raw = String::new();
+    stream.read_to_string(&mut raw).await.unwrap();
+    let (head, body) = raw.split_once("\r\n\r\n").expect("missing HTTP header end");
+    (head.to_owned(), body.to_owned())
+}
+
+#[tokio::test]
+async fn index_serves_self_contained_info_page_and_escapes_contact() {
+    let mut config = Config::new("weft.example.test", ":memory:");
+    config.contact = Some("Ops <abuse@example.test> & \"DSA\" 'team'".to_owned());
+    let url = start_relay_with(config).await;
+
+    let (head, body) = http_get(&url, "/").await;
+    let head_lower = head.to_ascii_lowercase();
+    assert!(
+        head.starts_with("HTTP/1.1 200 OK"),
+        "unexpected status: {head}"
+    );
+    assert!(
+        head_lower.contains("content-type: text/html"),
+        "expected text/html content-type, got: {head}"
+    );
+    assert!(body.contains("weft.example.test"));
+    assert!(body.contains("/v1"));
+    assert!(body.contains("XChaCha20-Poly1305"));
+    assert!(body.contains("https://github.com/fraustiz/weft"));
+    assert!(body.contains("Ops &lt;abuse@example.test&gt; &amp; &quot;DSA&quot; &#39;team&#39;"));
+    assert!(!body.contains("<abuse@example.test>"));
+
+    let default_url = start_relay_with(memory_config()).await;
+    let (default_head, default_body) = http_get(&default_url, "/").await;
+    assert!(default_head.starts_with("HTTP/1.1 200 OK"));
+    assert!(default_body.contains("relay.test"));
+    assert!(!default_body.contains("Operator contact"));
 }

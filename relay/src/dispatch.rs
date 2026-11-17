@@ -5,13 +5,15 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use axum::body::Bytes;
+use tokio::sync::mpsc::error::TrySendError;
 use weft_protocol::{
-    ControlError, ControlFrame, FrameType, PairRequest, RouteHeader, classify,
-    device_id_from_sign_pk,
+    ControlError, ControlFrame, DEVICE_ID_LEN, FrameType, Kind, MAX_DEVICE_NAME_LEN,
+    MAX_WELCOME_DEVICES, PEER_KEYS_LEN, PairRequest, RouteHeader, classify, device_id_from_sign_pk,
 };
 
 use crate::{
-    DeviceId, PAIR_OPEN_PER_MINUTE, PAIR_REQUEST_PER_MINUTE, RATE_WINDOW, Relay, short_id,
+    DeviceId, MIN_ENVELOPE_LEN, PAIR_OPEN_PER_MINUTE, PAIR_REQUEST_PER_MINUTE, RATE_WINDOW, Relay,
+    Shared, now_ms, short_id,
 };
 
 /// Pairing quotas of one connection.
@@ -90,9 +92,9 @@ impl Relay {
     }
 
     /// Routes one envelope on its version, length, sender and recipient;
-    /// the kind is not checked, so new kinds need no relay update. Invalid
-    /// frames, frames for a device outside the sender's group and frames
-    /// for offline recipients are dropped.
+    /// when the recipient is connected, the kind is not checked, so new kinds
+    /// need no relay update. When the recipient is offline, only group-change
+    /// and device-name envelopes (`0x03`–`0x06`) with valid lengths are queued.
     fn forward(&self, sender: &DeviceId, frame: Bytes) {
         let from = short_id(sender);
         let header = match RouteHeader::decode(&frame) {
@@ -108,7 +110,7 @@ impl Relay {
         }
         let to = short_id(&header.recipient);
         let outbox = {
-            let state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap();
             if !state.groups.same_group(sender, &header.recipient) {
                 tracing::debug!(%from, %to, "dropped frame: not in the same group");
                 return;
@@ -116,13 +118,44 @@ impl Relay {
             match state.peers.get(&header.recipient) {
                 Some(peer) => peer.outbox.clone(),
                 None => {
-                    tracing::debug!(%from, %to, "dropped frame: recipient not connected");
+                    self.queue_offline(&mut state, &header, &frame);
                     return;
                 }
             }
         };
-        if outbox.try_send(frame).is_err() {
-            tracing::debug!(%from, %to, "dropped frame: recipient queue full");
+        match outbox.try_send(frame) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                tracing::debug!(%from, %to, "dropped frame: recipient queue full");
+            }
+            Err(TrySendError::Closed(frame)) => {
+                let mut state = self.state.lock().unwrap();
+                if state.groups.same_group(sender, &header.recipient)
+                    && !state.peers.contains_key(&header.recipient)
+                {
+                    self.queue_offline(&mut state, &header, &frame);
+                }
+            }
+        }
+    }
+
+    fn queue_offline(&self, state: &mut Shared, header: &RouteHeader, frame: &[u8]) {
+        let from = short_id(&header.sender);
+        let to = short_id(&header.recipient);
+        if !is_queueable_offline(header.kind, frame.len()) {
+            tracing::debug!(%from, %to, kind = header.kind, "dropped frame: recipient not connected");
+            return;
+        }
+        if let Err(err) = state.groups.queue_offline(
+            header,
+            frame,
+            now_ms(),
+            self.offline_ttl,
+            self.max_offline_per_device,
+        ) {
+            tracing::error!(%from, %to, %err, "offline envelope not saved, dropped");
+        } else {
+            tracing::debug!(%from, %to, kind = header.kind, "queued frame for offline recipient");
         }
     }
 
@@ -260,5 +293,26 @@ impl Relay {
             tracing::error!(%err, "group change not saved, ignored");
         }
         Ok(())
+    }
+}
+
+fn is_queueable_offline(kind: u8, frame_len: usize) -> bool {
+    const WELCOME: u8 = Kind::Welcome as u8;
+    const DEVICE_ADDED: u8 = Kind::DeviceAdded as u8;
+    const DEVICE_REMOVED: u8 = Kind::DeviceRemoved as u8;
+    const DEVICE_NAME: u8 = Kind::DeviceName as u8;
+
+    match kind {
+        WELCOME => {
+            frame_len > MIN_ENVELOPE_LEN
+                && (frame_len - MIN_ENVELOPE_LEN) % PEER_KEYS_LEN == 1
+                && frame_len <= MIN_ENVELOPE_LEN + 1 + MAX_WELCOME_DEVICES * PEER_KEYS_LEN
+        }
+        DEVICE_ADDED => frame_len == MIN_ENVELOPE_LEN + PEER_KEYS_LEN,
+        DEVICE_REMOVED => frame_len == MIN_ENVELOPE_LEN + DEVICE_ID_LEN,
+        DEVICE_NAME => {
+            (MIN_ENVELOPE_LEN + 1..=MIN_ENVELOPE_LEN + MAX_DEVICE_NAME_LEN).contains(&frame_len)
+        }
+        _ => false,
     }
 }

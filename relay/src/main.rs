@@ -11,6 +11,7 @@
 //! | `WEFT_MAX_CONNECTIONS`        | `2000`                | Open WebSocket connections in total; more are refused with HTTP 503. |
 //! | `WEFT_MAX_CONNECTIONS_PER_IP` | `20`                  | Open WebSocket connections per client address (per /64 for IPv6); more are refused with HTTP 429. |
 //! | `WEFT_IDLE_TIMEOUT_SECS`      | `120`                 | An authenticated connection silent this long is closed; it is pinged halfway. |
+//! | `WEFT_CONTACT`                | unset                 | Optional operator contact shown on `GET /` (for abuse/DSA notices). |
 //! | `RUST_LOG`                    | `info`                | Log filter, e.g. `weft_relay=debug`. |
 //!
 //! `weft-relay --healthcheck` asks the relay listening on `WEFT_BIND` for
@@ -52,6 +53,10 @@ async fn main() -> io::Result<()> {
         positive("WEFT_MAX_CONNECTIONS_PER_IP", MAX_CONNECTIONS_PER_IP)?;
     config.idle_timeout =
         Duration::from_secs(positive("WEFT_IDLE_TIMEOUT_SECS", IDLE_TIMEOUT.as_secs())?);
+    config.contact = std::env::var("WEFT_CONTACT")
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
 
     // Registered before serving, so a SIGTERM sent right after start is not
     // lost.

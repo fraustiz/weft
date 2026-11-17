@@ -18,14 +18,14 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_code};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
@@ -66,6 +66,10 @@ pub const PAIRING_TTL: Duration = Duration::from_secs(5 * 60);
 pub const PAIR_OPEN_PER_MINUTE: usize = 10;
 /// Pair requests one connection may send per minute.
 pub const PAIR_REQUEST_PER_MINUTE: usize = 20;
+/// Default for [`Config::offline_ttl`].
+pub const OFFLINE_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+/// Default for [`Config::max_offline_per_device`].
+pub const MAX_OFFLINE_PER_DEVICE: usize = 64;
 const RATE_WINDOW: Duration = Duration::from_secs(60);
 /// Frames queued for one device before new ones are dropped.
 const OUTBOX_CAPACITY: usize = 64;
@@ -78,7 +82,8 @@ pub struct Config {
     /// The name devices sign in their authentication response; at most 255
     /// bytes of UTF-8.
     pub relay_name: String,
-    /// SQLite database holding the groups. `:memory:` keeps them in memory.
+    /// SQLite database holding the groups and offline envelopes. `:memory:`
+    /// keeps them in memory.
     pub db_path: PathBuf,
     /// How long a pairing slot stays open.
     pub pairing_slot_ttl: Duration,
@@ -97,6 +102,14 @@ pub struct Config {
     /// An authenticated connection silent for half this long is pinged, and
     /// closed if it stays silent for the whole of it.
     pub idle_timeout: Duration,
+    /// How long queued group and device-name envelopes are kept for offline
+    /// recipients.
+    pub offline_ttl: Duration,
+    /// Queued offline envelopes kept per recipient; beyond that, the oldest is
+    /// evicted.
+    pub max_offline_per_device: usize,
+    /// Optional operator contact shown on `GET /`.
+    pub contact: Option<String>,
 }
 
 impl Config {
@@ -111,6 +124,9 @@ impl Config {
             max_connections_per_ip: MAX_CONNECTIONS_PER_IP,
             trust_proxy: false,
             idle_timeout: IDLE_TIMEOUT,
+            offline_ttl: OFFLINE_TTL,
+            max_offline_per_device: MAX_OFFLINE_PER_DEVICE,
+            contact: None,
         }
     }
 }
@@ -123,7 +139,7 @@ struct Peer {
 
 /// Everything connections share. One lock keeps routing, groups and pairing
 /// consistent with each other; it is never held across an `await`.
-struct Shared {
+pub(crate) struct Shared {
     peers: HashMap<DeviceId, Peer>,
     groups: Groups,
     pairing: Pairing,
@@ -131,11 +147,14 @@ struct Shared {
 
 struct Relay {
     name: String,
+    index_html: Arc<str>,
     state: Mutex<Shared>,
     next_conn_id: AtomicU64,
     limiter: Arc<Limiter>,
     trust_proxy: bool,
     idle_timeout: Duration,
+    offline_ttl: Duration,
+    max_offline_per_device: usize,
     /// Set to `true` when the relay shuts down.
     stopping: watch::Sender<bool>,
 }
@@ -158,8 +177,13 @@ pub async fn serve_with_shutdown(
     let groups = Store::open(&config.db_path)
         .and_then(Groups::load)
         .map_err(io::Error::other)?;
+    let index_html = Arc::<str>::from(render_index_html(
+        &config.relay_name,
+        config.contact.as_deref(),
+    ));
     let relay = Arc::new(Relay {
         name: config.relay_name,
+        index_html,
         state: Mutex::new(Shared {
             peers: HashMap::new(),
             groups,
@@ -172,9 +196,12 @@ pub async fn serve_with_shutdown(
         )),
         trust_proxy: config.trust_proxy,
         idle_timeout: config.idle_timeout,
+        offline_ttl: config.offline_ttl,
+        max_offline_per_device: config.max_offline_per_device,
         stopping: watch::channel(false).0,
     });
     let app = Router::new()
+        .route("/", get(index))
         .route("/healthz", get(|| async { "ok" }))
         .route("/v1", get(upgrade))
         .with_state(relay.clone());
@@ -210,6 +237,10 @@ pub async fn serve_with_shutdown(
             Ok(())
         }
     }
+}
+
+async fn index(State(relay): State<Arc<Relay>>) -> Html<String> {
+    Html(relay.index_html.to_string())
 }
 
 async fn upgrade(
@@ -261,17 +292,31 @@ async fn handle(mut socket: WebSocket, relay: Arc<Relay>) {
     let conn_id = relay.next_conn_id.fetch_add(1, Ordering::Relaxed);
     let (outbox, mut inbox) = mpsc::channel(OUTBOX_CAPACITY);
     // Replacing the entry drops the older connection's sender, which closes it.
-    relay
-        .state
-        .lock()
-        .unwrap()
-        .peers
-        .insert(device_id, Peer { conn_id, outbox });
-    tracing::info!(device = %short_id(&device_id), "device connected");
+    let queued = {
+        let mut state = relay.state.lock().unwrap();
+        state.peers.insert(device_id, Peer { conn_id, outbox });
+        match state
+            .groups
+            .load_offline(&device_id, now_ms(), relay.offline_ttl)
+        {
+            Ok(queued) => queued,
+            Err(err) => {
+                tracing::error!(%err, "could not load offline envelopes");
+                Vec::new()
+            }
+        }
+    };
+    tracing::info!(
+        device = %short_id(&device_id),
+        queued = queued.len(),
+        "device connected"
+    );
     // Accept only once registered, so the device is reachable as soon as it
     // sees 0xA2.
     let accepted = Bytes::from_static(&[AUTH_ACCEPTED]);
-    if socket.send(Message::Binary(accepted)).await.is_ok() {
+    if socket.send(Message::Binary(accepted)).await.is_ok()
+        && drain_offline(&mut socket, &relay, &mut inbox, &mut stopping, queued).await
+    {
         relay_frames(&mut socket, &relay, &device_id, &mut inbox, &mut stopping).await;
     }
 
@@ -285,6 +330,37 @@ async fn handle(mut socket: WebSocket, relay: Arc<Relay>) {
     }
     drop(state);
     tracing::info!(device = %short_id(&device_id), "device disconnected");
+}
+
+/// Sends non-expired offline envelopes right after `0xA2` and before any live
+/// frame from `inbox`, deleting each row once sent.
+async fn drain_offline(
+    socket: &mut WebSocket,
+    relay: &Relay,
+    inbox: &mut mpsc::Receiver<Bytes>,
+    stopping: &mut watch::Receiver<bool>,
+    queued: Vec<(i64, Bytes)>,
+) -> bool {
+    for (row_id, frame) in queued {
+        if inbox.is_closed() {
+            let _ = socket.send(Message::Close(None)).await;
+            return false;
+        }
+        let sent = tokio::select! {
+            result = socket.send(Message::Binary(frame)) => result.is_ok(),
+            () = stopped(stopping) => {
+                let _ = socket.send(going_away()).await;
+                return false;
+            }
+        };
+        if !sent {
+            return false;
+        }
+        if let Err(err) = relay.state.lock().unwrap().groups.delete_offline(row_id) {
+            tracing::error!(%err, "could not delete delivered offline envelope");
+        }
+    }
+    true
 }
 
 /// Handles the device's frames and delivers the ones addressed to it, until
@@ -417,4 +493,195 @@ async fn authenticate(socket: &mut WebSocket, relay_name: &str) -> Option<Device
 /// First 4 bytes of a device id in hex, for logs.
 pub(crate) fn short_id(device_id: &DeviceId) -> String {
     device_id[..4].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub(crate) fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(0)
+}
+
+pub(crate) fn duration_ms(duration: Duration) -> i64 {
+    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+}
+
+fn escape_html(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn render_index_html(relay_name: &str, contact: Option<&str>) -> String {
+    let name = escape_html(relay_name);
+    let contact_block = match contact.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(contact) => format!(
+            "\n        <dt>Operator contact</dt>\n        <dd>{}</dd>",
+            escape_html(contact)
+        ),
+        None => String::new(),
+    };
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weft relay — {name}</title>
+  <style>
+    :root {{
+      color-scheme: light dark;
+      --bg: #F6EFE6;
+      --fg: #17130F;
+      --muted: #574E46;
+      --line: rgba(23, 19, 15, 0.12);
+      --code-bg: rgba(23, 19, 15, 0.06);
+      --accent: #F26A21;
+      --link: #B54308;
+      --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{
+        --bg: #17130F;
+        --fg: #F6EFE6;
+        --muted: #B9ADA0;
+        --line: rgba(246, 239, 230, 0.14);
+        --code-bg: rgba(246, 239, 230, 0.08);
+        --link: #F58442;
+      }}
+    }}
+    *, *::before, *::after {{ box-sizing: border-box; }}
+    html, body {{
+      margin: 0;
+      padding: 0;
+      overflow-x: clip;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.6;
+    }}
+    main {{
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 48px 24px 64px;
+    }}
+    header {{
+      padding-bottom: 24px;
+      border-bottom: 2px solid var(--accent);
+    }}
+    h1 {{
+      margin: 0 0 8px;
+      font-size: 28px;
+      font-weight: 600;
+      line-height: 1.25;
+      overflow-wrap: break-word;
+    }}
+    .lead {{
+      margin: 0;
+      color: var(--muted);
+    }}
+    h2 {{
+      margin: 32px 0 12px;
+      font-size: 18px;
+      font-weight: 600;
+      line-height: 1.4;
+    }}
+    p {{
+      margin: 0 0 12px;
+    }}
+    ul {{
+      margin: 0;
+      padding-left: 20px;
+    }}
+    li {{
+      margin-bottom: 8px;
+    }}
+    dl {{
+      margin: 16px 0 0;
+      display: grid;
+      grid-template-columns: minmax(140px, auto) minmax(0, 1fr);
+      gap: 8px 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+    }}
+    dt {{
+      color: var(--muted);
+      font-weight: 500;
+    }}
+    dd {{
+      margin: 0;
+      overflow-wrap: break-word;
+    }}
+    code {{
+      font-family: var(--mono);
+      font-size: 14px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: var(--code-bg);
+    }}
+    a {{
+      color: var(--link);
+      text-underline-offset: 4px;
+    }}
+    a:focus-visible {{
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }}
+    @media (max-width: 480px) {{
+      main {{ padding: 32px 20px 48px; }}
+      dl {{ grid-template-columns: minmax(0, 1fr); gap: 4px; }}
+      dd {{ margin-bottom: 8px; }}
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Weft relay</h1>
+      <p class="lead">End-to-end encrypted transport for paired devices on <code>{name}</code>.</p>
+      <dl>
+        <dt>Relay name</dt>
+        <dd><code>{name}</code></dd>
+        <dt>WebSocket endpoint</dt>
+        <dd><code>/v1</code></dd>{contact_block}
+      </dl>
+    </header>
+
+    <section>
+      <h2>End-to-end encryption</h2>
+      <p>Clipboard text, files, notifications, device names, and control payloads are encrypted on each device with libsodium (XChaCha20-Poly1305, X25519 session keys, Ed25519 identities) before reaching the relay. This server routes ciphertext headers and cannot decrypt or read any payload.</p>
+    </section>
+
+    <section>
+      <h2>Data and retention</h2>
+      <ul>
+        <li><strong>Group membership:</strong> device identifiers and their routing group are stored in SQLite so only paired devices can exchange frames.</li>
+        <li><strong>Offline queue:</strong> encrypted group-change and device-name envelopes for offline group members are held for up to 30 days (capped per device) and deleted as soon as delivered.</li>
+        <li><strong>State deletion:</strong> removing a device or leaving a group immediately deletes its group record and any envelopes queued for it on the relay.</li>
+        <li><strong>Operational logs:</strong> transient connection and error diagnostics without message content, with zero analytics or tracking.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Source, self-hosting, and notices</h2>
+      <p>Weft is open source and self-hostable. Protocol documentation, server source code, and contact details for abuse or Digital Services Act notices are available at <a href="https://github.com/fraustiz/weft">github.com/fraustiz/weft</a>.</p>
+    </section>
+  </main>
+</body>
+</html>
+"#
+    )
 }

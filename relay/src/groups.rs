@@ -3,11 +3,13 @@
 //! least two devices. Every change is saved before it takes effect.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
-use weft_protocol::MAX_GROUP_SIZE;
+use axum::body::Bytes;
+use weft_protocol::{MAX_GROUP_SIZE, RouteHeader};
 
 use crate::store::Store;
-use crate::{DeviceId, short_id};
+use crate::{DeviceId, duration_ms, short_id};
 
 /// Local to the relay and never sent on the wire.
 pub type GroupId = i64;
@@ -73,6 +75,34 @@ impl Groups {
     pub fn remove(&mut self, device: &DeviceId) -> rusqlite::Result<()> {
         let changes = self.leave_changes(device);
         self.commit(changes)
+    }
+
+    /// Queues an envelope frame for an offline group member.
+    pub fn queue_offline(
+        &mut self,
+        header: &RouteHeader,
+        frame: &[u8],
+        now_ms: i64,
+        ttl: Duration,
+        max_per_device: usize,
+    ) -> rusqlite::Result<()> {
+        self.store
+            .queue_envelope(header, frame, now_ms, duration_ms(ttl), max_per_device)
+    }
+
+    /// Loads non-expired queued envelopes for `recipient` in FIFO order.
+    pub fn load_offline(
+        &mut self,
+        recipient: &DeviceId,
+        now_ms: i64,
+        ttl: Duration,
+    ) -> rusqlite::Result<Vec<(i64, Bytes)>> {
+        self.store.load_pending(recipient, now_ms, duration_ms(ttl))
+    }
+
+    /// Deletes one queued envelope after delivery.
+    pub fn delete_offline(&mut self, id: i64) -> rusqlite::Result<()> {
+        self.store.delete_pending(id)
     }
 
     /// What it takes for `device` to leave its group. A group that would be

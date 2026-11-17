@@ -78,9 +78,9 @@ Transport: WebSocket over TLS. Each binary WebSocket frame carries one message.
 After `0xA2`, the first byte of every frame tells what it is: `0x01` is an envelope (section 3), `0xB0`–`0xBF` are control frames (section 5). The relay drops anything else.
 
 For envelopes, the relay:
-- reads only the `version` (must be `0x01`), the length (at least header, nonce and tag; at most `58 + 24 + 256 KiB + 16` bytes), and the `sender` and `recipient` fields. It does **not** check `kind`, so kinds added later need no relay update;
+- reads only the `version` (must be `0x01`), the length (at least header, nonce and tag; at most `58 + 24 + 256 KiB + 16` bytes), and the `kind`, `sender` and `recipient` fields. When the recipient is connected, it does **not** check `kind`, so kinds added later need no relay update;
 - checks that the `sender` field equals the authenticated device id, and drops the frame otherwise;
-- forwards the frame unchanged only if `sender` and `recipient` are in the **same group** (section 5) and the recipient is connected;
+- when `sender` and `recipient` are in the **same group** (section 5), forwards the frame unchanged if the recipient is connected, or queues eligible group and device-name envelopes (`0x03`–`0x06`) if the recipient is offline (see « Offline delivery » in section 5); drops the frame otherwise;
 - never decrypts anything.
 
 The client checks that the `relay_name` in the challenge equals the host it connected to (without port) before signing. The comparison is byte-exact on the lowercased host.
@@ -139,7 +139,25 @@ A device B that is already in a group can **invite** a device A into it by scann
 
 If B gets no Device name from A within 30 s, it tells its user that the device did not answer (it may already belong to a group: pair from that group instead).
 
-Offline delivery comes in a later revision of this document.
+### Offline delivery
+
+When `sender` and `recipient` are in the same group and `recipient` is not connected, the relay stores the encrypted envelope frame unchanged if and only if its `kind` and frame length `len` match one of:
+
+| `kind` | Meaning | Allowed frame length `len` |
+| --- | --- | --- |
+| `0x03` | Welcome | `len >= 99`, `(len - 98) % 64 == 1`, and `len <= 611` |
+| `0x04` | Device added | `len == 162` |
+| `0x05` | Device removed | `len == 114` |
+| `0x06` | Device name | `99 <= len <= 162` |
+
+All other kinds (`0x01`, `0x02`, `0x07`, `0x08`, or unknown future kinds) and frames outside those lengths are dropped when the recipient is offline.
+
+Queue bounds and delivery:
+- For `0x06` (`Device name`), a new queued envelope replaces any queued `0x06` envelope already waiting for the same `(sender, recipient)` pair.
+- At most 64 envelopes are kept per offline recipient; if full, the oldest queued envelope for that recipient is dropped to make room.
+- Envelopes older than 30 days are discarded.
+- When a device leaves its group on the relay, any envelopes queued for that `recipient` are deleted.
+- When a device authenticates, right after `0xA2` and before any live frames forwarded on that connection, the relay sends its non-expired queued envelopes in FIFO order and deletes each one once sent.
 
 ## 6. Test vectors
 
