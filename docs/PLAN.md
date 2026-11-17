@@ -5,7 +5,7 @@
 - Trois apps natives : Android en Kotlin et Material 3, macOS en Swift/SwiftUI avec l'interface Apple, Windows en Rust avec WinUI 3 via windows-reactor. Un relais Docker hébergé par le mainteneur, ouvert à tous.
 - Presse-papiers Android : un bouton, comme dans KDE Connect, sans Shizuku. Le sens ordinateur → téléphone est automatique.
 
-Date : 16 novembre 2026. Statut : v3, relue et corrigée (sécurité de l'appairage, liste signée des appareils, architecture Windows, service Android selon les règles Play), rien d'implémenté ni de déployé. La v2 était un plan Android/Mac avec Shizuku : remplacée.
+Date : 16 novembre 2026 (mis à jour le 17 novembre 2026). Statut : v3 implémentée et déployée — voir l'état de réalisation en §13 (les sections 0 à 12 conservent le plan de conception initial). La v2 était un plan Android/Mac avec Shizuku : remplacée.
 
 Nom : **Weft**, la trame en tissage. C'est le fil qui fait l'aller-retour d'un bord à l'autre et relie les fils séparés en un seul tissu. Choisi le 2026-11-16.
 
@@ -308,3 +308,25 @@ Les estimations viendront après l'étape 0.
 - **Licence MIT, projet 100 % open source** : apps, relais, protocole, logo, documentation. Dépôt public `fraustiz/weft`.
 - **Logo** : uniquement en **SVG dessiné à la main**, aucune image générée par IA. Il est bicolore, orange coucher de soleil `#F26A21` sur encre `#17130F` (ou sur crème `#F6EFE6`). « Coucher de soleil » désigne la couleur, pas un soleil dessiné. Le thème : une aiguille qui coud du numérique (pixels, lignes de trame, appareils). Six pistes sont dans `brand/variants/`, la page de comparaison est `brand/showcase.html`. 
 - **Logo retenu (2026-11-16)** : piste **2B « Gros pixels »**, trois gros pixels arrondis traversés par une aiguille, qui sort par le pixel manquant. Jeu final dans `brand/final/` : symbole, icônes sombre et claire, favicon, symbole + mot « weft » dessiné au trait. Charte dans `brand/README.md`. Les PNG, `.icns`, `.ico` et icônes adaptatives se génèrent depuis les SVG au build.
+
+## 13. État de réalisation (novembre 2026)
+
+L'ensemble du périmètre prévu a été implémenté dans le monorepo et le relais public est en ligne sur `weft.frohub.eu`.
+
+- **Organisation du monorepo et cœur partagé** :
+  - `crates/weft-protocol` : implémentation Rust de référence du protocole v1 et vecteurs reproductibles (`vectors/v1.json`).
+  - `crates/weft-client` : cœur client Rust partagé entre Windows et macOS (session WebSocket, reconnexion, fenêtre anti-rejeu, transferts, paquets de fonctions et règles du presse-papiers).
+  - `crates/weft-ffi` : pont UniFFI exposant le cœur partagé à l'application macOS.
+  - `relay/` : serveur WebSocket Rust (`axum` + SQLite), publié en image Docker multi-architecture (`ghcr.io/fraustiz/weft/relay`) et déployé en production.
+  - `cli/` : client en ligne de commande `weft` (appairage, invitations, écoute et envoi).
+  - `android/` : application native Kotlin / Jetpack Compose Material 3 (`:app`) et module `:protocol` (`lazysodium-android`).
+  - `macos/` : application barre de menus et réglages en Swift / SwiftUI au-dessus de `weft-ffi` (avec `mediaremote-adapter` pour la lecture en cours).
+  - `windows/` : application native Rust combinant un thread Win32 dédié (zone de notification et presse-papiers) et une interface WinUI 3 via `windows-reactor`.
+  - `swift/WeftProtocol` : paquet Swift autonome vérifiant la parité complète octet pour octet avec les vecteurs de test v1.
+- **Protocole binaire v1 (`docs/protocol.md` et `docs/features.md`)** : un format binaire fixe a été retenu à la place de Protobuf (en-tête clair de 58 octets authentifié comme données associées d'`XChaCha20-Poly1305` IETF, clés de session `crypto_kx`, défi d'authentification signé `0xA0`–`0xA2`). Le relais achemine les enveloppes sans inspecter le champ `kind`, ce qui permet de faire évoluer les paquets JSON chiffrés (`0x07`) et les morceaux de fichiers binaires (`0x08`, jusqu'à 128 Kio) sans redéployer le relais.
+- **Groupes, invitations et file hors ligne** : groupes jusqu'à 10 appareils appairés par QR `WEFT1:` (`0xB0`–`0xB3`), invitations de groupe (`0xB4`/`0xB5` avec séparation de domaine cryptographique entre `weft-pair-v1` et `weft-invite-v1`) permettant à un appareil déjà membre d'ajouter un nouvel ordinateur à son groupe, et mise en file d'attente sur le relais des enveloppes chiffrées de changements de groupe et de noms d'appareils (`0x03` à `0x06`) pour les membres momentanément hors ligne.
+- **Fonctions disponibles** : presse-papiers (automatique depuis macOS et Windows, en un geste depuis Android par tuile des réglages rapides, notification, feuille de partage ou bouton, avec filtrage des contenus sensibles), transferts de fichiers chiffrés avec reprise et partage de liens, notifications Android sur ordinateur (actions, réponse directe, effacement) et appels entrants/manqués, contrôle multimédia bidirectionnel avec pochettes (`media.art`), lecteur `MediaStyle` Android pour piloter les ordinateurs et contrôle du volume système, niveau de batterie et réseau, sonnerie bidirectionnelle et ping, SMS et contacts sur option (conservés uniquement en mémoire vive sur les ordinateurs), ainsi que contrôle à distance, pointeur de présentation gyroscope, saisie sur téléphone via le clavier Weft et raccourcis d'ordinateur autorisés appareil par appareil.
+- **Releases et mises à jour automatiques** : le workflow `.github/workflows/app-release.yml` publie sur GitHub Releases les trois applications sur chaque tag `app-vX.Y.Z`, chacune dotée d'une mise à jour intégrée :
+  - **macOS** : `Weft-X.Y.Z-mac.zip` + `appcast.xml` (signature EdDSA vérifiée par Sparkle) ;
+  - **Android** : `weft-X.Y.Z.apk` + `android-update.json` (empreinte SHA-256 vérifiée avant installation via `PackageInstaller`) ;
+  - **Windows** : `weft-X.Y.Z-windows.exe` + `windows-update.json` (empreinte SHA-256 et en-tête PE vérifiés avant remplacement sur place de l'exécutable).
