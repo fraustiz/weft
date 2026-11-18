@@ -66,6 +66,7 @@ struct WeftActionLabelStyle: LabelStyle {
         } icon: {
             configuration.icon.foregroundStyle(Color.weftOrange)
         }
+        .labelStyle(.titleAndIcon)
     }
 }
 

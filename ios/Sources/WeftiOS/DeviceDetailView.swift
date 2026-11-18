@@ -62,46 +62,35 @@ struct DeviceDetailView: View {
                 SendClipboardRow(model: model, peerHex: peer.id)
 
                 if takesFiles {
-                    Button {
+                    actionRow(t("Send File…", "Envoyer un fichier…"), systemImage: "arrow.up.doc") {
                         pickingFiles.value = true
-                    } label: {
-                        Label(t("Send File…", "Envoyer un fichier…"), systemImage: "arrow.up.doc")
                     }
                 }
 
                 if takesRemote {
-                    Button {
+                    actionRow(t("Remote Control…", "Contrôle à distance…"), systemImage: "hand.point.up.left") {
                         model.remoteControlPeerID = peer.id
-                    } label: {
-                        Label(t("Remote Control…", "Contrôle à distance…"), systemImage: "hand.point.up.left")
                     }
                 }
 
                 if takesRing {
                     if snapshot.outgoingRingingPeerHex == peer.id {
-                        Button {
+                        actionRow(t("Stop Ringing", "Arrêter la sonnerie"), systemImage: "bell.slash") {
                             Task { await model.session?.stopRingingPeer(peer.id) }
-                        } label: {
-                            Label(t("Stop Ringing", "Arrêter la sonnerie"), systemImage: "bell.slash")
                         }
                     } else {
-                        Button {
+                        actionRow(t("Ring Device", "Faire sonner"), systemImage: "bell") {
                             Task { await model.session?.ringPeer(peer.id) }
-                        } label: {
-                            Label(t("Ring Device", "Faire sonner"), systemImage: "bell")
                         }
                     }
                 }
 
                 if takesPing {
-                    Button {
+                    actionRow(t("Ping", "Ping"), systemImage: "wave.3.right") {
                         Task { await model.session?.pingPeer(peer.id) }
-                    } label: {
-                        Label(t("Ping", "Ping"), systemImage: "wave.3.right")
                     }
                 }
             }
-            .labelStyle(WeftActionLabelStyle())
 
             if features.links && (peer.platform == nil || peer.handles("share.url")) {
                 ShareLinkSection(model: model, peer: peer)
@@ -169,6 +158,16 @@ struct DeviceDetailView: View {
                 "Les autres appareils du groupe cessent aussi de lui faire confiance."
             ))
         }
+    }
+
+    private func actionRow(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .labelStyle(WeftActionLabelStyle())
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
