@@ -20,7 +20,9 @@ struct DeviceDetail: View {
     var body: some View {
         Form {
             Section {
-                DeviceHeader(device: device)
+                DeviceHeader(device: device) {
+                    headerActions
+                }
             }
             actions
             if (features?.media ?? false) && device.gives("media"), let media = device.media {
@@ -96,10 +98,38 @@ struct DeviceDetail: View {
         }
     }
 
-    @ViewBuilder
-    private var actions: some View {
+    /// Ring and ping act on the device itself, so they sit in its header.
+    @ViewBuilder private var headerActions: some View {
         let ring = (features?.ring ?? false) && device.takes("ring")
         let ping = device.takes("ping")
+        if device.platform != nil {
+            HStack(spacing: 4) {
+                if ring {
+                    if model.rang?.device == device.id {
+                        HeaderIconButton(symbol: "bell.slash",
+                                         label: t("Stop Ringing", "Arrêter la sonnerie")) { model.stopRinging(device) }
+                    } else {
+                        HeaderIconButton(symbol: "bell",
+                                         label: t("Ring", "Faire sonner"),
+                                         help: t("Rings it loudly, even in silent mode, for a minute",
+                                                 "Le fait sonner fort, même en silencieux, pendant une minute")) {
+                            model.ring(device)
+                        }
+                    }
+                }
+                if ping {
+                    HeaderIconButton(symbol: "wave.3.right",
+                                     label: t("Ping", "Ping"),
+                                     help: t("Shows a notification on it", "Y affiche une notification")) {
+                        model.ping(device)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var actions: some View {
         let messages = (features?.sms ?? false) && device.canMessage
         if device.platform == nil {
             Section {
@@ -108,7 +138,7 @@ struct DeviceDetail: View {
                      : "Actions show once \(device.displayName) is online.")
                     .foregroundStyle(.secondary)
             }
-        } else if takesFiles || ring || ping || messages {
+        } else if takesFiles || messages {
             Section {
                 HStack(spacing: 8) {
                     if takesFiles {
@@ -118,22 +148,6 @@ struct DeviceDetail: View {
                     if messages {
                         Button(t("Messages…", "Messages…")) { model.openMessagesSheet(for: device) }
                             .buttonStyle(WeftSecondaryButtonStyle())
-                    }
-                    if ring {
-                        if model.rang?.device == device.id {
-                            Button(t("Stop Ringing", "Arrêter la sonnerie")) { model.stopRinging(device) }
-                                .buttonStyle(WeftSecondaryButtonStyle())
-                        } else {
-                            Button(t("Ring", "Faire sonner")) { model.ring(device) }
-                                .buttonStyle(WeftSecondaryButtonStyle())
-                                .help(t("Rings it loudly, even in silent mode, for a minute",
-                                        "Le fait sonner fort, même en silencieux, pendant une minute"))
-                        }
-                    }
-                    if ping {
-                        Button(t("Ping", "Ping")) { model.ping(device) }
-                            .buttonStyle(WeftSecondaryButtonStyle())
-                            .help(t("Shows a notification on it", "Y affiche une notification"))
                     }
                     Spacer(minLength: 0)
                 }
@@ -149,8 +163,9 @@ struct DeviceDetail: View {
 }
 
 /// Icon, name, platform, then battery and network when it sent them.
-private struct DeviceHeader: View {
+private struct DeviceHeader<Trailing: View>: View {
     let device: DeviceInfo
+    @ViewBuilder var trailing: Trailing
 
     var body: some View {
         HStack(spacing: 12) {
@@ -179,8 +194,38 @@ private struct DeviceHeader: View {
                 }
                 .foregroundStyle(.secondary)
             }
+            Spacer(minLength: 8)
+            trailing
         }
         .padding(.vertical, 4)
+    }
+}
+
+/// A quiet icon button for the device header: an orange symbol, a neutral
+/// fill on hover and press, a tooltip and an accessibility label.
+private struct HeaderIconButton: View {
+    let symbol: String
+    let label: String
+    var help: String? = nil
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(Color.weftOrange)
+                .frame(width: 32, height: 32)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(hovering ? 0.08 : 0))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(help ?? label)
+        .accessibilityLabel(label)
     }
 }
 
