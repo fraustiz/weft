@@ -157,10 +157,44 @@ fn confirm_removal(weft: &Weft, context: &ViewContext<Weft>) -> Option<View> {
     Some(dialog)
 }
 
+/// Asks which file-capable device should receive files dropped when several
+/// could take them.
+fn pending_drop(weft: &Weft, context: &ViewContext<Weft>) -> Option<View> {
+    let paths = weft.pending_drop.as_ref()?;
+    let capable = words::file_capable_devices(&weft.snapshot);
+    if capable.is_empty() {
+        return None;
+    }
+    let choices: Vec<View> = capable
+        .into_iter()
+        .map(|device| {
+            let name = words::device_name(device);
+            Button::new()
+                .horizontal_alignment(HorizontalAlignment::Stretch)
+                .horizontal_content_alignment(HorizontalAlignment::Left)
+                .automation_name(name)
+                .on_click(context.message(Message::SendPendingDrop(device.id)))
+                .content(name)
+        })
+        .collect();
+    Some(card(column(
+        12.0,
+        vec![
+            label(words::pending_drop_prompt(paths.len())).into(),
+            column(4.0, choices),
+            button(
+                t("Cancel", "Annuler"),
+                context.message(Message::CancelPendingDrop),
+            ),
+        ],
+    )))
+}
+
 pub fn view(weft: &Weft, context: &mut ViewContext<Weft>) -> View {
     let pair = context.message(Message::StartPairing);
     let mut views: Vec<View> = added(weft, context).into_iter().collect();
     views.push(status(weft));
+    views.extend(pending_drop(weft, context));
     let devices = &weft.snapshot.devices;
     if devices.is_empty() {
         views.push(column(

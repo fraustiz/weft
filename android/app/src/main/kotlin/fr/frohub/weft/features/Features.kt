@@ -116,11 +116,29 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
     private val completed = CompletedTransfers()
     private val sending = ConcurrentHashMap<String, Sending>()
     private val sendSlots = ConcurrentHashMap<String, Semaphore>()
+    private val clipboardImages = ClipboardImages(
+        digest = { fr.frohub.weft.protocol.contentHash(it).toHex() },
+        send = { peer, packet -> send(listOf(peer), packet) > 0 },
+        chunk = { peer, bytes -> core.sendFileChunk(peer, bytes) },
+        apply = { mime, bytes -> writeClipboardImage(context, mime, bytes) },
+    )
+
+    suspend fun sendClipboardImage(mime: String, bytes: ByteArray): SendResult {
+        if (!isClipboardImage(mime, bytes)) return SendResult.TooLarge
+        if (!core.awaitConnection()) return SendResult.NotConnected
+        val devices = trustedIds().filter { peers.value[it]?.handles(Packet.CLIPBOARD_IMAGE_OFFER) == true }
+        if (devices.isEmpty()) return SendResult.NoPairedDevice
+        val sent = clipboardImages.offer(devices, mime, bytes)
+        return if (sent > 0) SendResult.Sent(sent) else SendResult.NotConnected
+    }
 
     init {
         core.packetListener = this
         scope.launch {
-            core.status.collect { if (it == ConnectionStatus.Connected) onConnected() }
+            core.status.collect {
+                if (it == ConnectionStatus.Connected) onConnected()
+                else if (core.status.value != ConnectionStatus.Connected) clipboardImages.clear()
+            }
         }
         scope.launch {
             // A feature switched on sends its current value at once.
@@ -143,6 +161,7 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
             }
         }
         scope.launch { for (job in serial) job() }
+        scope.launch { while (true) { delay(1000); clipboardImages.expire() } }
         scope.launch(Dispatchers.IO) { partials.expire() }
     }
 
@@ -289,11 +308,13 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
             return
         }
         val feature = Feature.of(packet.type)
+        if (clipboardImages.packet(senderHex, packet)) return
         if (feature != null && !settings.isEnabled(feature)) {
             if (packet is Packet.FileOffer) send(listOf(senderHex), Packet.FileReject(packet.id, Packet.REJECT_DISABLED))
             return
         }
         when (packet) {
+            is Packet.ClipboardImageOffer, is Packet.ClipboardImageAccept -> Unit
             is Packet.Capabilities -> {
                 val known = _peers.value[senderHex]?.capabilities != null
                 updatePeer(senderHex) { it.copy(capabilities = packet) }
@@ -659,6 +680,7 @@ class Features(private val context: Context, private val core: WeftCore) : Packe
     }
 
     override suspend fun onFileChunk(senderHex: String, plaintext: ByteArray) {
+        try { if (clipboardImages.receive(senderHex, plaintext)) return } catch (_: WeftException) { return }
         val chunk = try {
             decodeFileChunk(plaintext)
         } catch (_: WeftException) {

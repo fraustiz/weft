@@ -8,7 +8,90 @@
 
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use weft_protocol::MAX_CLIPBOARD_TEXT_LEN;
+
+/// Largest clipboard image payload, in bytes (16 MiB).
+pub const MAX_CLIPBOARD_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+const JPEG_SIGNATURE: &[u8] = &[0xff, 0xd8, 0xff];
+
+/// Supported clipboard image formats on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImageMime {
+    #[serde(rename = "image/png")]
+    Png,
+    #[serde(rename = "image/jpeg")]
+    Jpeg,
+}
+
+impl ImageMime {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ImageMime::Png => "image/png",
+            ImageMime::Jpeg => "image/jpeg",
+        }
+    }
+
+    pub fn parse(mime: &str) -> Option<ImageMime> {
+        match mime {
+            "image/png" => Some(ImageMime::Png),
+            "image/jpeg" => Some(ImageMime::Jpeg),
+            _ => None,
+        }
+    }
+
+    pub fn signature(self) -> &'static [u8] {
+        match self {
+            ImageMime::Png => PNG_SIGNATURE,
+            ImageMime::Jpeg => JPEG_SIGNATURE,
+        }
+    }
+
+    /// Whether `bytes` begins with the magic bytes of this format.
+    pub fn matches(self, bytes: &[u8]) -> bool {
+        bytes.starts_with(self.signature())
+    }
+}
+
+/// A PNG or JPEG clipboard image (1 byte to [`MAX_CLIPBOARD_IMAGE_BYTES`]).
+#[derive(Clone, PartialEq, Eq)]
+pub struct ClipboardImage {
+    pub mime: ImageMime,
+    pub bytes: Vec<u8>,
+}
+
+impl ClipboardImage {
+    /// Builds a validated [`ClipboardImage`], checking size (`1..=16 MiB`)
+    /// and magic bytes (`PNG` or `JPEG`).
+    pub fn new(mime: ImageMime, bytes: Vec<u8>) -> Option<ClipboardImage> {
+        let image = ClipboardImage { mime, bytes };
+        image.is_valid().then_some(image)
+    }
+
+    /// Whether `bytes` is within `1..=MAX_CLIPBOARD_IMAGE_BYTES` and starts
+    /// with `mime`'s magic signature.
+    pub fn is_valid(&self) -> bool {
+        (1..=MAX_CLIPBOARD_IMAGE_BYTES).contains(&self.bytes.len())
+            && self.mime.matches(&self.bytes)
+    }
+
+    /// 16-byte BLAKE2b content hash (`weft_protocol::content_hash`).
+    pub fn hash(&self) -> [u8; 16] {
+        weft_protocol::content_hash(&self.bytes)
+    }
+}
+
+/// Never shows the image bytes: outcomes and hooks must never log clipboard content.
+impl std::fmt::Debug for ClipboardImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClipboardImage")
+            .field("mime", &self.mime.as_str())
+            .field("len", &self.bytes.len())
+            .finish()
+    }
+}
 
 /// How long after sending a text the same text is taken for the same copy.
 /// Many applications write the clipboard in several steps, and each step is
@@ -40,13 +123,14 @@ impl Pause {
 #[derive(Clone, PartialEq, Eq)]
 pub enum Content {
     Text(String),
+    Image(ClipboardImage),
     /// The application that copied it asked clipboard monitors to leave it
     /// alone (password managers do).
     Excluded,
-    /// Text that is over the limit whatever its exact size; not converted.
+    /// Content that is over the limit whatever its exact size; not converted.
     TooLarge,
-    /// No text, text that is not valid Unicode, or a clipboard that could
-    /// not be read.
+    /// No text or supported image, text that is not valid Unicode, or a
+    /// clipboard that could not be read.
     NoText,
 }
 
@@ -54,7 +138,7 @@ pub enum Content {
 pub trait Clipboard {
     /// The current sequence number.
     fn sequence(&self) -> u32;
-    /// The current content. Must not return excluded content as text.
+    /// The current content. Must not return excluded content as text or image.
     fn read(&mut self) -> Content;
     /// Replaces the content with `text`. Returns the sequence number right
     /// after the write, or `None` if it failed.
@@ -62,6 +146,11 @@ pub trait Clipboard {
     /// [`write`](Clipboard::write), with the content marked for clipboard
     /// monitors and the clipboard history to leave alone.
     fn write_private(&mut self, text: &str) -> Option<u32>;
+    /// Replaces the content with `image`. Returns the sequence number right
+    /// after the write, or `None` if unsupported or failed.
+    fn write_image(&mut self, _image: &ClipboardImage) -> Option<u32> {
+        None
+    }
 }
 
 /// What to do about a local clipboard change.
@@ -69,10 +158,12 @@ pub trait Clipboard {
 pub enum Outgoing {
     /// Send this text to the group.
     Send(String),
+    /// Send this image to the group.
+    SendImage(ClipboardImage),
     /// Nothing changed since the last look (several notifications for one
     /// change, or the content present at startup).
     Unchanged,
-    /// The change is Weft writing a received text.
+    /// The change is Weft writing a received text or image.
     OwnWrite,
     Paused,
     /// Not connected, or no other device to send to.
@@ -80,20 +171,22 @@ pub enum Outgoing {
     Excluded,
     NoText,
     Empty,
-    /// Over [`MAX_CLIPBOARD_TEXT_LEN`]: not sent at all rather than cut.
+    /// Over [`MAX_CLIPBOARD_TEXT_LEN`] or [`MAX_CLIPBOARD_IMAGE_BYTES`]:
+    /// not sent at all rather than cut.
     TooLarge,
-    /// The text this device just received, written again by something
-    /// other than Weft.
+    /// The text or image this device just received, written again by
+    /// something other than Weft.
     Echo,
-    /// The text sent a moment ago: the same copy, reported again.
+    /// The text or image sent a moment ago: the same copy, reported again.
     SameCopy,
 }
 
-/// Never shows the text: outcomes end up in logs.
+/// Never shows the text or image: outcomes end up in logs.
 impl std::fmt::Debug for Outgoing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Outgoing::Send(_) => "Send(..)",
+            Outgoing::SendImage(_) => "SendImage(..)",
             Outgoing::Unchanged => "Unchanged",
             Outgoing::OwnWrite => "OwnWrite",
             Outgoing::Paused => "Paused",
@@ -108,13 +201,13 @@ impl std::fmt::Debug for Outgoing {
     }
 }
 
-/// What happened to a text received from the group.
+/// What happened to a text or image received from the group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Incoming {
     /// It is now the clipboard content.
     Written,
     Paused,
-    /// Empty texts are ignored: they would only clear the clipboard.
+    /// Empty payloads are ignored: they would only clear the clipboard.
     Empty,
     /// The clipboard refused the write.
     Failed,
@@ -134,6 +227,11 @@ pub struct Sync<C> {
     received: Option<String>,
     /// The last text sent, and when.
     sent: Option<(String, Instant)>,
+    /// Content hash of the last image received, until this device sends
+    /// new content, preventing clipboard tools from echoing it back.
+    received_image_hash: Option<[u8; 16]>,
+    /// Content hash of the last image sent, and when.
+    sent_image: Option<([u8; 16], Instant)>,
 }
 
 impl<C: Clipboard> Sync<C> {
@@ -147,6 +245,8 @@ impl<C: Clipboard> Sync<C> {
             own: None,
             received: None,
             sent: None,
+            received_image_hash: None,
+            sent_image: None,
         }
     }
 
@@ -156,7 +256,7 @@ impl<C: Clipboard> Sync<C> {
     ///
     /// A change that is not sent (paused, offline, too large) is not sent
     /// later either: after a pause or a reconnection, only new changes go
-    /// out. The clipboard is only read when its text would be sent.
+    /// out. The clipboard is only read when its content would be sent.
     pub fn local_change(&mut self, pause: Pause, online: bool, now: Instant) -> Outgoing {
         let sequence = self.clipboard.sequence();
         if self.own == Some(sequence) {
@@ -173,30 +273,57 @@ impl<C: Clipboard> Sync<C> {
         if !online {
             return Outgoing::Offline;
         }
-        let text = match self.clipboard.read() {
-            Content::Text(text) => text,
-            Content::Excluded => return Outgoing::Excluded,
-            Content::TooLarge => return Outgoing::TooLarge,
-            Content::NoText => return Outgoing::NoText,
-        };
-        if text.is_empty() {
-            return Outgoing::Empty;
+        match self.clipboard.read() {
+            Content::Text(text) => {
+                if text.is_empty() {
+                    return Outgoing::Empty;
+                }
+                if text.len() > MAX_CLIPBOARD_TEXT_LEN {
+                    return Outgoing::TooLarge;
+                }
+                if self.received.as_deref() == Some(&text) {
+                    return Outgoing::Echo;
+                }
+                if let Some((sent, at)) = &self.sent
+                    && *sent == text
+                    && now.saturating_duration_since(*at) < SAME_COPY
+                {
+                    return Outgoing::SameCopy;
+                }
+                self.received = None;
+                self.received_image_hash = None;
+                self.sent = Some((text.clone(), now));
+                Outgoing::Send(text)
+            }
+            Content::Image(image) => {
+                if image.bytes.is_empty() {
+                    return Outgoing::Empty;
+                }
+                if image.bytes.len() > MAX_CLIPBOARD_IMAGE_BYTES {
+                    return Outgoing::TooLarge;
+                }
+                if !image.mime.matches(&image.bytes) {
+                    return Outgoing::NoText;
+                }
+                let hash = image.hash();
+                if self.received_image_hash == Some(hash) {
+                    return Outgoing::Echo;
+                }
+                if let Some((sent_hash, at)) = &self.sent_image
+                    && *sent_hash == hash
+                    && now.saturating_duration_since(*at) < SAME_COPY
+                {
+                    return Outgoing::SameCopy;
+                }
+                self.received = None;
+                self.received_image_hash = None;
+                self.sent_image = Some((hash, now));
+                Outgoing::SendImage(image)
+            }
+            Content::Excluded => Outgoing::Excluded,
+            Content::TooLarge => Outgoing::TooLarge,
+            Content::NoText => Outgoing::NoText,
         }
-        if text.len() > MAX_CLIPBOARD_TEXT_LEN {
-            return Outgoing::TooLarge;
-        }
-        if self.received.as_deref() == Some(&text) {
-            return Outgoing::Echo;
-        }
-        if let Some((sent, at)) = &self.sent
-            && *sent == text
-            && now.saturating_duration_since(*at) < SAME_COPY
-        {
-            return Outgoing::SameCopy;
-        }
-        self.received = None;
-        self.sent = Some((text.clone(), now));
-        Outgoing::Send(text)
     }
 
     /// Puts a text received from the group on the clipboard. The write is
@@ -212,6 +339,31 @@ impl<C: Clipboard> Sync<C> {
             Some(sequence) => {
                 self.own = Some(sequence);
                 self.received = Some(text.to_owned());
+                self.received_image_hash = None;
+                Incoming::Written
+            }
+            None => Incoming::Failed,
+        }
+    }
+
+    /// Puts an image received from the group on the clipboard. Both the
+    /// write's sequence number (`own`) and `content_hash(&image.bytes)` are
+    /// recorded so received images never echo back.
+    pub fn remote_image(&mut self, image: &ClipboardImage, pause: Pause) -> Incoming {
+        if pause.blocks_receive() {
+            return Incoming::Paused;
+        }
+        if image.bytes.is_empty() {
+            return Incoming::Empty;
+        }
+        if !image.is_valid() {
+            return Incoming::Failed;
+        }
+        match self.clipboard.write_image(image) {
+            Some(sequence) => {
+                self.own = Some(sequence);
+                self.received_image_hash = Some(image.hash());
+                self.received = None;
                 Incoming::Written
             }
             None => Incoming::Failed,
@@ -283,6 +435,15 @@ mod tests {
             self.content = Content::Excluded;
             Some(sequence)
         }
+
+        fn write_image(&mut self, image: &ClipboardImage) -> Option<u32> {
+            if self.fail_writes {
+                return None;
+            }
+            self.sequence += 2;
+            self.content = Content::Image(image.clone());
+            Some(self.sequence)
+        }
     }
 
     const RUNNING: Pause = Pause {
@@ -306,7 +467,9 @@ mod tests {
 
     /// A local change well after the previous one.
     fn change(sync: &mut Sync<Fake>, pause: Pause, online: bool) -> Outgoing {
-        let later = sync.sent.as_ref().map(|(_, at)| *at + 2 * SAME_COPY);
+        let last_text = sync.sent.as_ref().map(|(_, at)| *at);
+        let last_img = sync.sent_image.as_ref().map(|(_, at)| *at);
+        let later = last_text.max(last_img).map(|at| at + 2 * SAME_COPY);
         sync.local_change(pause, online, later.unwrap_or_else(Instant::now))
     }
 
@@ -536,5 +699,83 @@ mod tests {
     #[test]
     fn outcomes_never_show_the_text() {
         assert_eq!(format!("{:?}", send("secret")), "Send(..)");
+        let png = png_image(1, 24);
+        assert_eq!(
+            format!("{:?}", Outgoing::SendImage(png.clone())),
+            "SendImage(..)"
+        );
+        let dbg = format!("{png:?}");
+        assert!(dbg.contains("image/png") && dbg.contains("24"));
+    }
+
+    fn png_image(fill: u8, len: usize) -> ClipboardImage {
+        let mut bytes = PNG_SIGNATURE.to_vec();
+        bytes.resize(len, fill);
+        ClipboardImage::new(ImageMime::Png, bytes).unwrap()
+    }
+
+    #[test]
+    fn clipboard_images_validate_magic_bytes_and_size() {
+        let png = png_image(0xaa, 32);
+        assert!(png.is_valid());
+
+        let mut jpg = JPEG_SIGNATURE.to_vec();
+        jpg.extend_from_slice(&[1, 2, 3, 4]);
+        let jpg = ClipboardImage::new(ImageMime::Jpeg, jpg).unwrap();
+        assert!(jpg.is_valid());
+
+        // Mismatched magic bytes, empty, or over 16 MiB are rejected.
+        assert!(ClipboardImage::new(ImageMime::Png, jpg.bytes.clone()).is_none());
+        assert!(ClipboardImage::new(ImageMime::Png, Vec::new()).is_none());
+        let mut huge = PNG_SIGNATURE.to_vec();
+        huge.resize(MAX_CLIPBOARD_IMAGE_BYTES + 1, 0);
+        assert!(ClipboardImage::new(ImageMime::Png, huge.clone()).is_none());
+
+        let mut sync = started("old");
+        copy(
+            &mut sync,
+            Content::Image(ClipboardImage {
+                mime: ImageMime::Png,
+                bytes: huge,
+            }),
+        );
+        assert_eq!(change(&mut sync, RUNNING, true), Outgoing::TooLarge);
+    }
+
+    #[test]
+    fn received_images_never_echo_back() {
+        let mut sync = started("old");
+        let img = png_image(7, 64);
+        assert_eq!(sync.remote_image(&img, RUNNING), Incoming::Written);
+        assert!(sync.clipboard.content == Content::Image(img.clone()));
+
+        // Weft's own write is suppressed by sequence number (`own`).
+        assert_eq!(change(&mut sync, RUNNING, true), Outgoing::OwnWrite);
+        assert_eq!(sync.clipboard.reads, 0);
+
+        // Another clipboard manager re-writing the same image is suppressed by `content_hash`.
+        copy(&mut sync, Content::Image(img.clone()));
+        assert_eq!(change(&mut sync, RUNNING, true), Outgoing::Echo);
+
+        // A multi-step local copy within SAME_COPY is sent once.
+        let other = png_image(9, 64);
+        let t0 = Instant::now();
+        copy(&mut sync, Content::Image(other.clone()));
+        assert_eq!(
+            sync.local_change(RUNNING, true, t0),
+            Outgoing::SendImage(other.clone())
+        );
+        copy(&mut sync, Content::Image(other.clone()));
+        assert_eq!(
+            sync.local_change(RUNNING, true, t0 + SAME_COPY / 2),
+            Outgoing::SameCopy
+        );
+
+        // Once another image was sent, copying the earlier received image sends it.
+        copy(&mut sync, Content::Image(img.clone()));
+        assert_eq!(
+            sync.local_change(RUNNING, true, t0 + 2 * SAME_COPY),
+            Outgoing::SendImage(img)
+        );
     }
 }

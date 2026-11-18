@@ -1,0 +1,36 @@
+name: Linux desktop
+
+on:
+  push:
+    branches: [main, windows-app, wt/core-next]
+    paths: ["linux/**", "crates/**", "cli/**", "relay/**", ".github/workflows/linux.yml"]
+  pull_request:
+    paths: ["linux/**", "crates/**", "cli/**", "relay/**", ".github/workflows/linux.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+      - name: Check formatting
+        run: cargo +stable fmt --manifest-path linux/Cargo.toml -- --check
+      - name: Lint
+        run: cargo +stable clippy --manifest-path linux/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo +stable test --manifest-path linux/Cargo.toml --locked
+      - name: Test the shared workspace
+        run: cargo +stable test --workspace --locked
+      - name: Clean build outputs
+        if: always()
+        run: rm -rf linux/target target

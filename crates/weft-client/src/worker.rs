@@ -33,7 +33,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
 use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender, unbounded_channel};
 use weft_cli::session::{
     JOIN_TIMEOUT, KEEPALIVE_INTERVAL, MAX_BACKOFF, MIN_BACKOFF, PAIRING_TIMEOUT, is_fatal,
 };
@@ -50,6 +50,7 @@ use crate::packets::{
 };
 use crate::sms::{self, OutgoingSms, SendState, Sms};
 use crate::sync::Pause;
+use crate::sync::{ClipboardImage, MAX_CLIPBOARD_IMAGE_BYTES};
 use crate::transfer::{self, Failure, Incoming, Outgoing, Stage, Tick};
 use crate::{files, input, media};
 
@@ -91,6 +92,8 @@ const MAX_PLAYERS: usize = 16;
 pub enum Command {
     /// Send clipboard text to every trusted device.
     SendText(String),
+    /// Send a fresh clipboard image; never queued across reconnection.
+    SendImage(ClipboardImage),
     /// Open a pairing slot and show its code until a device joins.
     StartPairing,
     /// Stop showing the code, or dismiss the result of the last pairing.
@@ -243,6 +246,11 @@ pub struct TransferView {
 /// name, when it announced one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Notice {
+    /// An integrity-checked image to put on the clipboard, without echoing it.
+    ClipboardImage {
+        from: [u8; 16],
+        image: ClipboardImage,
+    },
     /// A device rings this computer, until [`Notice::RingEnded`].
     Ring {
         from: [u8; 16],
@@ -608,6 +616,10 @@ pub fn spawn_on(dir: StateDir, relay_url: &str, hooks: Hooks) -> Result<(Handle,
         older_asked: BTreeSet::new(),
         traffic_at: now,
         progress_at: now,
+        image_out: BTreeMap::new(),
+        image_in: BTreeMap::new(),
+        lan: None,
+        lan_frames: mpsc::channel(16),
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -671,6 +683,10 @@ struct Receiving {
 }
 
 struct Worker {
+    lan: Option<crate::lan::Transport>,
+    lan_frames: (mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>),
+    image_out: BTreeMap<ImageKey, ImageSending>,
+    image_in: BTreeMap<([u8; 16], [u8; 16]), ImageReceiving>,
     dir: StateDir,
     commands: UnboundedReceiver<Command>,
     shared: Arc<Shared>,
@@ -707,6 +723,20 @@ struct Worker {
     traffic_at: Instant,
     /// The last snapshot that moved a progress bar.
     progress_at: Instant,
+}
+
+struct ImageReceiving {
+    offer: packets::ClipboardImageOffer,
+    bytes: Vec<u8>,
+    at: Instant,
+}
+
+type ImageKey = ([u8; 16], [u8; 16]);
+type ImageSending = (Arc<ClipboardImage>, Instant);
+
+enum WorkerInput {
+    Command(Option<Command>),
+    Lan(Vec<u8>),
 }
 
 /// A `notification.request` sent to a device.
@@ -783,6 +813,172 @@ fn open_partial(path: &std::path::Path, offset: u64) -> std::io::Result<File> {
 }
 
 impl Worker {
+    async fn send_image(&mut self, session: &mut Session, image: ClipboardImage) -> Result<()> {
+        if self.view.pause.blocks_send() || !image.is_valid() {
+            tracing::debug!(
+                paused = self.view.pause.blocks_send(),
+                valid = image.is_valid(),
+                "clipboard image not sent"
+            );
+            return Ok(());
+        }
+        self.image_out.clear();
+        let image = Arc::new(image);
+        let devices: Vec<_> = self.view.devices.iter().map(|d| d.id).collect();
+        let mut offered = 0;
+        for device in devices {
+            let peer = self.view.peer(&device);
+            let peer_takes = peer.handles("clipboard.image.offer");
+            let we_send = self
+                .capabilities_for(&device)
+                .sends("clipboard.image.offer");
+            if !peer_takes || !we_send {
+                tracing::debug!(
+                    device = %short_id(&device),
+                    capabilities_known = peer.capabilities.is_some(),
+                    peer_takes,
+                    we_send,
+                    "clipboard image not offered to this device"
+                );
+                continue;
+            }
+            let id = random_message_id();
+            let offer = packets::ClipboardImageOffer {
+                id: transfer_id(&id),
+                mime: image.mime,
+                size: image.bytes.len() as u64,
+                hash: hex(&image.hash()),
+            };
+            self.image_out
+                .insert((device, id), (image.clone(), Instant::now()));
+            let lan = self.lan.as_ref().is_some_and(|lan| lan.has_route(&device));
+            self.send(session, device, &Packet::ClipboardImageOffer(offer))
+                .await?;
+            tracing::info!(
+                device = %short_id(&device),
+                mime = image.mime.as_str(),
+                size = image.bytes.len(),
+                route = if lan { "lan" } else { "relay" },
+                "clipboard image offered"
+            );
+            offered += 1;
+        }
+        if offered == 0 {
+            tracing::debug!("clipboard image not sent: no device takes images");
+        }
+        Ok(())
+    }
+
+    async fn image_offer(
+        &mut self,
+        session: &mut Session,
+        from: [u8; 16],
+        offer: packets::ClipboardImageOffer,
+    ) -> Result<()> {
+        if self.view.pause.blocks_receive()
+            || !self
+                .capabilities_for(&from)
+                .handles("clipboard.image.offer")
+            || offer.size == 0
+            || offer.size > MAX_CLIPBOARD_IMAGE_BYTES as u64
+            || weft_cli::unhex::<16>(&offer.hash).is_none()
+        {
+            return Ok(());
+        }
+        let Some(id) = parse_transfer_id(&offer.id) else {
+            return Ok(());
+        };
+        // One incoming image per peer and at most two full images reserved
+        // across the group. Size accounting uses offers, not bytes received.
+        self.image_in.retain(|(peer, _), _| *peer != from);
+        let reserved: u64 = self.image_in.values().map(|i| i.offer.size).sum();
+        if reserved + offer.size > (2 * MAX_CLIPBOARD_IMAGE_BYTES) as u64
+            || self.incoming.iter().any(|r| r.transfer.id == id)
+        {
+            return Ok(());
+        }
+        let accept = Packet::ClipboardImageAccept {
+            id: offer.id.clone(),
+        };
+        self.image_in.insert(
+            (from, id),
+            ImageReceiving {
+                offer,
+                bytes: Vec::new(),
+                at: Instant::now(),
+            },
+        );
+        self.send(session, from, &accept).await
+    }
+
+    async fn image_chunk(
+        &mut self,
+        session: &mut Session,
+        from: [u8; 16],
+        id: [u8; 16],
+        offset: u64,
+        data: &[u8],
+    ) -> Result<()> {
+        let key = (from, id);
+        let Some(image) = self.image_in.get_mut(&key) else {
+            return Ok(());
+        };
+        if self.view.pause.blocks_receive()
+            || offset != image.bytes.len() as u64
+            || data.is_empty()
+            || image.bytes.len() as u64 + data.len() as u64 > image.offer.size
+            || image.at.elapsed() >= Duration::from_secs(30)
+        {
+            self.image_in.remove(&key);
+            return self
+                .send(
+                    session,
+                    from,
+                    &Packet::FileCancel {
+                        id: transfer_id(&id),
+                    },
+                )
+                .await;
+        }
+        image.bytes.extend_from_slice(data);
+        let ack = Packet::FileAck {
+            id: transfer_id(&id),
+            offset: image.bytes.len() as u64,
+        };
+        if image.bytes.len() as u64 == image.offer.size {
+            let image = self.image_in.remove(&key).expect("present above");
+            if let Some(content) = ClipboardImage::new(image.offer.mime, image.bytes)
+                && hex(&content.hash()) == image.offer.hash
+            {
+                self.notify(Notice::ClipboardImage {
+                    from,
+                    image: content,
+                });
+                self.record(Direction::Received);
+                self.send(session, from, &ack).await?;
+                return self
+                    .send(
+                        session,
+                        from,
+                        &Packet::FileDone {
+                            id: transfer_id(&id),
+                        },
+                    )
+                    .await;
+            }
+            return self
+                .send(
+                    session,
+                    from,
+                    &Packet::FileCancel {
+                        id: transfer_id(&id),
+                    },
+                )
+                .await;
+        }
+        self.send(session, from, &ack).await
+    }
+
     /// Publishes the view if it differs from the last snapshot.
     fn publish(&self) {
         let mut board = self.shared.board.lock().unwrap();
@@ -846,6 +1042,9 @@ impl Worker {
                 Err(err) => err,
             };
 
+            self.lan = None;
+            self.image_in.clear();
+            self.image_out.clear();
             // What was saved before the connection broke still counts.
             if let Ok(state) = self.dir.load() {
                 describe(&mut self.view, &state);
@@ -898,7 +1097,9 @@ impl Worker {
         const OFFLINE: &str = "not connected to the relay";
         match command {
             // Not kept for later: after a reconnection only new changes go.
-            Command::SendText(_) => tracing::debug!("clipboard text not sent: {OFFLINE}"),
+            Command::SendText(_) | Command::SendImage(_) => {
+                tracing::debug!("clipboard not sent: {OFFLINE}")
+            }
             Command::StartPairing | Command::Join(_) => {
                 self.view.pairing = PairingState::Failed(PairingFailure::NotConnected);
             }
@@ -1011,6 +1212,9 @@ impl Worker {
 
     /// Serves the connection until shutdown (`Ok`) or until it is lost.
     async fn online(&mut self, session: &mut Session) -> Result<()> {
+        self.image_out.clear();
+        self.image_in.clear();
+        self.refresh_lan(session).await;
         // Tell every device what this one does, ask for their state, and
         // pick up the transfers the connection loss interrupted.
         let devices: Vec<[u8; 16]> = self.view.devices.iter().map(|device| device.id).collect();
@@ -1050,17 +1254,38 @@ impl Worker {
             } else {
                 keepalive
             };
-            let next = session
-                .next_event_or(Some(wait), self.commands.recv())
-                .await?;
+            let input = async {
+                let maintain_lan = async {
+                    if let Some(lan) = &mut self.lan {
+                        lan.maintain().await;
+                    }
+                    std::future::pending::<WorkerInput>().await
+                };
+                tokio::select! {
+                    command = self.commands.recv() => WorkerInput::Command(command),
+                    never = maintain_lan => never,
+                }
+            };
+            let lan = async {
+                WorkerInput::Lan(self.lan_frames.1.recv().await.expect("LAN frame sender"))
+            };
+            let next = session.next_event_with_lan(Some(wait), input, lan).await?;
             match next {
                 Next::Event(event) => {
                     self.traffic_at = Instant::now();
                     self.event(session, event).await?;
                 }
                 Next::Idle => {}
-                Next::Interrupted(None | Some(Command::Shutdown)) => return Ok(()),
-                Next::Interrupted(Some(command)) => self.command(session, command).await?,
+                Next::Interrupted(WorkerInput::Command(None | Some(Command::Shutdown))) => {
+                    return Ok(());
+                }
+                Next::Interrupted(WorkerInput::Command(Some(command))) => {
+                    self.command(session, command).await?
+                }
+                Next::Interrupted(WorkerInput::Lan(frame)) => {
+                    let event = session.receive_frame(&frame).await?;
+                    self.event(session, event).await?;
+                }
             }
             self.online_clocks(session).await?;
         }
@@ -1070,6 +1295,10 @@ impl Worker {
     /// once it has been quiet for a while.
     async fn online_clocks(&mut self, session: &mut Session) -> Result<()> {
         let now = Instant::now();
+        self.image_out
+            .retain(|_, (_, at)| now.duration_since(*at) < Duration::from_secs(30));
+        self.image_in
+            .retain(|_, image| now.duration_since(image.at) < Duration::from_secs(30));
         for (to, packet) in self.clocks(now) {
             self.send(session, to, &packet).await?;
         }
@@ -1189,7 +1418,14 @@ impl Worker {
             }
             Err(err) => return Err(err),
         }
-        while let Some(event) = session.next_queued_event().await? {
+        loop {
+            let event = if let Ok(frame) = self.lan_frames.1.try_recv() {
+                session.receive_frame(&frame).await?
+            } else if let Some(event) = session.next_queued_event().await? {
+                event
+            } else {
+                break;
+            };
             self.event(session, event).await?;
         }
         describe(&mut self.view, session.state());
@@ -1198,6 +1434,17 @@ impl Worker {
     }
 
     async fn event(&mut self, session: &mut Session, event: Event) -> Result<()> {
+        if matches!(&event, Event::Welcome { .. } | Event::DeviceAdded { .. }) {
+            // Refresh listener trust after membership changes; old streams
+            // cannot keep a snapshot of a superseded trusted-device list.
+            self.refresh_lan(session).await;
+            if let Some(lan) = &self.lan {
+                let (port, addrs) = lan.endpoints();
+                session
+                    .send_packet_all(&Packet::LanEndpoints { port, addrs }.to_json())
+                    .await?;
+            }
+        }
         match event {
             Event::Clipboard { from, text } => {
                 if self.view.pause.blocks_receive() {
@@ -1223,8 +1470,13 @@ impl Worker {
                 offset,
                 data,
             } => {
-                self.chunk(session, from, transfer_id, offset, &data)
-                    .await?
+                if self.image_in.contains_key(&(from, transfer_id)) {
+                    self.image_chunk(session, from, transfer_id, offset, &data)
+                        .await?;
+                } else {
+                    self.chunk(session, from, transfer_id, offset, &data)
+                        .await?
+                }
             }
             Event::Welcome { from, added } => {
                 tracing::info!(from = %short_id(&from), added = added.len(), "welcome received");
@@ -1241,6 +1493,7 @@ impl Worker {
             Event::DeviceRemoved { by, device } => {
                 tracing::info!(by = %short_id(&by), device = %short_id(&device), "device removed");
                 self.drop_transfers_with(&device);
+                self.lan = None;
             }
             Event::RelayError(code) => {
                 tracing::warn!(error = %Error::Relay(code), "from the relay");
@@ -1265,8 +1518,48 @@ impl Worker {
 
     /// Sends `packet` to `to`. Only a lost connection is an error.
     async fn send(&mut self, session: &mut Session, to: [u8; 16], packet: &Packet) -> Result<()> {
-        let done = session.send_packet(to, &packet.to_json()).await;
+        let frame =
+            session.seal_for(to, weft_protocol::Kind::Packet, packet.to_json().as_bytes())?;
+        let done = self.send_wire(session, to, frame).await;
         only_connection_errors(done, "packet")
+    }
+
+    async fn send_wire(
+        &mut self,
+        session: &mut Session,
+        to: [u8; 16],
+        frame: Vec<u8>,
+    ) -> Result<()> {
+        if let Some(lan) = &mut self.lan
+            && lan.send(to, &frame).await
+        {
+            return Ok(());
+        }
+        session.send_frame(frame).await
+    }
+
+    async fn refresh_lan(&mut self, session: &Session) {
+        // Accepted frames stay queued when routes are replaced.
+        self.lan = crate::lan::Transport::start(
+            session.identity_arc(),
+            session.state().devices.clone(),
+            self.lan_frames.0.clone(),
+        )
+        .await
+        .ok();
+    }
+
+    async fn send_chunk(
+        &mut self,
+        session: &mut Session,
+        to: [u8; 16],
+        id: [u8; 16],
+        offset: u64,
+        data: &[u8],
+    ) -> Result<()> {
+        let plaintext = weft_protocol::encode_file_chunk(&id, offset, data)?;
+        let frame = session.seal_for(to, weft_protocol::Kind::FileChunk, &plaintext)?;
+        self.send_wire(session, to, frame).await
     }
 
     /// What this device announces to `to`: input only if `to` may control
@@ -1292,6 +1585,14 @@ impl Worker {
         session.send_name_to(to).await?;
         let packet = Packet::Capabilities(self.capabilities_for(&to));
         self.send(session, to, &packet).await?;
+        if let Some(lan) = &self.lan {
+            let (port, addrs) = lan.endpoints();
+            // Endpoints and capabilities use the relay so a stale LAN route
+            // can always be replaced after a peer reconnects.
+            session
+                .send_packet(to, &Packet::LanEndpoints { port, addrs }.to_json())
+                .await?;
+        }
         self.art_sent.remove(&to);
         self.send_state(session, to).await
     }
@@ -1469,6 +1770,37 @@ impl Worker {
         let features = self.view.features;
         let now = Instant::now();
         match packet {
+            Packet::LanEndpoints { port, addrs } => {
+                if let Some(lan) = &mut self.lan {
+                    lan.connect(from, port, &addrs);
+                }
+            }
+            Packet::ClipboardImageOffer(offer) => {
+                self.image_offer(session, from, offer).await?;
+            }
+            Packet::ClipboardImageAccept { id } => {
+                if let Some(id) = parse_transfer_id(&id)
+                    && let Some((image, at)) = self.image_out.remove(&(from, id))
+                    && !self.view.pause.blocks_send()
+                    && now.duration_since(at) < Duration::from_secs(30)
+                {
+                    for (index, data) in image
+                        .bytes
+                        .chunks(weft_protocol::MAX_FILE_CHUNK_DATA_LEN)
+                        .enumerate()
+                    {
+                        self.send_chunk(
+                            session,
+                            from,
+                            id,
+                            (index * weft_protocol::MAX_FILE_CHUNK_DATA_LEN) as u64,
+                            data,
+                        )
+                        .await?;
+                    }
+                    self.record(Direction::Sent);
+                }
+            }
             Packet::Capabilities(capabilities) => {
                 tracing::info!(
                     from = %short_id(&from),
@@ -2024,7 +2356,7 @@ impl Worker {
                     return self.send(session, to, &cancel).await;
                 }
             };
-            let sent = session.send_file_chunk(to, id, offset, &data).await;
+            let sent = self.send_chunk(session, to, id, offset, &data).await;
             only_connection_errors(sent, "file chunk")?;
             self.outgoing[index].transfer.chunk_sent(len);
         }
@@ -2260,6 +2592,8 @@ impl Worker {
 
     /// The other device cancelled the transfer `id`.
     fn cancel_from(&mut self, device: &[u8; 16], id: &[u8; 16]) {
+        self.image_in.remove(&(*device, *id));
+        self.image_out.remove(&(*device, *id));
         if let Some(sending) = self
             .outgoing
             .iter_mut()
@@ -2305,6 +2639,8 @@ impl Worker {
 
     /// A device left: its transfers end, and their partial files go.
     fn drop_transfers_with(&mut self, device: &[u8; 16]) {
+        self.image_out.retain(|(peer, _), _| peer != device);
+        self.image_in.retain(|(peer, _), _| peer != device);
         let ids: Vec<[u8; 16]> = self
             .outgoing
             .iter()
@@ -2398,6 +2734,7 @@ impl Worker {
     /// the snapshot or the log instead.
     async fn command(&mut self, session: &mut Session, command: Command) -> Result<()> {
         let done = match command {
+            Command::SendImage(image) => self.send_image(session, image).await,
             Command::SendText(_) if self.view.pause.blocks_send() => {
                 tracing::debug!("clipboard text not sent: paused");
                 Ok(())

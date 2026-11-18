@@ -8,9 +8,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use weft_cli::{StateDir, short_id, unhex};
-use weft_client::features::{Features, UserCommand};
+use weft_client::features::{Features, Implemented, UserCommand};
 use weft_client::packets::{InputKey, MediaAction, MediaCommand, Packet, Volume, VolumeSet};
-use weft_client::sync::{self, Clipboard, Content, Incoming, Outgoing, Sync};
+use weft_client::sync::{
+    self, Clipboard, ClipboardImage, Content, ImageMime, Incoming, Outgoing, Sync,
+};
 use weft_client::worker::{self, Command, DEFAULT_RELAY_URL, Handle, Hooks, Published};
 use weft_protocol::{MAX_CLIPBOARD_TEXT_LEN, random_message_id};
 
@@ -22,6 +24,75 @@ use crate::{CoreConfig, CoreError, check_device_name, check_relay_url, group};
 
 /// How long the worker gets to close its connection politely.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
+
+const MAC_IMPLEMENTED: Implemented = Implemented {
+    incoming: &[
+        "state.request",
+        "clipboard.image.offer",
+        "clipboard.image.accept",
+        "ping",
+        "ring",
+        "ring.stop",
+        "share.url",
+        "file.offer",
+        "file.accept",
+        "file.reject",
+        "file.ack",
+        "file.done",
+        "file.cancel",
+        "battery",
+        "connectivity",
+        "notification",
+        "notification.removed",
+        "call",
+        "media",
+        "media.art",
+        "media.command",
+        "volume",
+        "volume.set",
+        "sms.conversations",
+        "sms.messages",
+        "sms.sent",
+        "sms.received",
+        "contacts",
+        "command.run",
+        "input.pointer",
+        "input.click",
+        "input.key",
+        "presenter",
+    ],
+    outgoing: &[
+        "state.request",
+        "clipboard.image.offer",
+        "clipboard.image.accept",
+        "ping",
+        "input.key",
+        "ring",
+        "ring.stop",
+        "share.url",
+        "file.offer",
+        "file.accept",
+        "file.reject",
+        "file.ack",
+        "file.done",
+        "file.cancel",
+        "notification.dismiss",
+        "notification.action",
+        "notification.reply",
+        "notification.request",
+        "call.mute",
+        "media",
+        "media.art",
+        "media.command",
+        "volume",
+        "volume.set",
+        "sms.conversations.request",
+        "sms.messages.request",
+        "sms.send",
+        "contacts.request",
+        "command.list",
+    ],
+};
 
 /// The feature switches the Mac app supports: all of `weft-client`.
 const SUPPORTED: Features = Features {
@@ -99,7 +170,7 @@ pub trait CoreDelegate: Send + std::marker::Sync {
     fn notice(&self, notice: CoreNotice);
     /// Pointer, keyboard or presenter input from an allowed device.
     fn input(&self, input: RemoteInput);
-    /// A received text waits: call [`WeftCore::poll_pasteboard`] on the
+    /// Received clipboard content waits: call [`WeftCore::poll_pasteboard`] on the
     /// main thread to write it.
     fn clipboard_waiting(&self);
 }
@@ -110,6 +181,11 @@ pub enum PasteboardContent {
     Text {
         text: String,
     },
+    Image {
+        mime: String,
+        bytes: Vec<u8>,
+    },
+    TooLarge,
     /// Marked concealed, transient or auto-generated
     /// (`org.nspasteboard.*Type`): password managers and the like.
     Excluded,
@@ -124,12 +200,14 @@ pub enum PasteboardContent {
 pub trait Pasteboard: Send + std::marker::Sync {
     /// `NSPasteboard.changeCount`.
     fn change_count(&self) -> i64;
-    /// The plain text, unless excluded. Reading the types first costs no
-    /// privacy prompt; reading the text may.
+    /// Text or an encoded image, unless excluded. Reading types first costs
+    /// no privacy prompt; reading the content may.
     fn read_text(&self) -> PasteboardContent;
     /// Replaces the content with `text`, marked concealed when `private`.
     /// Returns the change count right after, or `None` if it failed.
     fn write_text(&self, text: String, private: bool) -> Option<i64>;
+    /// Writes an encoded PNG or JPEG; called only on the app's pasteboard thread.
+    fn write_image(&self, mime: String, bytes: Vec<u8>) -> Option<i64>;
 }
 
 /// The [`Clipboard`] the Sync rules need, over the app's pasteboard. The
@@ -147,6 +225,20 @@ impl Clipboard for AppClipboard {
                 Content::TooLarge
             }
             PasteboardContent::Text { text } => Content::Text(text),
+            PasteboardContent::Image { mime, bytes } => {
+                let len = bytes.len();
+                match ImageMime::parse(&mime).and_then(|mime| ClipboardImage::new(mime, bytes)) {
+                    Some(image) => {
+                        tracing::debug!(%mime, len, "pasteboard image read");
+                        Content::Image(image)
+                    }
+                    None => {
+                        tracing::debug!(%mime, len, "pasteboard image refused: type, signature or size");
+                        Content::TooLarge
+                    }
+                }
+            }
+            PasteboardContent::TooLarge => Content::TooLarge,
             PasteboardContent::Excluded => Content::Excluded,
             PasteboardContent::NoText => Content::NoText,
         }
@@ -155,6 +247,12 @@ impl Clipboard for AppClipboard {
     fn write(&mut self, text: &str) -> Option<u32> {
         self.0
             .write_text(text.to_owned(), false)
+            .map(|count| count as u32)
+    }
+
+    fn write_image(&mut self, image: &ClipboardImage) -> Option<u32> {
+        self.0
+            .write_image(image.mime.as_str().to_owned(), image.bytes.clone())
             .map(|count| count as u32)
     }
 
@@ -186,8 +284,8 @@ pub struct WeftCore {
     /// Held for the whole of a restart, so two never overlap.
     restarting: Mutex<()>,
     sync: Mutex<Sync<AppClipboard>>,
-    /// The last received text, until the next poll writes it.
-    received: Arc<Mutex<Option<String>>>,
+    /// The last received text or image, until the next poll writes it.
+    received: Arc<Mutex<Option<Content>>>,
     /// This Mac's players as the app last gave them, for a restarted
     /// worker: none until the app reads some.
     local_media: Mutex<Vec<LocalPlayer>>,
@@ -256,20 +354,28 @@ fn run_shell_command(line: &str) {
 impl WeftCore {
     fn hooks(&self) -> Hooks {
         let received = self.received.clone();
+        let image_received = self.received.clone();
+        let image_delegate = self.delegate.clone();
         let text_delegate = self.delegate.clone();
         let notice_delegate = self.delegate.clone();
         let input_delegate = self.delegate.clone();
         Hooks {
             on_text: Box::new(move |text| {
                 // Only the latest counts, as on the clipboard itself.
-                *lock(&received) = Some(text);
+                *lock(&received) = Some(Content::Text(text));
                 text_delegate.clipboard_waiting();
             }),
-            on_notice: Arc::new(move |notice| notice_delegate.notice(map::notice(notice))),
+            on_notice: Arc::new(move |notice| match notice {
+                worker::Notice::ClipboardImage { image, .. } => {
+                    *lock(&image_received) = Some(Content::Image(image));
+                    image_delegate.clipboard_waiting();
+                }
+                other => notice_delegate.notice(map::notice(other)),
+            }),
             downloads: self.downloads.clone(),
             on_input: Box::new(move |input| input_delegate.input(map::remote_input(input))),
             run_command: Box::new(run_shell_command),
-            implemented: None,
+            implemented: Some(MAC_IMPLEMENTED),
         }
     }
 
@@ -316,6 +422,7 @@ impl WeftCore {
         ));
         let watcher = handle.clone();
         let delegate = self.delegate.clone();
+        let received = self.received.clone();
         let started = std::thread::Builder::new()
             .name("weft-snapshots".into())
             .spawn(move || {
@@ -323,6 +430,9 @@ impl WeftCore {
                 // Ends with the worker.
                 while let Some(published) = watcher.wait_newer(generation) {
                     generation = published.generation;
+                    if !published.snapshot.is_connected() {
+                        lock(&received).take();
+                    }
                     delegate.snapshot_changed(generation);
                 }
             });
@@ -411,6 +521,7 @@ impl WeftCore {
         if let Some(old) = old {
             Self::stop_worker(old);
         }
+        lock(&self.received).take();
         let result = change(&self.dir);
         let running = self.spawn()?;
         *lock(&self.running) = Some(running);
@@ -526,7 +637,8 @@ impl WeftCore {
         self.restart(group::leave)
     }
 
-    /// Sends the pasteboard's text to every device now, pause or not.
+    /// Sends the current pasteboard to every device now. Explicit text sends
+    /// override pause as before; image sends respect clipboard pause.
     /// Call it on the main thread.
     pub fn send_clipboard_now(&self) -> SendOutcome {
         let published = self.published();
@@ -536,22 +648,35 @@ impl WeftCore {
         if published.snapshot.devices.is_empty() {
             return SendOutcome::NoDevices;
         }
-        let text = match self.pasteboard.read_text() {
-            PasteboardContent::Text { text } => text,
+        match self.pasteboard.read_text() {
+            PasteboardContent::Text { text } => {
+                if text.is_empty() {
+                    return SendOutcome::NoText;
+                }
+                if text.len() > MAX_CLIPBOARD_TEXT_LEN {
+                    return SendOutcome::TooLarge;
+                }
+                self.send(Command::SendText(text));
+            }
+            PasteboardContent::Image { mime, bytes } => {
+                if published.snapshot.pause.blocks_send() {
+                    return SendOutcome::Paused;
+                }
+                let Some(image) =
+                    ImageMime::parse(&mime).and_then(|mime| ClipboardImage::new(mime, bytes))
+                else {
+                    return SendOutcome::TooLarge;
+                };
+                self.send(Command::SendImage(image));
+            }
+            PasteboardContent::TooLarge => return SendOutcome::TooLarge,
             PasteboardContent::Excluded => return SendOutcome::Excluded,
             PasteboardContent::NoText => return SendOutcome::NoText,
-        };
-        if text.is_empty() {
-            return SendOutcome::NoText;
         }
-        if text.len() > MAX_CLIPBOARD_TEXT_LEN {
-            return SendOutcome::TooLarge;
-        }
-        self.send(Command::SendText(text));
         SendOutcome::Sent
     }
 
-    /// Writes the received text that waits, if any, then looks for a
+    /// Writes the received clipboard content that waits, if any, then looks for a
     /// local change and sends it if the rules say so. Call it on the main
     /// thread, about every half second and after
     /// [`CoreDelegate::clipboard_waiting`].
@@ -563,10 +688,13 @@ impl WeftCore {
             sent: false,
         };
         let received = lock(&self.received).take();
-        if let Some(text) = received {
-            let incoming = sync.remote_text(&text, snapshot.pause);
-            tracing::debug!(?incoming, "received text");
-            outcome.written = incoming == Incoming::Written;
+        if snapshot.is_connected() {
+            let incoming = match received {
+                Some(Content::Text(text)) => Some(sync.remote_text(&text, snapshot.pause)),
+                Some(Content::Image(image)) => Some(sync.remote_image(&image, snapshot.pause)),
+                _ => None,
+            };
+            outcome.written = incoming == Some(Incoming::Written);
         }
         let online = snapshot.is_connected() && !snapshot.devices.is_empty();
         match sync.local_change(snapshot.pause, online, Instant::now()) {
@@ -574,8 +702,13 @@ impl WeftCore {
                 self.send(Command::SendText(text));
                 outcome.sent = true;
             }
+            Outgoing::SendImage(image) => {
+                tracing::debug!(?image, "pasteboard image handed to the worker");
+                self.send(Command::SendImage(image));
+                outcome.sent = true;
+            }
             Outgoing::TooLarge => {
-                tracing::info!("the copied text is over the size limit; not sent")
+                tracing::info!("the copied content is over the size limit; not sent")
             }
             Outgoing::Unchanged => {}
             other => tracing::debug!(outcome = ?other, "pasteboard change not sent"),
@@ -865,6 +998,7 @@ impl WeftCore {
         if let Some(running) = running {
             Self::stop_worker(running);
         }
+        lock(&self.received).take();
     }
 }
 
@@ -891,6 +1025,89 @@ fn placeholder() -> worker::Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct MemoryPasteboard(Mutex<(i64, PasteboardContent)>);
+    impl Pasteboard for MemoryPasteboard {
+        fn change_count(&self) -> i64 {
+            lock(&self.0).0
+        }
+        fn read_text(&self) -> PasteboardContent {
+            lock(&self.0).1.clone()
+        }
+        fn write_text(&self, text: String, private: bool) -> Option<i64> {
+            let mut board = lock(&self.0);
+            board.0 += 1;
+            board.1 = if private {
+                PasteboardContent::Excluded
+            } else {
+                PasteboardContent::Text { text }
+            };
+            Some(board.0)
+        }
+        fn write_image(&self, mime: String, bytes: Vec<u8>) -> Option<i64> {
+            let mut board = lock(&self.0);
+            board.0 += 1;
+            board.1 = PasteboardContent::Image { mime, bytes };
+            Some(board.0)
+        }
+    }
+
+    #[test]
+    fn image_adapter_respects_pause_exclusion_and_own_writes_without_network() {
+        let board = Arc::new(MemoryPasteboard(Mutex::new((0, PasteboardContent::NoText))));
+        let mut sync = Sync::new(AppClipboard(board.clone()));
+        let image =
+            ClipboardImage::new(ImageMime::Png, b"\x89PNG\r\n\x1a\npayload".to_vec()).unwrap();
+        let paused = sync::Pause {
+            receive: true,
+            ..Default::default()
+        };
+        assert_eq!(sync.remote_image(&image, paused), Incoming::Paused);
+        assert_eq!(board.change_count(), 0);
+        assert_eq!(
+            sync.remote_image(&image, sync::Pause::default()),
+            Incoming::Written
+        );
+        assert_eq!(
+            sync.local_change(sync::Pause::default(), true, Instant::now()),
+            Outgoing::OwnWrite
+        );
+        {
+            let mut native = lock(&board.0);
+            native.0 += 1;
+            native.1 = PasteboardContent::Excluded;
+        }
+        assert_eq!(
+            sync.local_change(sync::Pause::default(), true, Instant::now()),
+            Outgoing::Excluded
+        );
+        let mut adapter = AppClipboard(board);
+        assert!(matches!(adapter.read(), Content::Excluded));
+    }
+
+    #[test]
+    fn image_adapter_validates_native_mime_and_size_without_network() {
+        let board = Arc::new(MemoryPasteboard(Mutex::new((0, PasteboardContent::NoText))));
+        let mut adapter = AppClipboard(board.clone());
+        for (mime, bytes) in [
+            ("image/png", b"not an image".to_vec()),
+            ("image/tiff", b"II*\0payload".to_vec()),
+            ("image/jpeg", b"\x89PNG\r\n\x1a\npayload".to_vec()),
+            ("image/png", vec![0; 16 * 1024 * 1024 + 1]),
+        ] {
+            lock(&board.0).1 = PasteboardContent::Image {
+                mime: mime.into(),
+                bytes,
+            };
+            assert!(matches!(adapter.read(), Content::TooLarge));
+        }
+        let bytes = b"\x89PNG\r\n\x1a\npayload".to_vec();
+        lock(&board.0).1 = PasteboardContent::Image {
+            mime: "image/png".into(),
+            bytes: bytes.clone(),
+        };
+        assert!(matches!(adapter.read(), Content::Image(image) if image.bytes == bytes));
+    }
 
     #[test]
     fn the_first_versions_switches_become_the_defaults_once() {

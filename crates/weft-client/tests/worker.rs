@@ -392,6 +392,16 @@ async fn pairs_and_exchanges_text_both_ways() {
         tested.wait(|snapshot| snapshot.pause.all).await;
         phone.session.send_text("while paused").await.unwrap();
         tested.worker.send(Command::SendText("while paused".into()));
+        // The network and command queues are independent. Wait until the
+        // preceding text has been processed before resuming the clipboard.
+        phone
+            .send(tested.id(), &Packet::Ping { message: None })
+            .await;
+        tested
+            .expect_notice(
+                |notice| matches!(notice, Notice::Ping { from, .. } if *from == phone.id()),
+            )
+            .await;
         tested.worker.send(Command::SetPaused(false));
         tested.wait(|snapshot| !snapshot.pause.all).await;
         phone.session.send_text("after the pause").await.unwrap();
@@ -887,6 +897,100 @@ async fn paired(url: &str) -> (Tested, Peer) {
 }
 
 #[tokio::test]
+async fn clipboard_images_are_offered_streamed_verified_and_paused() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut peer) = paired(&url).await;
+        let pc = tested.id();
+        peer.send(
+            pc,
+            &Packet::Capabilities(Features::default().capabilities(false)),
+        )
+        .await;
+        tested
+            .wait(|s| s.peer(&peer.id()).handles("clipboard.image.offer"))
+            .await;
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.resize(1_300_000, 0x23);
+        let image =
+            weft_client::ClipboardImage::new(weft_client::ImageMime::Png, bytes.clone()).unwrap();
+        tested.worker.send(Command::SendImage(image.clone()));
+        let Packet::ClipboardImageOffer(offer) = peer
+            .expect_packet(pc, |p| matches!(p, Packet::ClipboardImageOffer(_)))
+            .await
+        else {
+            unreachable!()
+        };
+        peer.send(
+            pc,
+            &Packet::ClipboardImageAccept {
+                id: offer.id.clone(),
+            },
+        )
+        .await;
+        let mut received = Vec::new();
+        while received.len() < bytes.len() {
+            if let Event::FileChunk {
+                transfer_id,
+                offset,
+                data,
+                ..
+            } = peer.next_any().await
+            {
+                assert_eq!(packets::transfer_id(&transfer_id), offer.id);
+                assert_eq!(offset, received.len() as u64);
+                received.extend(data);
+            }
+        }
+        assert_eq!(received, bytes);
+        let id = [0xa1; 16];
+        let offer = packets::ClipboardImageOffer {
+            id: packets::transfer_id(&id),
+            mime: image.mime,
+            size: bytes.len() as u64,
+            hash: weft_cli::hex(&image.hash()),
+        };
+        peer.send(pc, &Packet::ClipboardImageOffer(offer)).await;
+        peer.expect_packet(pc, |p| matches!(p, Packet::ClipboardImageAccept { .. }))
+            .await;
+        for (index, chunk) in bytes.chunks(100_000).enumerate() {
+            peer.session
+                .send_file_chunk(pc, id, (index * 100_000) as u64, chunk)
+                .await
+                .unwrap();
+            peer.expect_packet(pc, |p| matches!(p, Packet::FileAck { offset, .. } if *offset == ((index * 100_000) + chunk.len()) as u64)).await;
+        }
+        peer.expect_packet(pc, |p| matches!(p, Packet::FileDone { id: done } if done == &packets::transfer_id(&id))).await;
+        tested
+            .expect_notice(
+                |n| matches!(n, Notice::ClipboardImage { image: got, .. } if got == &image),
+            )
+            .await;
+        let bad = [0xa2; 16];
+        let corrupt = packets::ClipboardImageOffer {
+            id: packets::transfer_id(&bad), mime: image.mime, size: 8, hash: "00".repeat(16),
+        };
+        let before = tested.notices.lock().unwrap().len();
+        peer.send(pc, &Packet::ClipboardImageOffer(corrupt)).await;
+        peer.expect_packet(pc, |p| matches!(p, Packet::ClipboardImageAccept { .. })).await;
+        peer.session.send_file_chunk(pc, bad, 0, &bytes[..8]).await.unwrap();
+        peer.expect_packet(pc, |p| matches!(p, Packet::FileCancel { id: cancel } if cancel == &packets::transfer_id(&bad))).await;
+        assert_eq!(tested.notices.lock().unwrap().len(), before);
+        tested.worker.send(Command::SetPaused(true));
+        tested.wait(|s| s.pause.all).await;
+        let before = tested.notices.lock().unwrap().len();
+        peer.session
+            .send_file_chunk(pc, id, 0, &bytes[..8])
+            .await
+            .unwrap();
+        tokio::time::sleep(QUIET).await;
+        assert_eq!(tested.notices.lock().unwrap().len(), before);
+        tested.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn pings_and_links_go_to_the_phone() {
     timed(async {
         let url = start_relay().await;
@@ -1289,7 +1393,10 @@ async fn received_names_are_sanitised() {
             ("../../etc/passwd", "passwd"),
             ("..", "file"),
             ("tab\there?.txt. . ", "tabhere_.txt"),
-            ("con.txt", "_con (1).txt"),
+            // Reuse the exact spelling so this is a collision on both
+            // case-sensitive and case-insensitive filesystems. Lowercase
+            // reserved names are also covered by transfer's pure unit tests.
+            ("CON.txt", "_CON (1).txt"),
         ] {
             phone.send_file(pc, offered, b"data").await;
             let path = tested.received().await;
@@ -1882,8 +1989,8 @@ async fn media_and_volume_go_both_ways() {
         let seen =
             packets_until(&mut phone, pc, |packet| matches!(packet, Packet::Volume(_))).await;
         let kinds: Vec<&str> = seen.iter().map(Packet::kind).collect();
-        assert_eq!(kinds, ["capabilities", "media", "volume"]);
-        let Packet::Media { players } = &seen[1] else {
+        assert_eq!(kinds, ["capabilities", "lan.endpoints", "media", "volume"]);
+        let Packet::Media { players } = &seen[2] else {
             unreachable!();
         };
         assert_eq!(players[0].title, "Second");
@@ -2098,7 +2205,13 @@ async fn covers_go_once_per_connection_before_the_players() {
         let seen = packets_until(&mut phone, pc, is_media).await;
         assert_eq!(
             kinds(&seen),
-            ["capabilities", "media.art", "media.art", "media"]
+            [
+                "capabilities",
+                "lan.endpoints",
+                "media.art",
+                "media.art",
+                "media"
+            ]
         );
         let again: Vec<&str> = seen
             .iter()
@@ -2801,6 +2914,102 @@ async fn commands_are_listed_and_run_by_id_only() {
         let seen = packets_until(&mut phone, pc, is_capabilities).await;
         assert!(!seen.iter().any(is_list), "{seen:?}");
         assert_eq!(*tested.ran.lock().unwrap(), ["echo sleep"]);
+        tested.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_silent_open_lan_stream_falls_back_to_the_relay_in_order() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut phone) = paired(&url).await;
+        let (pc, phone_id) = (tested.id(), phone.id());
+        phone.send(pc, &phone_capabilities()).await;
+        phone.expect_packet(pc, is_capabilities).await;
+        // The LAN listener trusts the devices known when it started: a new
+        // connection, which a second one with the same identity forces,
+        // makes it trust the phone.
+        let intruder = Session::connect(tested.dir.clone()).await.unwrap();
+        tested
+            .wait(|snapshot| matches!(snapshot.status, Status::Offline { .. }))
+            .await;
+        tested.wait(Snapshot::is_connected).await;
+        drop(intruder);
+        // The phone opens a stream to the computer, on the port it announced
+        // last: the earlier listeners are closed.
+        let stream = loop {
+            let Packet::LanEndpoints { port, .. } = phone
+                .expect_packet(pc, |packet| matches!(packet, Packet::LanEndpoints { .. }))
+                .await
+            else {
+                unreachable!();
+            };
+            if let Ok(stream) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                break stream;
+            }
+        };
+        // A text sent on it shows the computer installed the route.
+        let identity = phone.session.identity_arc();
+        let devices = phone.session.state().devices.clone();
+        let mut lan = weft_client::lan::Connection::authenticate(stream, &identity, &devices)
+            .await
+            .unwrap();
+        let text = phone
+            .session
+            .seal_for(pc, weft_protocol::Kind::ClipboardText, b"over the LAN")
+            .unwrap();
+        lan.send(&text).await.unwrap();
+        tested.expect_clipboard(&["over the LAN"]).await;
+
+        let links: Vec<_> = ["a", "b", "c"]
+            .iter()
+            .map(|path| Packet::ShareUrl {
+                url: format!("https://example.org/{path}"),
+            })
+            .collect();
+        for link in &links {
+            tested
+                .worker
+                .send(Command::SendPacket(phone_id, link.clone()));
+        }
+        // The peer reads the first frame but stays silent and holds the TCP
+        // socket open. Its TCP stack took all the bytes without a LAN receipt.
+        let frame = tokio::time::timeout(STEP, lan.receive())
+            .await
+            .unwrap()
+            .unwrap();
+        let first = phone.session.receive_frame(&frame).await.unwrap();
+        let Event::Packet { json, .. } = first else {
+            panic!("{first:?}");
+        };
+        assert_eq!(packets::parse(&json), Parsed::Known(links[0].clone()));
+
+        // The relay brings the three again, in order: the first is dropped
+        // as a replay, the others arrive.
+        let mut seen = Vec::new();
+        while seen.len() < 3 {
+            match phone.next_any().await {
+                Event::Dropped { from, reason } if from == Some(pc) => seen.push(Err(reason)),
+                Event::Packet { from, json } if from == pc => {
+                    if let Parsed::Known(packet @ Packet::ShareUrl { .. }) = packets::parse(&json) {
+                        seen.push(Ok(packet));
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            seen,
+            [
+                Err(weft_cli::DropReason::Replay(
+                    weft_cli::state::ReplayError::Duplicate
+                )),
+                Ok(links[1].clone()),
+                Ok(links[2].clone()),
+            ]
+        );
+        drop(lan);
         tested.stop().await;
     })
     .await;

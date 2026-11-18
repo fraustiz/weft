@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Where received files land below Android 10 (features/FileIo.kt, Downloads). -->
 <paths>
+    <cache-path name="clipboard_images" path="clipboard-images/" />
     <external-path
         name="downloads"
         path="Download/" />

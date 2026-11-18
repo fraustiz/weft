@@ -8,7 +8,10 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.annotation.StringRes
+import androidx.core.content.IntentCompat
+import fr.frohub.weft.features.ImageRead
 import fr.frohub.weft.features.isShareableUrl
+import fr.frohub.weft.features.readClipboardImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -38,6 +41,10 @@ class ClipboardSendActivity : Activity() {
         val launchedDirectly = intent.component?.className == ClipboardSendActivity::class.java.name
         if (!launchedDirectly || intent.action == Intent.ACTION_SEND) {
             done = true
+            if (intent.action == Intent.ACTION_SEND && intent.type in setOf("image/png", "image/jpeg")) {
+                sendSharedImage()
+                return
+            }
             if (intent.action == Intent.ACTION_SEND) sendShared()
             finish()
         }
@@ -65,6 +72,23 @@ class ClipboardSendActivity : Activity() {
         if (isShareableUrl(link)) sendLink(link) else send(text, R.string.toast_text_sent)
     }
 
+    private fun sendSharedImage() {
+        if (intent.clipData?.description?.extras?.getBoolean(EXTRA_IS_SENSITIVE) == true) {
+            toast(R.string.toast_sensitive)
+            return finish()
+        }
+        val uri = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, android.net.Uri::class.java)
+        if (uri == null) { toast(R.string.toast_image_unreadable); return finish() }
+        val app = weft
+        app.core.scope.launch {
+            val message = sendImage(app, uri)
+            withContext(Dispatchers.Main) {
+                Toast.makeText(app, message, Toast.LENGTH_SHORT).show()
+                finish()
+            }
+        }
+    }
+
     private fun sendLink(url: String) {
         val app = weft
         app.core.scope.launch {
@@ -81,7 +105,17 @@ class ClipboardSendActivity : Activity() {
         if (clip.description.extras?.getBoolean(EXTRA_IS_SENSITIVE) == true) {
             return toast(R.string.toast_sensitive)
         }
-        val text = clip.getItemAt(0).text?.toString() ?: return toast(R.string.toast_clipboard_not_text)
+        val item = clip.getItemAt(0)
+        if (item.text == null && item.uri != null) {
+            val app = weft
+            val uri = item.uri
+            app.core.scope.launch {
+                val message = sendImage(app, uri)
+                withContext(Dispatchers.Main) { Toast.makeText(app, message, Toast.LENGTH_SHORT).show() }
+            }
+            return
+        }
+        val text = item.text?.toString() ?: return toast(R.string.toast_clipboard_not_text)
         if (text.isEmpty()) return toast(R.string.toast_clipboard_empty)
         send(text, R.string.toast_clipboard_sent)
     }
@@ -113,11 +147,26 @@ class ClipboardSendActivity : Activity() {
     }
 }
 
+/** Reads and sends an image; returns the toast that tells how it ended. */
+@StringRes
+private suspend fun sendImage(app: WeftApplication, uri: android.net.Uri): Int =
+    when (val read = readClipboardImage(app, uri)) {
+        is ImageRead.Image -> toastFor(app.features.sendClipboardImage(read.mime, read.bytes),
+            R.string.toast_image_requested, R.string.toast_image_too_large)
+        ImageRead.TooLarge -> R.string.toast_image_too_large
+        ImageRead.Unsupported -> R.string.toast_image_unsupported
+        ImageRead.Unreadable -> R.string.toast_image_unreadable
+    }
+
 /** The toast that tells how a send ended. */
 @StringRes
-private fun toastFor(result: SendResult, @StringRes sentMessage: Int): Int = when (result) {
+private fun toastFor(
+    result: SendResult,
+    @StringRes sentMessage: Int,
+    @StringRes tooLarge: Int = R.string.toast_too_large,
+): Int = when (result) {
     is SendResult.Sent -> sentMessage
     SendResult.NotConnected -> R.string.toast_not_connected
     SendResult.NoPairedDevice -> R.string.toast_no_paired_device
-    SendResult.TooLarge -> R.string.toast_too_large
+    SendResult.TooLarge -> tooLarge
 }

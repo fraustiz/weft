@@ -79,6 +79,7 @@ fn main() -> ExitCode {
     let updater = {
         let notifier = Notifier {
             system: system.clone(),
+            clipboard: link.clone(),
         };
         let restart_link = link.clone();
         Updater::new(
@@ -94,6 +95,7 @@ fn main() -> ExitCode {
         let text_link = link.clone();
         let notifier = Notifier {
             system: system.clone(),
+            clipboard: link.clone(),
         };
         Hooks {
             on_text: Box::new(move |text| text_link.remote_text(text)),

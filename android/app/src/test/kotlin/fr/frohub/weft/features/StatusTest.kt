@@ -15,8 +15,12 @@ class StatusTest {
         assertTrue(Packet.RING in all.incoming && Packet.FILE_OFFER in all.outgoing && Packet.STATE_REQUEST in all.incoming)
 
         val some = capabilitiesOf(setOf(Feature.BATTERY))
-        assertEquals(setOf(Packet.CAPABILITIES, Packet.STATE_REQUEST, Packet.BATTERY), some.incoming)
-        assertEquals(setOf(Packet.CAPABILITIES, Packet.STATE_REQUEST, Packet.BATTERY), some.outgoing)
+        val expected = setOf(Packet.CAPABILITIES, Packet.STATE_REQUEST, Packet.BATTERY,
+            Packet.CLIPBOARD_IMAGE_OFFER, Packet.CLIPBOARD_IMAGE_ACCEPT,
+            Packet.FILE_ACK, Packet.FILE_DONE, Packet.FILE_CANCEL, Packet.FILE_REJECT)
+        assertEquals(expected, some.incoming)
+        assertEquals(expected, some.outgoing)
+        assertFalse(Packet.FILE_OFFER in some.incoming || Packet.FILE_ACCEPT in some.outgoing)
     }
 
     @Test

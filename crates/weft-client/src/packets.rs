@@ -9,13 +9,16 @@
 use serde::{Deserialize, Serialize};
 
 use crate::media::{self, Cover};
+use crate::sync::ImageMime;
 
 /// The `platform` this app announces: the one it is built for.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 pub const PLATFORM: &str = "windows";
 /// The `platform` this app announces: the one it is built for.
-#[cfg(target_os = "macos")]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub const PLATFORM: &str = "macos";
+#[cfg(target_os = "linux")]
+pub const PLATFORM: &str = "linux";
 
 /// The largest file a transfer may carry: 4 GiB.
 pub const MAX_FILE_SIZE: u64 = 4 << 30;
@@ -132,6 +135,20 @@ pub enum Packet {
     },
     #[serde(rename = "command.run")]
     CommandRun { id: String },
+    #[serde(rename = "session.rekey")]
+    SessionRekey(SessionRekey),
+    #[serde(rename = "session.rekey.ack")]
+    SessionRekeyAck { epoch: u64 },
+    #[serde(rename = "clipboard.image.offer")]
+    ClipboardImageOffer(ClipboardImageOffer),
+    #[serde(rename = "clipboard.image.accept")]
+    ClipboardImageAccept { id: String },
+    #[serde(rename = "lan.endpoints")]
+    LanEndpoints {
+        port: u16,
+        #[serde(default)]
+        addrs: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,6 +198,45 @@ pub struct FileOffer {
     pub size: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime: Option<String>,
+}
+
+/// Ephemeral X25519 key proposal for `epoch` (`"session.rekey"`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRekey {
+    pub epoch: u64,
+    #[serde(with = "base64_key")]
+    pub public_key: [u8; 32],
+}
+
+/// 32-byte public key encoded as standard base64 with padding.
+mod base64_key {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(key: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&weft_protocol::base64_encode(key))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 32], D::Error> {
+        let text = String::deserialize(deserializer)?;
+        if text.len() > 48 {
+            return Err(D::Error::custom("too long"));
+        }
+        let bytes =
+            weft_protocol::base64_decode(&text).ok_or_else(|| D::Error::custom("not base64"))?;
+        bytes
+            .try_into()
+            .map_err(|_| D::Error::custom("expected 32-byte public key"))
+    }
+}
+
+/// Offer of an in-memory clipboard image streamed via `0x08` file chunks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipboardImageOffer {
+    pub id: String,
+    pub mime: ImageMime,
+    pub size: u64,
+    pub hash: String,
 }
 
 /// A notification of the phone. Missing texts are empty, missing flags off.
@@ -713,6 +769,11 @@ const KNOWN: &[&str] = &[
     "presenter",
     "command.list",
     "command.run",
+    "session.rekey",
+    "session.rekey.ack",
+    "clipboard.image.offer",
+    "clipboard.image.accept",
+    "lan.endpoints",
 ];
 
 pub fn parse(json: &str) -> Parsed {
@@ -727,6 +788,8 @@ pub fn parse(json: &str) -> Parsed {
     }
     match serde_json::from_value(serde_json::Value::Object(object)) {
         Ok(Packet::MediaArt(art)) if !art.is_valid() => Parsed::Invalid,
+        Ok(Packet::SessionRekey(rekey)) if rekey.epoch == 0 => Parsed::Invalid,
+        Ok(Packet::SessionRekeyAck { epoch: 0 }) => Parsed::Invalid,
         Ok(packet) => Parsed::Known(packet),
         Err(_) => Parsed::Invalid,
     }
@@ -1292,5 +1355,61 @@ mod tests {
         }
         let long = format!("https://example.com/{}", "a".repeat(MAX_URL_LEN));
         assert!(!is_shareable_url(&long));
+    }
+
+    #[test]
+    fn rekey_image_and_lan_packets_round_trip_and_validate() {
+        let rekey = Packet::SessionRekey(SessionRekey {
+            epoch: 3,
+            public_key: [0x5a; 32],
+        });
+        assert_eq!(rekey.kind(), "session.rekey");
+        assert_eq!(parse(&rekey.to_json()), Parsed::Known(rekey));
+        assert_eq!(
+            parse(
+                r#"{"type":"session.rekey","epoch":0,"publicKey":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}"#
+            ),
+            Parsed::Invalid
+        );
+        assert_eq!(
+            parse(r#"{"type":"session.rekey","epoch":1,"publicKey":"AA=="}"#),
+            Parsed::Invalid
+        );
+
+        let ack = Packet::SessionRekeyAck { epoch: 3 };
+        assert_eq!(ack.kind(), "session.rekey.ack");
+        assert_eq!(parse(&ack.to_json()), Parsed::Known(ack));
+        assert_eq!(
+            parse(r#"{"type":"session.rekey.ack","epoch":0}"#),
+            Parsed::Invalid
+        );
+
+        let img_offer = Packet::ClipboardImageOffer(ClipboardImageOffer {
+            id: "ab".repeat(16),
+            mime: ImageMime::Png,
+            size: 4096,
+            hash: "cd".repeat(16),
+        });
+        assert_eq!(img_offer.kind(), "clipboard.image.offer");
+        assert_eq!(parse(&img_offer.to_json()), Parsed::Known(img_offer));
+        assert_eq!(
+            parse(
+                r#"{"type":"clipboard.image.offer","id":"00","mime":"image/gif","size":10,"hash":"00"}"#
+            ),
+            Parsed::Invalid
+        );
+
+        let img_accept = Packet::ClipboardImageAccept {
+            id: "ab".repeat(16),
+        };
+        assert_eq!(img_accept.kind(), "clipboard.image.accept");
+        assert_eq!(parse(&img_accept.to_json()), Parsed::Known(img_accept));
+
+        let lan = Packet::LanEndpoints {
+            port: 51234,
+            addrs: vec!["192.168.1.42".into(), "10.0.0.5".into()],
+        };
+        assert_eq!(lan.kind(), "lan.endpoints");
+        assert_eq!(parse(&lan.to_json()), Parsed::Known(lan));
     }
 }

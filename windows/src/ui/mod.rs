@@ -82,8 +82,10 @@ impl PartialEq for Shell {
 /// Runtime.
 pub fn run(shell: Shell) -> Result<(), String> {
     settings_nav().state.lock().unwrap().1 = false;
+    crate::window::reset_drops();
     let result =
         windows_reactor::App::run_component::<app::Weft>(shell).map_err(|err| err.to_string());
+    crate::window::stop_drops();
     let nav = settings_nav();
     nav.state.lock().unwrap().1 = true;
     nav.changed.notify_all();

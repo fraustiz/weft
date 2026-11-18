@@ -56,6 +56,17 @@ pub fn sign_seed_keypair(
     (pk, sk)
 }
 
+/// `crypto_kx_keypair` → fresh random (pk, sk).
+pub fn kx_keypair() -> ([u8; KX_PK_BYTES], [u8; KX_SK_BYTES]) {
+    init();
+    let mut pk = [0u8; KX_PK_BYTES];
+    let mut sk = [0u8; KX_SK_BYTES];
+    // SAFETY: both buffers have the sizes libsodium expects.
+    let rc = unsafe { ffi::crypto_kx_keypair(pk.as_mut_ptr(), sk.as_mut_ptr()) };
+    assert_eq!(rc, 0, "crypto_kx_keypair failed");
+    (pk, sk)
+}
+
 /// `crypto_kx_seed_keypair` → (pk, sk).
 pub fn kx_seed_keypair(seed: &[u8; KX_SEED_BYTES]) -> ([u8; KX_PK_BYTES], [u8; KX_SK_BYTES]) {
     init();

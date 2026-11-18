@@ -369,4 +369,9 @@
     <string name="updates_error_install">La mise à jour n’a pas pu être installée.</string>
     <string name="updates_auto">Rechercher automatiquement</string>
     <string name="updates_auto_body">Au plus une fois par jour, au démarrage de Weft</string>
+    <string name="share_clipboard_image_label">Copier l’image sur mes appareils</string>
+    <string name="toast_image_requested">Envoi de l’image demandé</string>
+    <string name="toast_image_too_large">Image trop lourde pour être envoyée (16 Mo au maximum)</string>
+    <string name="toast_image_unsupported">Seules les images PNG ou JPEG peuvent être envoyées</string>
+    <string name="toast_image_unreadable">L’image ne peut pas être lue</string>
 </resources>

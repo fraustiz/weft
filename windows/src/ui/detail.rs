@@ -172,17 +172,22 @@ fn actions(
         return secondary(text).into();
     }
     let features = weft.snapshot.features;
-    let mut buttons = Vec::new();
+    let mut file_buttons = Vec::new();
     let files = features.files && peer.handles("file.offer");
     if files {
-        buttons.push(primary_button(
+        file_buttons.push(primary_button(
             t("Send files…", "Envoyer des fichiers…"),
             context.message(Message::PickFiles),
         ));
+        file_buttons.push(button(
+            t("Paste files", "Coller des fichiers"),
+            context.message(Message::PasteFiles),
+        ));
     }
+    let mut other_buttons = Vec::new();
     if features.ring && peer.handles("ring") {
         let ringing = weft.rang.is_some_and(|(rang, _)| rang == device);
-        buttons.push(if ringing {
+        other_buttons.push(if ringing {
             button(
                 t("Stop ringing", "Arrêter la sonnerie"),
                 context.message(Message::StopRinging),
@@ -192,22 +197,22 @@ fn actions(
         });
     }
     if peer.handles("ping") {
-        buttons.push(button(t("Ping", "Ping"), context.message(Message::Ping)));
+        other_buttons.push(button(t("Ping", "Ping"), context.message(Message::Ping)));
     }
     let links = features.links && peer.handles("share.url");
     if links {
-        buttons.push(button(
+        other_buttons.push(button(
             t("Send link…", "Envoyer un lien…"),
             context.message(Message::OpenLink),
         ));
     }
     if features.sms && peer.handles("sms.conversations.request") {
-        buttons.push(button(
+        other_buttons.push(button(
             t("Messages", "Messages"),
             context.message(Message::OpenMessages),
         ));
     }
-    if buttons.is_empty() {
+    if file_buttons.is_empty() && other_buttons.is_empty() {
         let text = if is_french() {
             format!("Rien à faire avec {name} pour l'instant")
         } else {
@@ -215,19 +220,32 @@ fn actions(
         };
         return secondary(text).into();
     }
-    let mut views = vec![row(buttons)];
+    let mut views = Vec::new();
+    if !file_buttons.is_empty() {
+        views.push(row(file_buttons));
+    }
+    if !other_buttons.is_empty() {
+        views.push(row(other_buttons));
+    }
     if links && let Some(link) = &weft.link {
         views.push(link_box(link, context));
     }
     if files {
-        views.push(
-            secondary(t(
-                "Or drop files on this window",
-                "Ou déposez des fichiers sur cette fenêtre",
-            ))
-            .font_size(12.0)
-            .into(),
-        );
+        let empty_paste = weft
+            .paste_empty_until
+            .is_some_and(|until| std::time::Instant::now() < until);
+        let hint = if empty_paste {
+            t(
+                "No files on the clipboard",
+                "Aucun fichier dans le presse-papiers",
+            )
+        } else {
+            t(
+                "Tip: drop files onto this window to send them",
+                "Astuce : déposez des fichiers sur la fenêtre pour les envoyer",
+            )
+        };
+        views.push(secondary(hint).font_size(12.0).into());
     }
     column(8.0, views)
 }

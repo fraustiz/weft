@@ -16,7 +16,8 @@ use weft_windows::clipboard::{SystemClipboard, wide};
 use weft_windows::sync::{Clipboard, Content};
 use windows_sys::Win32::Foundation::{GlobalFree, HWND};
 use windows_sys::Win32::System::DataExchange::{
-    CloseClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    CloseClipboard, IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW,
+    SetClipboardData,
 };
 use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, HWND_MESSAGE};
@@ -143,4 +144,28 @@ fn content_marked_for_exclusion_is_not_read() {
     // A new write carries no mark: it replaces everything.
     clipboard.write("unmarked").unwrap();
     assert!(is_text(clipboard.read(), "unmarked"));
+}
+
+#[test]
+#[ignore = "replaces the content of the real clipboard"]
+fn png_round_trip_and_exclusion() {
+    // Minimal 1x1 red RGB PNG.
+    const ONE_BY_ONE_PNG: &[u8] = &[
+        0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H', b'D',
+        b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+        0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0F, b'I', b'D', b'A', b'T', 0x78, 0x01, 0x01, 0x04,
+        0x00, 0xFB, 0xFF, 0x00, 0xFF, 0x00, 0x00, 0x02, 0x00, 0x01, 0x00, 0x43, 0xBE, 0xD4, 0x36,
+        0x00, 0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82,
+    ];
+    const CF_DIB: u32 = 8;
+
+    let owner = Owner::new();
+    let mut clipboard = SystemClipboard::new(owner.0);
+    assert!(clipboard.write_png_bytes(ONE_BY_ONE_PNG).is_some());
+    assert_eq!(clipboard.read_png_bytes().as_deref(), Some(ONE_BY_ONE_PNG));
+    // Legacy applications see CF_DIB alongside "PNG".
+    assert_ne!(unsafe { IsClipboardFormatAvailable(CF_DIB) }, 0);
+
+    add_marker(&owner, "ExcludeClipboardContentFromMonitorProcessing", 0);
+    assert!(clipboard.read_png_bytes().is_none());
 }

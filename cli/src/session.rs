@@ -5,13 +5,13 @@
 //! [`StateDir`]: every change (trust, counters, replay state) goes through
 //! [`StateDir::update`], so it is on disk before anything depends on it.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::convert::Infallible;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -21,12 +21,12 @@ use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 use weft_protocol::{
     AUTH_ACCEPTED, Challenge, ControlError, ControlFrame, FrameType, HEADER_LEN, Header, Identity,
     Kind, MAX_CLIPBOARD_TEXT_LEN, MAX_GROUP_SIZE, MAX_PACKET_LEN, MAX_RELAY_URL_LEN, PairRequest,
-    PairingCode, PeerKeys, VERSION, check_relay_name, classify, decode_device_added,
+    PairingCode, PeerKeys, SessionKeys, VERSION, check_relay_name, classify, decode_device_added,
     decode_device_name, decode_device_removed, decode_file_chunk, decode_welcome,
     device_id_from_sign_pk, encode_device_added, encode_device_name, encode_device_removed,
     encode_file_chunk, encode_welcome, open, random_message_id, random_pairing_id,
     random_pairing_secret, seal, session_keys, sign_auth, verify_invite_request,
-    verify_pair_request,
+    verify_pair_request, zero_key,
 };
 
 use crate::state::{ReplayError, State, StateDir, TrustedDevice};
@@ -55,6 +55,65 @@ pub const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 /// failure, up to [`MAX_BACKOFF`].
 pub const MIN_BACKOFF: Duration = Duration::from_secs(1);
 pub const MAX_BACKOFF: Duration = Duration::from_secs(30);
+/// How long the previous `rx` key is kept after an epoch transition so
+/// in-flight live envelopes still decrypt cleanly.
+pub const REKEY_GRACE: Duration = Duration::from_secs(30);
+
+/// Ensures an error while reserving a persisted counter also clears the
+/// temporary encryption key. This buffer is never logged or persisted.
+struct SecretKey([u8; 32]);
+
+impl Drop for SecretKey {
+    fn drop(&mut self) {
+        zero_key(&mut self.0);
+    }
+}
+
+/// Per-peer ephemeral forward-secrecy session state (in memory only).
+#[derive(Default)]
+struct PeerEpoch {
+    /// Active acknowledged `(epoch, keys)` used to seal and open live frames.
+    epoch_keys: Option<(u64, SessionKeys)>,
+    /// Derived `(epoch, keys)` waiting for `session.rekey.ack` before switching `tx`.
+    staged: Option<(u64, SessionKeys)>,
+    /// Previous `rx` key retained for [`REKEY_GRACE`] during transition.
+    prev_rx: Option<([u8; 32], Instant)>,
+    /// Live frames sealed under the active `epoch_keys`.
+    sent_frames: u64,
+    /// When the active `epoch_keys` took effect.
+    activated_at: Option<Instant>,
+}
+
+impl PeerEpoch {
+    fn expire_prev(&mut self, now: Instant) {
+        if let Some((_, since)) = self.prev_rx
+            && now.saturating_duration_since(since) >= REKEY_GRACE
+            && let Some((mut prev, _)) = self.prev_rx.take()
+        {
+            zero_key(&mut prev);
+        }
+    }
+
+    fn clear(&mut self) {
+        if let Some((_, mut keys)) = self.epoch_keys.take() {
+            keys.zero();
+        }
+        if let Some((_, mut keys)) = self.staged.take() {
+            keys.zero();
+        }
+        if let Some((mut prev, _)) = self.prev_rx.take() {
+            zero_key(&mut prev);
+        }
+        self.sent_frames = 0;
+        self.activated_at = None;
+    }
+}
+
+impl Drop for PeerEpoch {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
 
 /// Where a relay url points to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,18 +349,20 @@ async fn connect_ws(url: &str, identity: &Identity) -> Result<Ws> {
 pub struct Session {
     dir: StateDir,
     state: State,
-    identity: Identity,
+    identity: Arc<Identity>,
     ws: Ws,
     /// Frames read ahead (while waiting for a pong or a pairing message)
     /// and not handled yet.
     pending: VecDeque<Vec<u8>>,
+    /// Per-peer ephemeral forward-secrecy session keys.
+    ephemeral: BTreeMap<[u8; 16], PeerEpoch>,
 }
 
 impl Session {
     /// Loads the state from `dir`, connects to its relay and authenticates.
     pub async fn connect(dir: StateDir) -> Result<Session> {
         let state = dir.load()?;
-        let identity = state.identity();
+        let identity = Arc::new(state.identity());
         let ws = connect_ws(&state.relay_url, &identity).await?;
         tracing::debug!(relay = %state.relay_url, device = %short_id(&identity.device_id()), "connected");
         Ok(Session {
@@ -310,11 +371,18 @@ impl Session {
             identity,
             ws,
             pending: VecDeque::new(),
+            ephemeral: BTreeMap::new(),
         })
     }
 
     pub fn identity(&self) -> &Identity {
         &self.identity
+    }
+
+    /// Shared handle to this session's [`Identity`], for authenticating
+    /// direct LAN connections without copying secret keys.
+    pub fn identity_arc(&self) -> Arc<Identity> {
+        self.identity.clone()
     }
 
     pub fn device_id(&self) -> [u8; 16] {
@@ -386,16 +454,155 @@ impl Session {
         }
     }
 
-    /// Seals `plaintext` for `peer` and sends it. The counter is incremented
-    /// and saved before the envelope leaves.
-    async fn send_envelope(
+    /// Reloads `state.json` from disk and returns it.
+    pub fn reload_state(&mut self) -> Result<&State> {
+        self.state = self.dir.load()?;
+        Ok(&self.state)
+    }
+
+    /// Static [`SessionKeys`] derived with the trusted device `peer_id`.
+    pub fn static_session_keys(&self, peer_id: &[u8; 16]) -> Result<SessionKeys> {
+        let peer = self.trusted_device(peer_id)?;
+        Ok(session_keys(&self.identity, peer_id, &peer.kx_pk)?)
+    }
+
+    /// Stages derived ephemeral `keys` for `epoch` with `peer_id` so incoming
+    /// frames sealed under `epoch` already open while waiting for the peer's
+    /// `session.rekey.ack`.
+    pub fn stage_epoch_keys(&mut self, peer_id: [u8; 16], epoch: u64, mut keys: SessionKeys) {
+        if self
+            .active_epoch(&peer_id)
+            .is_some_and(|active| epoch <= active)
+        {
+            keys.zero();
+            return;
+        }
+        let entry = self.ephemeral.entry(peer_id).or_default();
+        if let Some((_, mut prev_staged)) = entry.staged.take() {
+            prev_staged.zero();
+        }
+        entry.staged = Some((epoch, keys));
+    }
+
+    /// Promotes the staged ephemeral keys for `epoch` to the active epoch of
+    /// `peer_id`, moving the previous `rx` key (or static `rx` on the first
+    /// activation) into `prev_rx` for [`REKEY_GRACE`]. Returns `true` if
+    /// `epoch` was staged and activated.
+    pub fn activate_epoch(&mut self, peer_id: [u8; 16], epoch: u64) -> Result<bool> {
+        let static_keys = self.static_session_keys(&peer_id)?;
+        let now = Instant::now();
+        let entry = self.ephemeral.entry(peer_id).or_default();
+        let matches = entry
+            .staged
+            .as_ref()
+            .is_some_and(|(staged_epoch, _)| *staged_epoch == epoch);
+        if !matches {
+            return Ok(false);
+        }
+        let (_, new_keys) = entry.staged.take().expect("checked above");
+        let prev = match entry.epoch_keys.take() {
+            Some((_, mut old_keys)) => {
+                let rx = old_keys.rx;
+                old_keys.zero();
+                rx
+            }
+            None => static_keys.rx,
+        };
+        if let Some((mut old_prev, _)) = entry.prev_rx.take() {
+            zero_key(&mut old_prev);
+        }
+        entry.prev_rx = Some((prev, now));
+        entry.epoch_keys = Some((epoch, new_keys));
+        entry.sent_frames = 0;
+        entry.activated_at = Some(now);
+        Ok(true)
+    }
+
+    /// Stages and immediately activates ephemeral `keys` for `epoch` with
+    /// `peer_id`.
+    pub fn set_epoch_keys(
+        &mut self,
+        peer_id: [u8; 16],
+        epoch: u64,
+        keys: SessionKeys,
+    ) -> Result<()> {
+        self.stage_epoch_keys(peer_id, epoch, keys);
+        self.activate_epoch(peer_id, epoch)?;
+        Ok(())
+    }
+
+    /// Active acknowledged ephemeral epoch with `peer_id`, if any.
+    pub fn active_epoch(&self, peer_id: &[u8; 16]) -> Option<u64> {
+        self.ephemeral
+            .get(peer_id)
+            .and_then(|entry| entry.epoch_keys.as_ref().map(|(epoch, _)| *epoch))
+    }
+
+    /// Staged (not yet acknowledged) ephemeral epoch with `peer_id`, if any.
+    pub fn staged_epoch(&self, peer_id: &[u8; 16]) -> Option<u64> {
+        self.ephemeral
+            .get(peer_id)
+            .and_then(|entry| entry.staged.as_ref().map(|(epoch, _)| *epoch))
+    }
+
+    /// Live frames sealed under the active epoch of `peer_id`.
+    pub fn epoch_sent_frames(&self, peer_id: &[u8; 16]) -> u64 {
+        self.ephemeral
+            .get(peer_id)
+            .map_or(0, |entry| entry.sent_frames)
+    }
+
+    /// Whether `peer_id` has an active epoch that has reached `max_frames`
+    /// sent frames or `max_age` elapsed time.
+    pub fn epoch_needs_rotation(
+        &self,
+        peer_id: &[u8; 16],
+        max_age: Duration,
+        max_frames: u64,
+    ) -> bool {
+        let Some(entry) = self.ephemeral.get(peer_id) else {
+            return false;
+        };
+        if entry.epoch_keys.is_none() || entry.staged.is_some() {
+            return false;
+        }
+        entry.sent_frames >= max_frames
+            || entry
+                .activated_at
+                .is_some_and(|at| Instant::now().saturating_duration_since(at) >= max_age)
+    }
+
+    /// Drops and zeroes any ephemeral keys held for `peer_id`.
+    pub fn clear_peer_epoch(&mut self, peer_id: &[u8; 16]) {
+        self.ephemeral.remove(peer_id);
+    }
+
+    /// Seals `plaintext` for `peer` using static keys for offline-eligible
+    /// kinds (`0x03`–`0x06`) and active `epoch_keys` (when acknowledged) for
+    /// live kinds (`0x01`, `0x02`, `0x07`, `0x08`). Increments and saves the
+    /// counter before returning the encoded frame.
+    fn seal_device_envelope(
         &mut self,
         peer: &TrustedDevice,
         kind: Kind,
         plaintext: &[u8],
-    ) -> Result<()> {
+    ) -> Result<Vec<u8>> {
         let peer_id = peer.device_id();
-        let keys = session_keys(&self.identity, &peer_id, &peer.kx_pk)?;
+        let mut static_keys = session_keys(&self.identity, &peer_id, &peer.kx_pk)?;
+        let mut tx = SecretKey(static_keys.tx);
+        let used_epoch = if kind.is_static() {
+            false
+        } else if let Some((_, epoch_keys)) = self
+            .ephemeral
+            .get(&peer_id)
+            .and_then(|entry| entry.epoch_keys.as_ref())
+        {
+            tx.0 = epoch_keys.tx;
+            true
+        } else {
+            false
+        };
+        static_keys.zero();
         let (counter, state) = self.dir.update(|state| state.next_counter(&peer_id))?;
         self.state = state;
         let header = Header {
@@ -406,7 +613,36 @@ impl Session {
             message_id: random_message_id(),
             counter,
         };
-        let frame = seal(&header, plaintext, &keys.tx)?;
+        let frame_res = seal(&header, plaintext, &tx.0);
+        let frame = frame_res?;
+        if used_epoch && let Some(entry) = self.ephemeral.get_mut(&peer_id) {
+            entry.sent_frames += 1;
+        }
+        Ok(frame)
+    }
+
+    /// Seals an envelope of `kind` for the trusted device `to` and returns
+    /// the wire frame without sending it, so a caller can send over an
+    /// authenticated LAN stream with relay fallback.
+    pub fn seal_for(&mut self, to: [u8; 16], kind: Kind, plaintext: &[u8]) -> Result<Vec<u8>> {
+        if kind == Kind::Packet {
+            let text =
+                std::str::from_utf8(plaintext).map_err(|_| weft_protocol::Error::InvalidUtf8)?;
+            check_packet_len(text)?;
+        }
+        let device = self.trusted_device(&to)?;
+        self.seal_device_envelope(&device, kind, plaintext)
+    }
+
+    /// Seals `plaintext` for `peer` and sends it over the relay WebSocket.
+    /// The counter is incremented and saved before the envelope leaves.
+    async fn send_envelope(
+        &mut self,
+        peer: &TrustedDevice,
+        kind: Kind,
+        plaintext: &[u8],
+    ) -> Result<()> {
+        let frame = self.seal_device_envelope(peer, kind, plaintext)?;
         self.send_frame(frame).await
     }
 
@@ -538,11 +774,32 @@ impl Session {
         timeout: Option<Duration>,
         interrupt: F,
     ) -> Result<Next<F::Output>> {
+        self.next_event_with_lan(timeout, interrupt, std::future::pending())
+            .await
+    }
+
+    /// Also receives accepted LAN envelopes. An already queued LAN envelope
+    /// goes first, so a subsequent frame sent through the relay cannot pass it.
+    pub async fn next_event_with_lan<F: Future>(
+        &mut self,
+        timeout: Option<Duration>,
+        interrupt: F,
+        lan: impl Future<Output = F::Output>,
+    ) -> Result<Next<F::Output>> {
         let deadline = timeout.map(|timeout| Instant::now() + timeout);
+        let mut lan = std::pin::pin!(lan);
         let frame = tokio::select! {
             frame = self.next_frame(deadline) => frame?,
             output = interrupt => return Ok(Next::Interrupted(output)),
+            output = &mut lan => return Ok(Next::Interrupted(output)),
         };
+        // A LAN frame can arrive during the WebSocket poll above.
+        if let Some(output) = lan.now_or_never() {
+            if let Some(frame) = frame {
+                self.pending.push_front(frame);
+            }
+            return Ok(Next::Interrupted(output));
+        }
         match frame {
             Some(frame) => self.handle(&frame).await.map(Next::Event),
             None => Ok(Next::Idle),
@@ -563,6 +820,13 @@ impl Session {
         }
     }
 
+    /// Handles one externally received envelope or control frame (such as an
+    /// envelope from an authenticated LAN TCP stream) through the exact same
+    /// decryption and 1024-message replay window as WebSocket frames.
+    pub async fn receive_frame(&mut self, frame: &[u8]) -> Result<Event> {
+        self.handle(frame).await
+    }
+
     /// Handles one frame to the end: applies it, then sends this device's
     /// name to the devices it made this one trust. Not cancel-safe: dropped
     /// half-way, the event is lost and the names may not be sent.
@@ -575,6 +839,7 @@ impl Session {
                 self.send_name(&devices).await?;
             }
             Event::DeviceAdded { device, .. } => self.send_name(&[*device]).await?,
+            Event::DeviceRemoved { device, .. } => self.clear_peer_epoch(device),
             _ => {}
         }
         Ok(event)
@@ -634,15 +899,22 @@ impl Session {
         if header.recipient != self.identity.device_id() {
             return Ok(dropped(DropReason::NotForUs));
         }
+        let now = Instant::now();
+        if let Some(entry) = self.ephemeral.get_mut(&sender) {
+            entry.expire_prev(now);
+        }
         let identity = &self.identity;
+        let peer_epoch = self.ephemeral.get(&sender);
         let (event, state) = self.dir.update(|state| {
             let Some(device) = state.device(&sender) else {
                 return dropped(DropReason::UnknownSender);
             };
-            let Ok(keys) = session_keys(identity, &sender, &device.kx_pk) else {
+            let Ok(mut static_keys) = session_keys(identity, &sender, &device.kx_pk) else {
                 return dropped(DropReason::Undecryptable);
             };
-            let Ok((header, plaintext)) = open(frame, &keys.rx) else {
+            let opened = open_with_peer_keys(frame, header.kind, &static_keys.rx, peer_epoch, now);
+            static_keys.zero();
+            let Ok((header, plaintext)) = opened else {
                 return dropped(DropReason::Undecryptable);
             };
             // Only recorded once authenticated, so a forged header cannot
@@ -1026,12 +1298,15 @@ impl Session {
 
         let new_device = self.state.device(&joiner).cloned().expect("trusted above");
         let members: Vec<PeerKeys> = others.iter().map(TrustedDevice::keys).collect();
-        self.send_envelope(&new_device, Kind::Welcome, &encode_welcome(&members)?)
-            .await?;
+        // As with invitations, queue membership changes before welcoming the
+        // new device. Once welcomed it can immediately send its name to every
+        // member, whose incoming relay queue must already contain DeviceAdded.
         for other in &others {
             self.send_envelope(other, Kind::DeviceAdded, &encode_device_added(&keys))
                 .await?;
         }
+        self.send_envelope(&new_device, Kind::Welcome, &encode_welcome(&members)?)
+            .await?;
         self.send_name(&[joiner]).await?;
         self.settle().await?;
         Ok(joiner)
@@ -1160,6 +1435,7 @@ impl Session {
         }
         let (_, state) = self.dir.update(|state| state.untrust(&device_id))?;
         self.state = state;
+        self.clear_peer_epoch(&device_id);
         let remaining = self.state.devices.clone();
         let plaintext = encode_device_removed(&device_id);
         for other in &remaining {
@@ -1174,6 +1450,46 @@ impl Session {
     pub async fn close(mut self) {
         let _ = tokio::time::timeout(Duration::from_secs(2), self.ws.close(None)).await;
     }
+}
+
+/// Opens `frame` according to the envelope kind and the peer's ephemeral
+/// epoch state:
+/// - Offline-eligible kinds (`0x03`–`0x06`) ALWAYS open with `static_rx`.
+/// - Live kinds (`0x01`, `0x02`, `0x07`, `0x08`) try `epoch_keys.rx` first,
+///   then `staged.rx` (during handshake), then `prev_rx` (if within
+///   [`REKEY_GRACE`]), then `static_rx` (before epoch activation).
+fn open_with_peer_keys(
+    frame: &[u8],
+    kind: Kind,
+    static_rx: &[u8; 32],
+    peer_epoch: Option<&PeerEpoch>,
+    now: Instant,
+) -> Result<(Header, Vec<u8>), weft_protocol::Error> {
+    if kind.is_static() {
+        return open(frame, static_rx);
+    }
+    if let Some(entry) = peer_epoch {
+        if let Some((_, epoch_keys)) = &entry.epoch_keys
+            && let Ok(opened) = open(frame, &epoch_keys.rx)
+        {
+            return Ok(opened);
+        }
+        if let Some((_, staged_keys)) = &entry.staged
+            && let Ok(opened) = open(frame, &staged_keys.rx)
+        {
+            return Ok(opened);
+        }
+        if let Some((prev_rx, since)) = &entry.prev_rx
+            && now.saturating_duration_since(*since) < REKEY_GRACE
+            && let Ok(opened) = open(frame, prev_rx)
+        {
+            return Ok(opened);
+        }
+        if entry.epoch_keys.is_some() {
+            return Err(weft_protocol::Error::DecryptionFailed);
+        }
+    }
+    open(frame, static_rx)
 }
 
 /// Checks a packet's length before a counter is spent on it, with the
@@ -1352,4 +1668,140 @@ pub fn is_fatal(err: &Error) -> bool {
             | Error::InvalidUrl(..)
             | Error::Protocol(weft_protocol::Error::RelayNameMismatch)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use weft_protocol::{RekeyKeyPair, derive_epoch_keys};
+
+    use super::*;
+
+    #[test]
+    fn static_envelopes_stay_on_static_keys_while_live_envelopes_follow_epochs() {
+        let a = Identity::from_seeds([1; 32], [2; 32]);
+        let b = Identity::from_seeds([3; 32], [4; 32]);
+        let static_a = session_keys(&a, &b.device_id(), &b.kx_pk()).unwrap();
+        let static_b = session_keys(&b, &a.device_id(), &a.kx_pk()).unwrap();
+
+        let ephem_a = RekeyKeyPair::generate();
+        let ephem_b = RekeyKeyPair::generate();
+        let epoch1_a = derive_epoch_keys(
+            &static_a,
+            1,
+            &a.device_id(),
+            &b.device_id(),
+            &ephem_a,
+            ephem_b.public_key(),
+        )
+        .unwrap();
+        let epoch1_b = derive_epoch_keys(
+            &static_b,
+            1,
+            &b.device_id(),
+            &a.device_id(),
+            &ephem_b,
+            ephem_a.public_key(),
+        )
+        .unwrap();
+
+        let now = Instant::now();
+        let make_frame = |kind: Kind, counter: u64, plaintext: &[u8], tx: &[u8; 32]| {
+            let header = Header {
+                version: VERSION,
+                kind,
+                sender: a.device_id(),
+                recipient: b.device_id(),
+                message_id: [counter as u8; 16],
+                counter,
+            };
+            seal(&header, plaintext, tx).unwrap()
+        };
+
+        let static_text = make_frame(Kind::ClipboardText, 1, b"before", &static_a.tx);
+        let epoch1_text = make_frame(Kind::ClipboardText, 2, b"after", &epoch1_a.tx);
+        let static_name = make_frame(Kind::DeviceName, 3, b"Laptop", &static_a.tx);
+        let wrong_epoch_name = make_frame(Kind::DeviceName, 4, b"Laptop", &epoch1_a.tx);
+
+        // Before epoch activation: static live envelopes open cleanly.
+        assert_eq!(
+            open_with_peer_keys(&static_text, Kind::ClipboardText, &static_b.rx, None, now)
+                .unwrap()
+                .1,
+            b"before"
+        );
+
+        // Epoch 1 activated with `prev_rx` holding static_b.rx for 30s.
+        let mut peer_epoch = PeerEpoch {
+            epoch_keys: Some((1, epoch1_b)),
+            staged: None,
+            prev_rx: Some((static_b.rx, now)),
+            sent_frames: 0,
+            activated_at: Some(now),
+        };
+
+        // Epoch-encrypted live envelope opens first.
+        assert_eq!(
+            open_with_peer_keys(
+                &epoch1_text,
+                Kind::ClipboardText,
+                &static_b.rx,
+                Some(&peer_epoch),
+                now,
+            )
+            .unwrap()
+            .1,
+            b"after"
+        );
+        // In-flight static live envelope still opens during the 30s grace window.
+        assert_eq!(
+            open_with_peer_keys(
+                &static_text,
+                Kind::ClipboardText,
+                &static_b.rx,
+                Some(&peer_epoch),
+                now + Duration::from_secs(10),
+            )
+            .unwrap()
+            .1,
+            b"before"
+        );
+        // Once the 30s grace window expires, static live envelopes are rejected.
+        let after_grace = now + REKEY_GRACE;
+        peer_epoch.expire_prev(after_grace);
+        assert!(peer_epoch.prev_rx.is_none());
+        assert_eq!(
+            open_with_peer_keys(
+                &static_text,
+                Kind::ClipboardText,
+                &static_b.rx,
+                Some(&peer_epoch),
+                after_grace,
+            ),
+            Err(weft_protocol::Error::DecryptionFailed)
+        );
+        // Offline-eligible DeviceName (0x06) STILL opens with static keys!
+        assert_eq!(
+            open_with_peer_keys(
+                &static_name,
+                Kind::DeviceName,
+                &static_b.rx,
+                Some(&peer_epoch),
+                after_grace,
+            )
+            .unwrap()
+            .1,
+            b"Laptop"
+        );
+        // And a DeviceName encrypted with epoch keys is rejected.
+        assert_eq!(
+            open_with_peer_keys(
+                &wrong_epoch_name,
+                Kind::DeviceName,
+                &static_b.rx,
+                Some(&peer_epoch),
+                after_grace,
+            ),
+            Err(weft_protocol::Error::DecryptionFailed)
+        );
+    }
 }
