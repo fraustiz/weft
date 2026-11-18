@@ -2,3 +2,4 @@
 # LF on every platform, whatever core.autocrlf says.
 * text=auto eol=lf
 *.bat -text
+ios/scripts/*.sh text eol=lf
