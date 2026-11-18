@@ -223,10 +223,7 @@ pub(crate) fn paste_focus_unchanged(epoch: u64) -> bool {
 /// Checks focus off the UI thread (UI Automation can synchronously call back into it).
 /// Only known noneditable XAML controls accept file paste. Unknown controls fail closed.
 pub(crate) fn can_paste_files(epoch: u64) -> bool {
-    use crate::bindings::{
-        CUIAutomation, CoCreateInstance, IUIAutomation, PROPERTYID, UIA_HWND, VARIANT,
-        VARIANT_BOOL, VARTYPE,
-    };
+    use crate::bindings::{CUIAutomation, CoCreateInstance, IUIAutomation, UIA_HWND};
     use windows_sys::Win32::System::Com::CLSCTX_INPROC_SERVER;
 
     let window = WINDOW.load(Ordering::Acquire) as HWND;
@@ -249,21 +246,18 @@ pub(crate) fn can_paste_files(epoch: u64) -> bool {
             if focused.CurrentProcessId()? != std::process::id() as i32 {
                 return Ok(String::new());
             }
-            // HasKeyboardFocus within this window's subtree. Process identity alone
-            // is insufficient when a file dialog or a second window owns the focus.
+            // WinUI can report HasKeyboardFocus on its input site and on the
+            // actual control. Verify the ancestry of GetFocusedElement directly.
             let root = automation.ElementFromHandle(UIA_HWND(window.cast()))?;
-            let mut value = VARIANT::default();
-            {
-                let inner = &mut *value.Anonymous.Anonymous;
-                inner.vt = VARTYPE(11); // VT_BOOL
-                inner.Anonymous.boolVal = VARIANT_BOOL(-1);
+            let walker = automation.RawViewWalker()?;
+            let mut element = focused.clone();
+            while let Ok(parent) = walker.GetParentElement(&element) {
+                if automation.CompareElements(&parent, &root)?.as_bool() {
+                    return Ok(String::from_utf16_lossy(&focused.CurrentClassName()?));
+                }
+                element = parent;
             }
-            let condition = automation.CreatePropertyCondition(PROPERTYID(30008), &value)?;
-            let descendant = root.FindFirst(4, &condition)?; // TreeScope_Descendants
-            if !automation.CompareElements(&focused, &descendant)?.as_bool() {
-                return Ok(String::new());
-            }
-            Ok(String::from_utf16_lossy(&focused.CurrentClassName()?))
+            Ok(String::new())
         }
     };
     let allowed = focused_class().is_ok_and(|class| accepts_file_paste_focus(&class));
@@ -273,6 +267,9 @@ pub(crate) fn can_paste_files(epoch: u64) -> bool {
 }
 
 fn accepts_file_paste_focus(class: &str) -> bool {
+    let class = class
+        .strip_prefix("Microsoft.UI.Xaml.Controls.")
+        .unwrap_or(class);
     matches!(
         class,
         "Button"
@@ -516,6 +513,7 @@ mod tests {
             "Button",
             "ListViewItem",
             "NavigationViewItem",
+            "Microsoft.UI.Xaml.Controls.NavigationViewItem",
             "Grid",
             "Border",
         ] {
@@ -523,6 +521,7 @@ mod tests {
         }
         for class in [
             "TextBox",
+            "Microsoft.UI.Xaml.Controls.TextBox",
             "RichEditBox",
             "PasswordBox",
             "ComboBox",

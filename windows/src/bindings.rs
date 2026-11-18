@@ -7102,6 +7102,53 @@ impl IUIAutomation {
             .and_then(|| windows_core::imp::Type::from_abi(result__))
         }
     }
+    pub unsafe fn CreateTreeWalker<P0>(
+        &self,
+        pcondition: P0,
+    ) -> windows_core::Result<IUIAutomationTreeWalker>
+    where
+        P0: windows_core::Param<IUIAutomationCondition>,
+    {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).CreateTreeWalker)(
+                windows_core::Interface::as_raw(self),
+                pcondition.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub unsafe fn ControlViewWalker(&self) -> windows_core::Result<IUIAutomationTreeWalker> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ControlViewWalker)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub unsafe fn ContentViewWalker(&self) -> windows_core::Result<IUIAutomationTreeWalker> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ContentViewWalker)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub unsafe fn RawViewWalker(&self) -> windows_core::Result<IUIAutomationTreeWalker> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).RawViewWalker)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
     pub unsafe fn RawViewCondition(&self) -> windows_core::Result<IUIAutomationCondition> {
         unsafe {
             let mut result__ = core::mem::zeroed();
@@ -7458,10 +7505,23 @@ pub struct IUIAutomation_Vtbl {
     ElementFromHandleBuildCache: usize,
     ElementFromPointBuildCache: usize,
     GetFocusedElementBuildCache: usize,
-    CreateTreeWalker: usize,
-    ControlViewWalker: usize,
-    ContentViewWalker: usize,
-    RawViewWalker: usize,
+    pub CreateTreeWalker: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub ControlViewWalker: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub ContentViewWalker: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub RawViewWalker: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
     pub RawViewCondition: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         *mut *mut core::ffi::c_void,
@@ -8768,6 +8828,171 @@ pub struct IUIAutomationScrollPattern_Vtbl {
     ) -> windows_core::HRESULT,
 }
 impl windows_core::RuntimeName for IUIAutomationScrollPattern {}
+windows_core::imp::define_interface!(
+    IUIAutomationTreeWalker,
+    IUIAutomationTreeWalker_Vtbl,
+    0x4042c624_389c_4afc_a630_9df854a541fc
+);
+windows_core::imp::interface_hierarchy!(IUIAutomationTreeWalker, windows_core::IUnknown);
+impl IUIAutomationTreeWalker {
+    pub unsafe fn GetParentElement<P0>(
+        &self,
+        element: P0,
+    ) -> windows_core::Result<IUIAutomationElement>
+    where
+        P0: windows_core::Param<IUIAutomationElement>,
+    {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetParentElement)(
+                windows_core::Interface::as_raw(self),
+                element.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub unsafe fn GetFirstChildElement<P0>(
+        &self,
+        element: P0,
+    ) -> windows_core::Result<IUIAutomationElement>
+    where
+        P0: windows_core::Param<IUIAutomationElement>,
+    {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetFirstChildElement)(
+                windows_core::Interface::as_raw(self),
+                element.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub unsafe fn GetLastChildElement<P0>(
+        &self,
+        element: P0,
+    ) -> windows_core::Result<IUIAutomationElement>
+    where
+        P0: windows_core::Param<IUIAutomationElement>,
+    {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetLastChildElement)(
+                windows_core::Interface::as_raw(self),
+                element.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub unsafe fn GetNextSiblingElement<P0>(
+        &self,
+        element: P0,
+    ) -> windows_core::Result<IUIAutomationElement>
+    where
+        P0: windows_core::Param<IUIAutomationElement>,
+    {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetNextSiblingElement)(
+                windows_core::Interface::as_raw(self),
+                element.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub unsafe fn GetPreviousSiblingElement<P0>(
+        &self,
+        element: P0,
+    ) -> windows_core::Result<IUIAutomationElement>
+    where
+        P0: windows_core::Param<IUIAutomationElement>,
+    {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetPreviousSiblingElement)(
+                windows_core::Interface::as_raw(self),
+                element.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub unsafe fn NormalizeElement<P0>(
+        &self,
+        element: P0,
+    ) -> windows_core::Result<IUIAutomationElement>
+    where
+        P0: windows_core::Param<IUIAutomationElement>,
+    {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).NormalizeElement)(
+                windows_core::Interface::as_raw(self),
+                element.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub unsafe fn Condition(&self) -> windows_core::Result<IUIAutomationCondition> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Condition)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+#[repr(C)]
+pub struct IUIAutomationTreeWalker_Vtbl {
+    pub base__: windows_core::IUnknown_Vtbl,
+    pub GetParentElement: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub GetFirstChildElement: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub GetLastChildElement: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub GetNextSiblingElement: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub GetPreviousSiblingElement: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub NormalizeElement: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    GetParentElementBuildCache: usize,
+    GetFirstChildElementBuildCache: usize,
+    GetLastChildElementBuildCache: usize,
+    GetNextSiblingElementBuildCache: usize,
+    GetPreviousSiblingElementBuildCache: usize,
+    NormalizeElementBuildCache: usize,
+    pub Condition: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+impl windows_core::RuntimeName for IUIAutomationTreeWalker {}
 windows_core::imp::define_interface!(
     IXmlDocument,
     IXmlDocument_Vtbl,

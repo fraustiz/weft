@@ -51,6 +51,7 @@
     CUIAutomation
     IUIAutomation
     IUIAutomationElement
+    IUIAutomationTreeWalker
     IUIAutomationScrollPattern
     VARIANT
     VT_BSTR

@@ -6,7 +6,10 @@ integrity checks, acknowledgements, and the existing encrypted envelope and
 replay protection. Windows also accepts shell file drops and has a Paste files
 button. Ctrl+V file paste is limited to known noneditable controls in the
 focused Weft window; changing focus cancels pending shortcut handling. Native
-text paste is preserved. Manual validation on a Windows desktop is pending.
+text paste is preserved. On a Windows desktop, file paste from a button and
+the navigation bar, the Paste files button, and an Explorer drop onto a
+device page were verified end to end against a local relay. A text field
+still accepts text paste and does not send files.
 
 The Linux client is a daemon and CLI using the desktop's installed utilities;
 see `linux/README.md` for dependencies. Its adapter tests use fake utilities;
