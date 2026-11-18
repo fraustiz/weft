@@ -60,13 +60,23 @@ struct WeftProminentButtonStyle: ButtonStyle {
 
 /// Action row label: the icon carries the brand orange, the title stays neutral.
 struct WeftActionLabelStyle: LabelStyle {
+    /// Every icon sits centered in the same column, so titles line up whatever
+    /// the symbol's own width; it scales with Dynamic Type.
+    @ScaledMetric(relativeTo: .body) private var iconWidth: CGFloat = 28
+
     func makeBody(configuration: Configuration) -> some View {
-        Label {
-            configuration.title.foregroundStyle(.primary)
-        } icon: {
-            configuration.icon.foregroundStyle(Color.weftOrange)
+        // An HStack, not Label: Label pins the icon to the first line of a
+        // wrapped title; here it stays centered on the whole title.
+        HStack(alignment: .center, spacing: 14) {
+            configuration.icon
+                .foregroundStyle(Color.weftOrange)
+                .frame(width: iconWidth, alignment: .center)
+            configuration.title
+                .foregroundStyle(.primary)
+                // Row separators start under the title on every row.
+                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
         }
-        .labelStyle(.titleAndIcon)
+        .accessibilityElement(children: .combine)
     }
 }
 
