@@ -90,7 +90,7 @@ Les versions sont publiées sur GitHub Releases (pas de magasin d'applications p
 - l'exécutable Windows n'est pas signé : SmartScreen avertit au premier lancement ;
 - l'APK Android est signée avec la clé de publication du projet.
 
-L'app iOS et le client Linux ne font pas encore partie des versions publiées : compilez-les depuis les sources ([`ios/README.md`](ios/README.md), [`linux/README.md`](linux/README.md)). Installer l'app iOS sur un iPhone demande votre propre équipe de développement Apple.
+L'app iOS est publiée sous la forme `Weft-X.Y.Z-ios.ipa` pour les testeurs, sans App Store ni TestFlight : installez-la avec [SideStore](https://sidestore.io) ou [AltStore](https://altstore.io) et votre propre identifiant Apple gratuit. Un identifiant gratuit signe les apps pour 7 jours, après quoi SideStore ou AltStore doit les renouveler, et l'app iOS ne se met pas à jour toute seule. Le client Linux ne fait pas encore partie des versions publiées : compilez-le depuis les sources ([`linux/README.md`](linux/README.md)).
 
 ### Versions et mises à jour
 
@@ -105,7 +105,7 @@ Pour publier une version, poussez un tag `app-vX.Y.Z` :
 git tag app-v1.2.0 && git push origin app-v1.2.0
 ```
 
-[`.github/workflows/app-release.yml`](.github/workflows/app-release.yml) construit les trois apps en version `X.Y.Z` (numéro de build et `versionCode` : le nombre de commits) et publie la Release GitHub avec `Weft-X.Y.Z-mac.zip`, `appcast.xml`, `weft-X.Y.Z.apk`, `android-update.json`, `weft-X.Y.Z-windows.exe` et `windows-update.json`. Lancé à la main (Actions › App release › Run workflow), il fait un essai qui construit et signe sans rien publier.
+[`.github/workflows/app-release.yml`](.github/workflows/app-release.yml) construit les apps en version `X.Y.Z` (numéro de build et `versionCode` : le nombre de commits) et publie la Release GitHub avec `Weft-X.Y.Z-mac.zip`, `appcast.xml`, `weft-X.Y.Z.apk`, `android-update.json`, `weft-X.Y.Z-windows.exe`, `windows-update.json` et `Weft-X.Y.Z-ios.ipa`. Lancé à la main (Actions › App release › Run workflow), il fait un essai qui construit et signe sans rien publier.
 
 Secrets du dépôt nécessaires au workflow de publication : `SPARKLE_ED_PRIVATE_KEY`, `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
 

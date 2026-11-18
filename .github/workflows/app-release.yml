@@ -1,6 +1,6 @@
 name: App release
 
-# Pushing a tag app-vX.Y.Z builds the macOS, Android and Windows apps at
+# Pushing a tag app-vX.Y.Z builds the macOS, Android, Windows and iOS apps at
 # version X.Y.Z, and publishes them as the GitHub release of that tag:
 #
 #   Weft-X.Y.Z-mac.zip         the app, ad-hoc signed, zipped with ditto
@@ -12,6 +12,8 @@ name: App release
 #   weft-X.Y.Z-windows.exe     the Windows app
 #   windows-update.json        what the Windows app checks:
 #                              releases/latest/download/windows-update.json
+#   Weft-X.Y.Z-ios.ipa         the iOS app, ad hoc signed, for testers to
+#                              sideload with their own Apple ID (no updates)
 #
 # Run by hand (workflow_dispatch), it builds and checks everything, signs
 # with the same secrets, and keeps the files as workflow artifacts: nothing
@@ -262,8 +264,54 @@ jobs:
             dist/windows-update.json
           if-no-files-found: error
 
+  ios:
+    needs: meta
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # CFBundleVersion is the number of commits.
+          fetch-depth: 0
+      - name: Install XcodeGen
+        run: command -v xcodegen || brew install xcodegen
+      - name: Build Weft.app for iPhone, unsigned
+        working-directory: ios
+        run: |
+          xcodegen generate --spec project.yml
+          xcodebuild -project Weft.xcodeproj -scheme Weft -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+      # No Apple account: testers sideload the .ipa with their own Apple ID
+      # (SideStore, AltStore), which re-signs it. The ad hoc signature only
+      # carries the entitlements, so the App Group of the share extension
+      # is registered when they re-sign it.
+      - name: Version, ad hoc signature and .ipa
+        working-directory: ios
+        run: |
+          app=build/DerivedData/Build/Products/Release-iphoneos/Weft.app
+          build="$(git rev-list --count HEAD)"
+          for plist in "$app/Info.plist" "$app/PlugIns/WeftShare.appex/Info.plist"; do
+            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$plist"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build" "$plist"
+          done
+          codesign -f -s - --entitlements Config/Shared.entitlements "$app/PlugIns/WeftShare.appex"
+          codesign -f -s - --entitlements Config/Shared.entitlements "$app"
+          codesign -d --entitlements - --xml "$app" | grep -q group.eu.frohub.weft
+          mkdir -p "$RUNNER_TEMP/ipa/Payload" ../dist
+          cp -R "$app" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry "$GITHUB_WORKSPACE/dist/Weft-$VERSION-ios.ipa" Payload)
+          unzip -l "../dist/Weft-$VERSION-ios.ipa" | tail -1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ios
+          path: dist/Weft-${{ env.VERSION }}-ios.ipa
+          if-no-files-found: error
+
   release:
-    needs: [meta, mac, android, windows]
+    needs: [meta, mac, android, windows, ios]
     if: needs.meta.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -293,4 +341,5 @@ jobs:
             "dist/weft-$VERSION.apk" \
             dist/android-update.json \
             "dist/weft-$VERSION-windows.exe" \
-            dist/windows-update.json
+            dist/windows-update.json \
+            "dist/Weft-$VERSION-ios.ipa"

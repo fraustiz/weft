@@ -32,5 +32,6 @@ Keychain key; development plaintext state is migrated when opened.
 
 The app and its share extension build with Xcode and were tested in the iOS
 Simulator against the macOS app over the public relay: pairing, clipboard both
-ways, files, links, ping and device names. It is not part of the releases yet;
-validate it on a real iPhone before publishing it.
+ways, files, links, ping and device names. Releases include an ad hoc signed
+`Weft-X.Y.Z-ios.ipa` that testers sideload with SideStore or AltStore and their
+own free Apple ID (re-signed every 7 days). It has not run on a real iPhone yet.

@@ -90,7 +90,7 @@ Builds are published on GitHub Releases (no app stores for now):
 - the Windows executable is unsigned, so SmartScreen warns on first launch;
 - the Android APK is signed with the project's release key.
 
-The iOS app and the Linux client are not part of the releases yet: build them from source ([`ios/README.md`](ios/README.md), [`linux/README.md`](linux/README.md)). Installing the iOS app on an iPhone needs your own Apple development team.
+The iOS app is published as `Weft-X.Y.Z-ios.ipa` for testers, without the App Store or TestFlight: install it with [SideStore](https://sidestore.io) or [AltStore](https://altstore.io) using your own free Apple ID. A free Apple ID signs apps for 7 days, after which SideStore or AltStore has to refresh it, and the iOS app does not update itself. The Linux client is not part of the releases yet: build it from source ([`linux/README.md`](linux/README.md)).
 
 ### Releases and updates
 
@@ -105,7 +105,7 @@ To cut a release, push a tag `app-vX.Y.Z`:
 git tag app-v1.2.0 && git push origin app-v1.2.0
 ```
 
-[`.github/workflows/app-release.yml`](.github/workflows/app-release.yml) builds all three apps at version `X.Y.Z` (build number and `versionCode`: the commit count) and publishes the GitHub Release with `Weft-X.Y.Z-mac.zip`, `appcast.xml`, `weft-X.Y.Z.apk`, `android-update.json`, `weft-X.Y.Z-windows.exe` and `windows-update.json`. Run it manually (Actions › App release › Run workflow) for a dry run that builds and signs without publishing.
+[`.github/workflows/app-release.yml`](.github/workflows/app-release.yml) builds the apps at version `X.Y.Z` (build number and `versionCode`: the commit count) and publishes the GitHub Release with `Weft-X.Y.Z-mac.zip`, `appcast.xml`, `weft-X.Y.Z.apk`, `android-update.json`, `weft-X.Y.Z-windows.exe`, `windows-update.json` and `Weft-X.Y.Z-ios.ipa`. Run it manually (Actions › App release › Run workflow) for a dry run that builds and signs without publishing.
 
 Repository secrets required by the release workflow: `SPARKLE_ED_PRIVATE_KEY`, `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
 
