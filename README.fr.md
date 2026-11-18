@@ -57,7 +57,7 @@ iOS (Swift) ──────┼── WSS 443 ── relais ── WSS 443 ┼
   - iOS : app Swift + SwiftUI (iOS 17 et plus) avec une extension de partage, construite sur le paquet Swift `WeftMobileKit`.
   - macOS : app Swift + SwiftUI dans la barre des menus, avec le cœur client Rust partagé via UniFFI, [Sparkle](https://sparkle-project.org) pour les mises à jour et [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) (BSD-3-Clause) pour la lecture en cours.
   - Windows : Rust + travailleur Win32 pour la zone de notification et le presse-papiers, interface WinUI 3 via [windows-reactor](https://github.com/microsoft/windows-rs/tree/master/crates/libs/reactor), avec `crates/weft-client` partagé avec macOS.
-  - Linux : `weft-desktop`, un démon de service utilisateur et un CLI pour Wayland et X11, qui s'appuie sur les outils du bureau (presse-papiers, notifications, MPRIS2, PipeWire/PulseAudio, saisie). Voir [`linux/README.md`](linux/README.md).
+  - Linux (**expérimental**) : `weft-desktop`, un démon de service utilisateur et un CLI pour Wayland et X11, qui s'appuie sur les outils du bureau (presse-papiers, notifications, MPRIS2, PipeWire/PulseAudio, saisie). Il n'a pas encore d'interface graphique, et ses tests remplacent ces outils par des imitations : il n'a pas encore été validé sur un vrai bureau Linux. Voir [`linux/README.md`](linux/README.md).
   - CLI : binaire Rust `weft` pour associer, diffuser le presse-papiers et écrire des scripts depuis un terminal.
 - **Relais :** écrit en Rust (`axum` + SQLite), publié en image Docker multi-architecture sur `ghcr.io/fraustiz/weft/relay`. Une instance publique tourne sur `weft.frohub.eu`, et chacun peut héberger la sienne (voir [`relay/README.md`](relay/README.md)) ; l'adresse du relais se règle dans les apps.
 - **Sans compte :** chaque installation crée ses propres paires de clés Ed25519 et X25519, et les appareils s'associent directement par QR code.
@@ -69,7 +69,7 @@ iOS (Swift) ──────┼── WSS 443 ── relais ── WSS 443 ┼
 - [`ios/`](ios/) : app iOS SwiftUI, extension de partage et paquet `WeftMobileKit` (projet XcodeGen).
 - [`macos/`](macos/) : app macOS SwiftUI, scripts d'empaquetage et configuration de Sparkle.
 - [`windows/`](windows/) : app Windows en Rust (hôte Win32 pour la zone de notification et le presse-papiers, vues WinUI 3).
-- [`linux/`](linux/) : démon et CLI Linux `weft-desktop`.
+- [`linux/`](linux/) : démon et CLI Linux `weft-desktop` (expérimental).
 - [`relay/`](relay/) : serveur relais WebSocket, Dockerfile et configuration Compose.
 - [`cli/`](cli/) : client en ligne de commande `weft`.
 - [`crates/`](crates/) : crates de l'espace de travail Rust : `weft-protocol` (protocole v1 et vecteurs de test de référence), `weft-client` (machine à états du client, transferts et paquets de fonctions) et `weft-ffi` (liaisons UniFFI pour macOS).

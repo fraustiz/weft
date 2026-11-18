@@ -57,7 +57,7 @@ iOS (Swift) ──────┼── WSS 443 ── relay ── WSS 443 ─�
   - macOS: Swift + SwiftUI menu bar and settings app, powered by the shared Rust client core over UniFFI, [Sparkle](https://sparkle-project.org) for updates and [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) (BSD-3-Clause) for now-playing state.
   - iOS: Swift + SwiftUI app (iOS 17+) with a share extension, built on the Swift `WeftMobileKit` package.
   - Windows: Rust + Win32 tray/clipboard worker + WinUI 3 interface via [windows-reactor](https://github.com/microsoft/windows-rs/tree/master/crates/libs/reactor), sharing `crates/weft-client` with macOS.
-  - Linux: `weft-desktop`, a user-service daemon and CLI for Wayland and X11 that drives the desktop's own tools (clipboard, notifications, MPRIS2, PipeWire/PulseAudio, input). See [`linux/README.md`](linux/README.md).
+  - Linux (**experimental**): `weft-desktop`, a user-service daemon and CLI for Wayland and X11 that drives the desktop's own tools (clipboard, notifications, MPRIS2, PipeWire/PulseAudio, input). It has no graphical interface yet, and its tests replace those tools with fakes: it has not been validated on a real Linux desktop. See [`linux/README.md`](linux/README.md).
   - CLI: `weft` Rust binary for pairing, clipboard streaming and scripting from a terminal.
 - **Relay:** written in Rust (`axum` + SQLite), published as a multi-arch Docker image at `ghcr.io/fraustiz/weft/relay`. A public instance runs at `weft.frohub.eu`, and anyone can self-host their own (see [`relay/README.md`](relay/README.md)); the relay URL is configurable in the apps.
 - **No accounts:** each install generates its own Ed25519 and X25519 key pairs, and devices pair directly with a QR code.
@@ -69,7 +69,7 @@ iOS (Swift) ──────┼── WSS 443 ── relay ── WSS 443 ─�
 - [`macos/`](macos/) — macOS SwiftUI app, packaging scripts and Sparkle configuration.
 - [`ios/`](ios/) — iOS SwiftUI app, share extension and `WeftMobileKit` package (XcodeGen project).
 - [`windows/`](windows/) — Windows Rust app (Win32 tray/clipboard host and WinUI 3 views).
-- [`linux/`](linux/) — `weft-desktop` Linux daemon and CLI.
+- [`linux/`](linux/) — `weft-desktop` Linux daemon and CLI (experimental).
 - [`relay/`](relay/) — WebSocket relay server, Dockerfile and Compose configuration.
 - [`cli/`](cli/) — `weft` command-line client.
 - [`crates/`](crates/) — Rust workspace crates: `weft-protocol` (v1 wire protocol and reference test vectors), `weft-client` (shared client state machine, transfers and feature packets) and `weft-ffi` (UniFFI bindings for macOS).
