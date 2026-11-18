@@ -2,7 +2,7 @@ name: Relay image
 
 on:
   push:
-    branches: [main, step-0]
+    branches: [main]
     tags: ["relay-v*"]
     # Not evaluated for tag pushes.
     paths:

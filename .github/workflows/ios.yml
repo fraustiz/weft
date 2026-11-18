@@ -2,7 +2,7 @@ name: iOS app
 
 on:
   push:
-    branches: [main, windows-app, wt/ios-app]
+    branches: [main]
     paths:
       - "ios/**"
       - "swift/**"

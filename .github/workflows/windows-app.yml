@@ -2,7 +2,7 @@ name: Windows app
 
 on:
   push:
-    branches: [main, windows-app, wt/core-next]
+    branches: [main]
     paths:
       - "windows/**"
       - "macos/**"

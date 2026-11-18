@@ -32,6 +32,6 @@ and converts local TIFF images, with bounded decoding and pixel fingerprints
 to suppress echoes. Apple compilation and clipboard interoperability require
 CI and real-device validation; image decoding currently runs on the main thread.
 Older clients retain text synchronization and do not advertise image support.
-The iOS client is on the separate `wt/ios-app` branch; Swift tests and its
-simulator app/extension build pass CI, while real-device validation is pending.
-No new public app release is implied by these development branches.
+The iOS client lives in `ios/`; Swift tests and its simulator app/extension
+build pass CI, and it was tested in the iOS Simulator against the macOS app.
+Real-device validation is pending, and it is not part of the releases yet.

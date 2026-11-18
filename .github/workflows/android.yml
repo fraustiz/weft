@@ -2,7 +2,7 @@ name: Android app
 
 on:
   push:
-    branches: [main, windows-app, wt/core-next]
+    branches: [main]
     paths: ["android/**", "crates/weft-protocol/vectors/**", ".github/workflows/android.yml"]
   pull_request:
     paths: ["android/**", "crates/weft-protocol/vectors/**", ".github/workflows/android.yml"]

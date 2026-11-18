@@ -2,7 +2,7 @@ name: Linux desktop
 
 on:
   push:
-    branches: [main, windows-app, wt/core-next]
+    branches: [main]
     paths: ["linux/**", "crates/**", "cli/**", "relay/**", ".github/workflows/linux.yml"]
   pull_request:
     paths: ["linux/**", "crates/**", "cli/**", "relay/**", ".github/workflows/linux.yml"]
