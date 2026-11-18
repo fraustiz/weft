@@ -23,7 +23,10 @@ and end-to-end tests before enabling key rotation.
 Android image support adds an explicit clipboard action and a separate image
 clipboard share target; ordinary file sharing keeps its existing meaning.
 See `clipboard-images.md` for the wire contract. Android interoperability on a
-real device and the macOS image adapter remain to be validated/completed.
+real device remains to be validated. The macOS adapter now supports PNG/JPEG
+and converts local TIFF images, with bounded decoding and pixel fingerprints
+to suppress echoes. Apple compilation and clipboard interoperability require
+CI and real-device validation; image decoding currently runs on the main thread.
 Older clients retain text synchronization and do not advertise image support.
 The iOS client is on the separate `wt/ios-app` branch; Swift tests and its
 simulator app/extension build pass CI, while real-device validation is pending.

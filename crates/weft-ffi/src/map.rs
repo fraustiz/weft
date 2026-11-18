@@ -598,6 +598,7 @@ pub struct PollOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum SendOutcome {
     Sent,
+    Paused,
     /// Not connected to the relay.
     Offline,
     /// No other device to send to.

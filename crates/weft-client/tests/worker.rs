@@ -392,6 +392,16 @@ async fn pairs_and_exchanges_text_both_ways() {
         tested.wait(|snapshot| snapshot.pause.all).await;
         phone.session.send_text("while paused").await.unwrap();
         tested.worker.send(Command::SendText("while paused".into()));
+        // The network and command queues are independent. Wait until the
+        // preceding text has been processed before resuming the clipboard.
+        phone
+            .send(tested.id(), &Packet::Ping { message: None })
+            .await;
+        tested
+            .expect_notice(
+                |notice| matches!(notice, Notice::Ping { from, .. } if *from == phone.id()),
+            )
+            .await;
         tested.worker.send(Command::SetPaused(false));
         tested.wait(|snapshot| !snapshot.pause.all).await;
         phone.session.send_text("after the pause").await.unwrap();

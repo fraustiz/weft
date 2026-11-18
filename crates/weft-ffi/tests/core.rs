@@ -86,6 +86,11 @@ impl Pasteboard for FakePasteboard {
         self.content()
     }
 
+    fn write_image(&self, mime: String, bytes: Vec<u8>) -> Option<i64> {
+        self.copy(PasteboardContent::Image { mime, bytes });
+        Some(self.change_count())
+    }
+
     fn write_text(&self, text: String, private: bool) -> Option<i64> {
         self.copy(if private {
             PasteboardContent::Excluded
@@ -317,6 +322,8 @@ fn sorted_str(kinds: &[&str]) -> Vec<String> {
 /// What the Mac acts on by default (before per-device remote control).
 const DEFAULT_INCOMING: &[&str] = &[
     "state.request",
+    "clipboard.image.offer",
+    "clipboard.image.accept",
     "ping",
     "ring",
     "ring.stop",
@@ -347,6 +354,8 @@ const DEFAULT_INCOMING: &[&str] = &[
 
 const DEFAULT_OUTGOING: &[&str] = &[
     "state.request",
+    "clipboard.image.offer",
+    "clipboard.image.accept",
     "ping",
     "input.key",
     "ring",

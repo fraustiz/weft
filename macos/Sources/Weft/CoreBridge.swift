@@ -14,6 +14,7 @@ let log = Logger(subsystem: "fr.frohub.weft.mac", category: "app")
 /// which the app calls on the main thread, so it never runs concurrently.
 final class MacPasteboard: WeftFFI.Pasteboard, @unchecked Sendable {
     private var board: NSPasteboard { .general }
+    private var receivedImageFingerprint: Data?
 
     func changeCount() -> Int64 {
         Int64(board.changeCount)
@@ -25,11 +26,35 @@ final class MacPasteboard: WeftFFI.Pasteboard, @unchecked Sendable {
         case .excluded:
             return .excluded
         case .noText:
+            for type in [NSPasteboard.PasteboardType.png,
+                         NSPasteboard.PasteboardType("public.jpeg"), .tiff] {
+                guard board.availableType(from: [type]) != nil else { continue }
+                guard let data = board.data(forType: type) else { continue }
+                guard let image = ClipboardImages.prepare(data) else { return .tooLarge }
+                if image.fingerprint == receivedImageFingerprint { return .excluded }
+                receivedImageFingerprint = nil
+                return .image(mime: image.mime, bytes: image.bytes)
+            }
             return .noText
         case .readText:
+            receivedImageFingerprint = nil
             guard let text = board.string(forType: .string) else { return .noText }
             return .text(text: text)
         }
+    }
+
+    func writeImage(mime: String, bytes: Data) -> Int64? {
+        guard let image = ClipboardImages.prepare(bytes, mime: mime) else { return nil }
+        let item = NSPasteboardItem()
+        let type = NSPasteboard.PasteboardType(image.mime == "image/png" ? "public.png" : "public.jpeg")
+        guard item.setData(image.bytes, forType: type) else { return nil }
+        if let bundle = Bundle.main.bundleIdentifier {
+            item.setString(bundle, forType: NSPasteboard.PasteboardType(PasteboardPolicy.source))
+        }
+        board.clearContents()
+        guard board.writeObjects([item]) else { return nil }
+        receivedImageFingerprint = image.fingerprint
+        return Int64(board.changeCount)
     }
 
     func writeText(text: String, private: Bool) -> Int64? {
@@ -47,6 +72,7 @@ final class MacPasteboard: WeftFFI.Pasteboard, @unchecked Sendable {
         if `private` {
             board.setData(Data(), forType: NSPasteboard.PasteboardType(PasteboardPolicy.concealed))
         }
+        receivedImageFingerprint = nil
         return Int64(board.changeCount)
     }
 }

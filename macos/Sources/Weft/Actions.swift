@@ -158,7 +158,7 @@ extension AppModel {
         let french = Language.current == .french
         switch notice {
         case .clipboardImage:
-            break // Not advertised until the macOS image adapter is connected.
+            break // Clipboard notices are coalesced by Rust and applied through pollPasteboard().
         case .ring(_, let device):
             ringer.start(device: named(device))
         case .ringEnded:
