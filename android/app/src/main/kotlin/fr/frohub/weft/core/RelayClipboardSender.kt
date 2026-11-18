@@ -33,6 +33,8 @@ class RelayClipboardSender(
     /** Waits up to the given time for the relay connection; true once connected. */
     private val awaitConnected: suspend (Duration) -> Boolean,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** A best-effort LAN route for an already sealed envelope; false keeps the relay path. */
+    private val direct: (suspend (ByteArray) -> Boolean)? = null,
 ) : ClipboardSender {
     private val mutex = Mutex()
     private val _lastSent = MutableStateFlow<LastSent?>(null)
@@ -57,10 +59,10 @@ class RelayClipboardSender(
      * Seals [plaintext] as a [kind] envelope for each of [deviceIds] that is still trusted, with
      * the same counter rules as clipboard text. Returns how many envelopes the sink took.
      */
-    suspend fun sendEnvelope(deviceIds: List<String>, kind: Kind, plaintext: ByteArray): Int =
-        mutex.withLock { sealAndSend(deviceIds, kind, plaintext) }
+    suspend fun sendEnvelope(deviceIds: List<String>, kind: Kind, plaintext: ByteArray, allowDirect: Boolean = true): Int =
+        mutex.withLock { sealAndSend(deviceIds, kind, plaintext, allowDirect) }
 
-    private suspend fun sealAndSend(deviceIds: List<String>, kind: Kind, plaintext: ByteArray): Int {
+    private suspend fun sealAndSend(deviceIds: List<String>, kind: Kind, plaintext: ByteArray, allowDirect: Boolean = true): Int {
         val local = identity()
         val (devices, counters) = repository.update { state ->
             val devices = deviceIds.mapNotNull { state.device(it) }
@@ -77,7 +79,8 @@ class RelayClipboardSender(
                 messageId = randomMessageId(),
                 counter = counters.getValue(device.deviceIdHex),
             )
-            if (sink.send(seal(header, plaintext, keys.tx))) sent++
+            val frame = seal(header, plaintext, keys.tx)
+            if (routeSealedEnvelope(frame, kind, allowDirect, direct, sink::send)) sent++
         }
         return sent
     }
@@ -87,4 +90,16 @@ class RelayClipboardSender(
         /** How long a send waits for the connection, e.g. right after a cold start. */
         val CONNECT_WAIT = 10.seconds
     }
+}
+
+/** Fall back with exactly the same counter, nonce and ciphertext, never a resealed message. */
+internal suspend fun routeSealedEnvelope(
+    frame: ByteArray,
+    kind: Kind,
+    allowDirect: Boolean,
+    direct: (suspend (ByteArray) -> Boolean)?,
+    relay: (ByteArray) -> Boolean,
+): Boolean {
+    val live = kind == Kind.CLIPBOARD_TEXT || kind == Kind.PACKET || kind == Kind.FILE_CHUNK
+    return (allowDirect && live && direct?.invoke(frame) == true) || relay(frame)
 }

@@ -39,6 +39,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -47,6 +49,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Everything behind the screens: identity, device state, the relay connection, pairing (joining
@@ -110,7 +114,11 @@ class WeftCore internal constructor(
     /** True once the device state has been read from disk, so [devices] can be trusted. */
     val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
 
-    val sender = RelayClipboardSender(repository, ::identity, relay, ::awaitConnected)
+    @Volatile private var lan: LanTransport? = null
+    private val frameMutex = Mutex()
+
+    val sender = RelayClipboardSender(repository, ::identity, relay, ::awaitConnected,
+        direct = { frame -> lan?.send(frame) == true })
 
     private val _joinState = MutableStateFlow<JoinState>(JoinState.Idle)
 
@@ -143,6 +151,29 @@ class WeftCore internal constructor(
     var packetListener: PacketListener? = null
 
     init {
+        scope.launch {
+            try {
+                // Counters, names and replay updates must not reopen the listener.
+                combine(relay.status, repository.state) { connection, state ->
+                    Triple(connection == ConnectionStatus.Connected, state.relayUrl,
+                        state.devices.map { it.signPublicKeyHex to it.kxPublicKeyHex })
+                }.distinctUntilChanged().collect { (connected, _, _) ->
+                    lan?.close()
+                    lan = null
+                    if (connected) {
+                        val state = repository.load()
+                        val transport = LanTransport.start(scope, identity(), state.devices, ::handleFrame)
+                        lan = transport
+                        if (transport != null) {
+                            announceLan(state.devices.map { it.deviceIdHex })
+                        }
+                    }
+                }
+            } finally {
+                lan?.close()
+                lan = null
+            }
+        }
         scope.launch {
             try {
                 repository.load()
@@ -612,8 +643,16 @@ class WeftCore internal constructor(
 
     // region Receiving
 
-    /** Handles one frame from the relay. Internal for tests; the relay client is the only caller. */
-    internal suspend fun handleFrame(frame: ByteArray) {
+    private suspend fun announceLan(deviceIds: List<String>) {
+        val transport = lan ?: return
+        val packet = JSONObject().put("type", "lan.endpoints").put("port", transport.port)
+            .put("addrs", JSONArray(transport.addresses())).toString().toByteArray(Charsets.UTF_8)
+        // Always use the relay: an old direct route may belong to a restarted peer.
+        sender.sendEnvelope(deviceIds, Kind.PACKET, packet, allowDirect = false)
+    }
+
+    /** Serializes relay and authenticated LAN frames through the same replay/trust path. */
+    internal suspend fun handleFrame(frame: ByteArray) = frameMutex.withLock {
         try {
             when (classify(frame)) {
                 FrameType.ENVELOPE -> handleEnvelope(frame)
@@ -677,7 +716,19 @@ class WeftCore internal constructor(
                 }
             }
             Received.Ping -> Unit
-            is Received.Packet -> packetListener?.onPacket(senderHex, event.plaintext)
+            is Received.Packet -> {
+                val packet = runCatching { JSONObject(event.plaintext.toString(Charsets.UTF_8)) }.getOrNull()
+                if (packet?.optString("type") == "lan.endpoints") {
+                    LanRules.endpoints(packet)?.let { (port, addrs) -> lan?.connect(senderHex, port, addrs) }
+                } else {
+                    // Like Rust's send_capabilities: reconnecting peers need our current port.
+                    // Endpoints themselves never trigger a reply, avoiding announcement loops.
+                    if (packet?.optString("type") in listOf("capabilities", "state.request")) {
+                        announceLan(listOf(senderHex))
+                    }
+                    packetListener?.onPacket(senderHex, event.plaintext)
+                }
+            }
             is Received.FileChunk -> packetListener?.onFileChunk(senderHex, event.plaintext)
         }
     }

@@ -14,6 +14,10 @@ they do not establish that a real Wayland or X11 desktop works.
 
 Authenticated LAN transport is under validation. Falling back to the relay
 reuses the same sealed envelope so replay protection still applies.
+Android now shares this authenticated transport, using numeric private IPv4
+endpoints announced through the relay. Routes are opportunistic: reconnects
+and later endpoint announcements retry them; there is no periodic redial.
+Android/Rust interoperability, sleep and network changes need device tests.
 
 Ephemeral key derivation and session epoch primitives are experimental and
 are **not enabled automatically**. This branch does not claim forward secrecy:
