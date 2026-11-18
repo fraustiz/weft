@@ -30,6 +30,7 @@ maintenance; interrupted copies expire after 24 hours. No credentials are
 shared with the extension. iOS state is AES-GCM encrypted with a device-bound
 Keychain key; development plaintext state is migrated when opened.
 
-This initial implementation has not yet been compiled or run on Apple hardware
-from the Windows development host. Do not publish it until both build commands
-and pairing/transfer tests on an iOS device pass.
+The app and its share extension build with Xcode and were tested in the iOS
+Simulator against the macOS app over the public relay: pairing, clipboard both
+ways, files, links, ping and device names. It is not part of the releases yet;
+validate it on a real iPhone before publishing it.
