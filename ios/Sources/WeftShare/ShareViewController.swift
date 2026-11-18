@@ -3,12 +3,25 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// Same rule as `Language.detect` in WeftMobileKit: the first preferred
-/// language that is English or French wins.
-private let prefersFrench: Bool = Locale.preferredLanguages.lazy
-    .map { $0.lowercased() }
-    .first { $0.hasPrefix("fr") || $0.hasPrefix("en") }?
-    .hasPrefix("fr") == true
+/// Same key as `SharedLanguage.key` in WeftMobileKit: the app writes its
+/// resolved language ("en" or "fr") there at launch, because the per-app
+/// language setting does not apply to the extension.
+private let appLanguageKey = "WeftAppLanguage"
+
+/// The app's language when it has been written; otherwise the same rule as
+/// `Language.detect` in WeftMobileKit: the first preferred language that is
+/// English or French wins.
+private let prefersFrench: Bool = {
+    switch UserDefaults(suiteName: "group.eu.frohub.weft")?.string(forKey: appLanguageKey) {
+    case "fr": return true
+    case "en": return false
+    default:
+        return Locale.preferredLanguages.lazy
+            .map { $0.lowercased() }
+            .first { $0.hasPrefix("fr") || $0.hasPrefix("en") }?
+            .hasPrefix("fr") == true
+    }
+}()
 
 private func t(_ english: String, _ french: String) -> String {
     prefersFrench ? french : english

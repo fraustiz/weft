@@ -1536,7 +1536,9 @@ public final class MobileSession: ObservableObject {
             case .fileReceived(let peerHex, _, let name, let fileURL):
                 let peerName = store.trustedPeer(peerHex)?.displayName ?? Words.shortID(peerHex)
                 lastBanner = BannerNotice(
-                    text: Language.current == .french ? "Reçu : \(name)" : "Received \(name)"
+                    text: Language.current == .french
+                        ? "Fichier reçu de \(peerName) : \(name)"
+                        : "File received from \(peerName): \(name)"
                 )
                 onFileReceived?(peerName, name, fileURL)
 
@@ -1686,18 +1688,12 @@ public final class MobileSession: ObservableObject {
 
             if let actions = try? transferEngine.offerFile(
                 fileURL: localCopyURL,
+                name: offeredName(url),
                 ownsFile: true,
                 to: peerHex,
                 nowMs: Self.nowMillis()
             ) {
-                // Keep the original display file name when staged from a security-scoped URL.
-                await executeTransferActions(actions.map { action in
-                    if case .sendPacket(let p, .fileOffer(var offer)) = action {
-                        offer.name = offeredName(url)
-                        return .sendPacket(peerHex: p, packet: .fileOffer(offer))
-                    }
-                    return action
-                })
+                await executeTransferActions(actions)
                 count += 1
             } else {
                 try? FileManager.default.removeItem(at: localCopyURL)

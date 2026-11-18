@@ -36,6 +36,22 @@ public enum Language: Sendable, Equatable {
     }
 }
 
+/// The app's resolved language ("en" or "fr"), written to the App Group at
+/// launch so the share extension follows the in-app language setting.
+public enum SharedLanguage {
+    public static let appGroup = "group.eu.frohub.weft"
+    /// Same literal in `WeftShare/ShareViewController.swift`.
+    public static let key = "WeftAppLanguage"
+
+    public static func code(_ language: Language) -> String {
+        language == .french ? "fr" : "en"
+    }
+
+    public static func publish(_ language: Language = .current) {
+        UserDefaults(suiteName: appGroup)?.set(code(language), forKey: key)
+    }
+}
+
 /// Picks the English or the French version of a text.
 public func t(_ english: String, _ french: String) -> String {
     Language.current == .french ? french : english
@@ -255,7 +271,8 @@ public enum Words {
         switch platform {
         case "android", "ios": "iphone"
         case "windows": "pc"
-        case "macos": "laptopcomputer"
+        // The protocol does not say laptop or desktop: a neutral window.
+        case "macos": "macwindow"
         case "cli", "linux": "terminal"
         default: "laptopcomputer.and.iphone"
         }

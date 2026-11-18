@@ -518,6 +518,12 @@ struct WeftiOSApp: App {
     @StateObject private var model = MobileAppModel()
     @Environment(\.scenePhase) private var scenePhase
 
+    init() {
+        // The per-app language (Settings › Apps › Weft) does not reach the
+        // share extension; it reads this value instead.
+        SharedLanguage.publish()
+    }
+
     var body: some Scene {
         WindowGroup {
             DevicesView(model: model)

@@ -347,6 +347,7 @@ public final class TransferEngine: @unchecked Sendable {
 
     public func offerFile(
         fileURL: URL,
+        name: String? = nil,
         ownsFile: Bool = false,
         mime: String? = nil,
         to peerHex: String,
@@ -361,7 +362,10 @@ public final class TransferEngine: @unchecked Sendable {
         guard let id = PacketConstants.normalizeHex16(transferIDHex) else {
             throw NSError(domain: "WeftTransfer", code: 2, userInfo: [NSLocalizedDescriptionKey: "Invalid transfer ID"])
         }
-        let rawName = fileURL.lastPathComponent.isEmpty ? FileNameSanitizer.fallbackName : fileURL.lastPathComponent
+        // `name` is what the receiver and the progress row show; a private
+        // staged copy (`outgoing_<UUID>_…`) keeps its own name on disk.
+        let rawName = name
+            ?? (fileURL.lastPathComponent.isEmpty ? FileNameSanitizer.fallbackName : fileURL.lastPathComponent)
         let cleanPeer = peerHex.lowercased()
         let entryKey = Self.key(peerHex: cleanPeer, id: id)
 

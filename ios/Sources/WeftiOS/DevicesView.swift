@@ -47,15 +47,6 @@ struct DevicesView: View {
                     }
                 }
             }
-            .safeAreaInset(edge: .bottom) {
-                if let banner = model.snapshot?.lastBanner {
-                    BannerPill(notice: banner) {
-                        model.session?.clearBanner()
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
-                }
-            }
             .overlay {
                 if let ringingName = model.snapshot?.ringingFromPeerName {
                     IncomingRingOverlay(peerName: ringingName) {
@@ -87,6 +78,17 @@ struct DevicesView: View {
                     RemotePadView(model: model, peer: peer)
                         .tint(.weftOrange)
                 }
+            }
+        }
+        // Outside the stack so a banner (file received, ping sent…) also
+        // shows on a pushed device screen, not only on the list.
+        .safeAreaInset(edge: .bottom) {
+            if let banner = model.snapshot?.lastBanner {
+                BannerPill(notice: banner) {
+                    model.session?.clearBanner()
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
             }
         }
     }
