@@ -117,18 +117,22 @@ struct DeviceDetail: View {
                     }
                     if messages {
                         Button(t("Messages…", "Messages…")) { model.openMessagesSheet(for: device) }
+                            .buttonStyle(WeftSecondaryButtonStyle())
                     }
                     if ring {
                         if model.rang?.device == device.id {
                             Button(t("Stop Ringing", "Arrêter la sonnerie")) { model.stopRinging(device) }
+                                .buttonStyle(WeftSecondaryButtonStyle())
                         } else {
                             Button(t("Ring", "Faire sonner")) { model.ring(device) }
+                                .buttonStyle(WeftSecondaryButtonStyle())
                                 .help(t("Rings it loudly, even in silent mode, for a minute",
                                         "Le fait sonner fort, même en silencieux, pendant une minute"))
                         }
                     }
                     if ping {
                         Button(t("Ping", "Ping")) { model.ping(device) }
+                            .buttonStyle(WeftSecondaryButtonStyle())
                             .help(t("Shows a notification on it", "Y affiche une notification"))
                     }
                     Spacer(minLength: 0)

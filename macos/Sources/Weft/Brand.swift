@@ -53,6 +53,8 @@ struct WeftProminentButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(large ? .body.weight(.medium) : .body)
+            .lineLimit(1)
+            .fixedSize()
             .foregroundStyle(Color.weftInk)
             .padding(.horizontal, large ? 18 : 12)
             .padding(.vertical, large ? 7 : 4)
@@ -60,6 +62,29 @@ struct WeftProminentButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: large ? 8 : 6, style: .continuous)
                     .fill(Color.weftOrange)
                     .brightness(configuration.isPressed ? -0.08 : 0)
+            )
+            .opacity(isEnabled ? 1 : 0.45)
+            .contentShape(Rectangle())
+    }
+}
+
+/// The quiet companion of `WeftProminentButtonStyle`: same font, padding and
+/// radius, so a row of actions shares one height, on a neutral fill with
+/// neutral text. Orange stays for the one primary action.
+struct WeftSecondaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.body)
+            .lineLimit(1)
+            .fixedSize()
+            .foregroundStyle(Color.primary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.primary.opacity(configuration.isPressed ? 0.14 : 0.08))
             )
             .opacity(isEnabled ? 1 : 0.45)
             .contentShape(Rectangle())
