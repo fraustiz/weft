@@ -85,12 +85,16 @@ iOS (Swift) ──────┼── WSS 443 ── relais ── WSS 443 ┼
 
 ## Distribution
 
-Les versions sont publiées sur GitHub Releases (pas de magasin d'applications pour l'instant) :
+Les versions sont publiées sur [GitHub Releases](https://github.com/fraustiz/weft/releases/latest) (pas de magasin d'applications pour l'instant) :
 - l'app macOS est signée ad hoc et non notariée : ouvrez-la la première fois par clic droit › Ouvrir ;
-- l'exécutable Windows n'est pas signé : SmartScreen avertit au premier lancement ;
+- sur Windows, téléchargez `weft-X.Y.Z-windows.exe`. L'exécutable n'est pas signé et SmartScreen affiche un avertissement au premier lancement ;
 - l'APK Android est signée avec la clé de publication du projet.
 
 L'app iOS est publiée sous la forme `Weft-X.Y.Z-ios.ipa` pour les testeurs, sans App Store ni TestFlight : installez-la avec [SideStore](https://sidestore.io) ou [AltStore](https://altstore.io) et votre propre identifiant Apple gratuit. Un identifiant gratuit signe les apps pour 7 jours, après quoi SideStore ou AltStore doit les renouveler, et l'app iOS ne se met pas à jour toute seule. Le client Linux ne fait pas encore partie des versions publiées : compilez-le depuis les sources ([`linux/README.md`](linux/README.md)).
+
+### Envoyer des fichiers sous Windows
+
+Ouvrez la fiche de l'appareil destinataire dans Weft. Glissez des fichiers depuis l'Explorateur sur sa fiche, ou copiez-les depuis l'Explorateur puis cliquez sur **Coller des fichiers**. Depuis Weft 0.3.2, vous pouvez aussi appuyer sur `Ctrl+V` quand un bouton ou un élément de navigation a le focus. Dans un champ de saisie, `Ctrl+V` colle le texte comme d'habitude.
 
 ### Versions et mises à jour
 

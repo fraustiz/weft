@@ -85,12 +85,16 @@ iOS (Swift) ──────┼── WSS 443 ── relay ── WSS 443 ─�
 
 ## Distribution
 
-Builds are published on GitHub Releases (no app stores for now):
+Builds are published on [GitHub Releases](https://github.com/fraustiz/weft/releases/latest) (no app stores for now):
 - the macOS app is ad-hoc signed and not notarized: open it the first time with right-click → Open;
-- the Windows executable is unsigned, so SmartScreen warns on first launch;
+- on Windows, download `weft-X.Y.Z-windows.exe`. The executable is unsigned, so SmartScreen warns on first launch;
 - the Android APK is signed with the project's release key.
 
 The iOS app is published as `Weft-X.Y.Z-ios.ipa` for testers, without the App Store or TestFlight: install it with [SideStore](https://sidestore.io) or [AltStore](https://altstore.io) using your own free Apple ID. A free Apple ID signs apps for 7 days, after which SideStore or AltStore has to refresh it, and the iOS app does not update itself. The Linux client is not part of the releases yet: build it from source ([`linux/README.md`](linux/README.md)).
+
+### Sending files on Windows
+
+Open the receiving device in Weft. Drag files from File Explorer onto its page, or copy them in File Explorer and click **Paste files**. In Weft 0.3.2 and later, you can also press `Ctrl+V` while a button or navigation item has focus. In text fields, `Ctrl+V` pastes text as usual.
 
 ### Releases and updates
 
