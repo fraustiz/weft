@@ -61,6 +61,7 @@ struct RemotePadView: View {
                     Button(t("Done", "Terminé")) {
                         dismiss()
                     }
+                    .tint(.primary)
                 }
             }
             .onAppear {
@@ -225,6 +226,7 @@ struct RemotePadView: View {
                     Button(t("Clear", "Effacer")) {
                         typedBuffer.value = ""
                     }
+                    .tint(.primary)
                     .disabled(typedBuffer.value.isEmpty)
                 }
             }

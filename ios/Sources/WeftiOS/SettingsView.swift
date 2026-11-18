@@ -42,6 +42,7 @@ struct SettingsView: View {
                         commitDeviceName()
                         dismiss()
                     }
+                    .tint(.primary)
                 }
             }
             .onAppear {
@@ -124,6 +125,7 @@ struct SettingsView: View {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 }
                 .font(.footnote.weight(.medium))
+                .tint(.primary)
             }
         } header: {
             Text(t("One-Tap Automation", "Raccourci en un geste"))
@@ -288,6 +290,7 @@ struct SettingsView: View {
                 }
                 .disabled(inGroup || trimmed.isEmpty || trimmed == currentRelay)
             }
+            .tint(.primary)
         } header: {
             Text(t("Relay", "Relais"))
         } footer: {

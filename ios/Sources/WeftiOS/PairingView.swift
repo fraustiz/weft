@@ -64,6 +64,7 @@ struct PairingView: View {
                         model.session?.closePairing()
                         dismiss()
                     }
+                    .tint(.primary)
                 }
             }
             .onAppear {
@@ -99,6 +100,7 @@ struct PairingView: View {
             }
             .padding(20)
         }
+        .scrollDismissesKeyboard(.interactively)
     }
 
     // MARK: - Tab 1: Camera QR Scanner + Paste / Enter Code
@@ -143,25 +145,19 @@ struct PairingView: View {
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
                                 .fill(Color(uiColor: .secondarySystemGroupedBackground))
                         )
+                        .submitLabel(.join)
                         .onSubmit {
                             submitCode(typedCode.value)
                         }
 
-                    Button {
-                        if let clip = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines),
-                           !clip.isEmpty {
-                            typedCode.value = clip
-                        }
-                    } label: {
-                        Image(systemName: "doc.on.clipboard")
-                            .frame(width: 38, height: 38)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(Color(uiColor: .secondarySystemGroupedBackground))
-                            )
+                    PasteButton(payloadType: String.self) { [typedCode] strings in
+                        let clip = strings.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        guard !clip.isEmpty else { return }
+                        Task { @MainActor in typedCode.value = clip }
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(t("Paste code", "Coller le code"))
+                    .labelStyle(.iconOnly)
+                    .buttonBorderShape(.roundedRectangle(radius: 10))
+                    .tint(.weftOrange)
                 }
 
                 Button(alreadyInGroup && scanIntent.value == .inviteToMyGroup
@@ -307,6 +303,7 @@ struct PairingView: View {
             Button(t("Cancel", "Annuler")) {
                 model.session?.closePairing()
             }
+            .tint(.primary)
             Spacer()
         }
         .padding(24)

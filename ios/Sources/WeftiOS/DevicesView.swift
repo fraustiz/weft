@@ -1,4 +1,4 @@
-// Home screen: connection status pill, one-tap Send Clipboard bar, paired
+// Home screen: connection status pill, one-tap Send Clipboard row, paired
 // devices list, active transfers, empty onboarding state, and incoming ring
 // overlay.
 
@@ -95,20 +95,7 @@ struct DevicesView: View {
         List {
             Section {
                 ConnectionStatusRow(snapshot: snapshot)
-                Button {
-                    Task { await model.sendClipboardNow() }
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "doc.on.clipboard")
-                            .font(.system(size: 16, weight: .medium))
-                        Text(t("Send Clipboard", "Envoyer le presse-papiers"))
-                        Spacer(minLength: 0)
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: 13, weight: .semibold))
-                    }
-                }
-                .buttonStyle(WeftProminentButtonStyle(fullWidth: true, large: true))
-                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 12, trailing: 16))
+                SendClipboardRow(model: model, peerHex: nil)
             } footer: {
                 Text(t(
                     "Sends copied text or a PNG/JPEG image to your group. Incoming copies update automatically while Weft is open.",
@@ -140,6 +127,29 @@ struct DevicesView: View {
             }
         }
         .listStyle(.insetGrouped)
+    }
+}
+
+/// "Send Clipboard" row. The system Paste button hands over the pasteboard
+/// without a prompt; programmatic `UIPasteboard` reads are refused on iOS 27
+/// unless the user allows them. `nil` peer sends to the whole group.
+struct SendClipboardRow: View {
+    @ObservedObject var model: MobileAppModel
+    let peerHex: String?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Label(t("Send Clipboard", "Envoyer le presse-papiers"), systemImage: "doc.on.clipboard")
+                .labelStyle(WeftActionLabelStyle())
+            Spacer(minLength: 0)
+            PasteButton(payloadType: ClipboardPayload.self) { [model, peerHex] items in
+                guard let payload = items.first else { return }
+                Task { @MainActor in await model.sendClipboard(payload, to: peerHex) }
+            }
+            .labelStyle(.titleAndIcon)
+            .buttonBorderShape(.roundedRectangle(radius: 10))
+            .tint(.weftOrange)
+        }
     }
 }
 

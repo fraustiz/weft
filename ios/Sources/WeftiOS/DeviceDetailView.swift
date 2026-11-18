@@ -59,11 +59,7 @@ struct DeviceDetailView: View {
             }
 
             Section(t("Actions", "Actions")) {
-                Button {
-                    Task { await model.sendClipboardNow(to: peer.id) }
-                } label: {
-                    Label(t("Send Clipboard", "Envoyer le presse-papiers"), systemImage: "doc.on.clipboard")
-                }
+                SendClipboardRow(model: model, peerHex: peer.id)
 
                 if takesFiles {
                     Button {
@@ -105,6 +101,7 @@ struct DeviceDetailView: View {
                     }
                 }
             }
+            .labelStyle(WeftActionLabelStyle())
 
             if features.links && (peer.platform == nil || peer.handles("share.url")) {
                 ShareLinkSection(model: model, peer: peer)
@@ -151,6 +148,7 @@ struct DeviceDetailView: View {
                 ))
             }
         }
+        .scrollDismissesKeyboard(.interactively)
         .navigationTitle(peer.displayName)
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog(
@@ -231,10 +229,18 @@ private struct ShareLinkSection: View {
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .submitLabel(.send)
                     .onSubmit { sendLink() }
                     .onChange(of: typedLink.value) { _, _ in
                         justSent.value = false
                     }
+                PasteButton(payloadType: String.self) { [typedLink] strings in
+                    guard let candidate = Links.candidate(fromClipboard: strings.first) else { return }
+                    Task { @MainActor in typedLink.value = candidate }
+                }
+                .labelStyle(.iconOnly)
+                .buttonBorderShape(.roundedRectangle(radius: 10))
+                .tint(.weftOrange)
                 Button(justSent.value ? t("Sent", "Envoyé") : t("Send", "Envoyer")) {
                     sendLink()
                 }
@@ -247,13 +253,6 @@ private struct ShareLinkSection: View {
             Text(Language.current == .french
                  ? "Ouvre un lien http ou https sur \(peer.displayName)."
                  : "Opens an http or https link on \(peer.displayName).")
-        }
-        .onAppear {
-            if typedLink.value.isEmpty,
-               UIPasteboard.general.hasURLs || UIPasteboard.general.hasStrings,
-               let candidate = Links.candidate(fromClipboard: UIPasteboard.general.string) {
-                typedLink.value = candidate
-            }
         }
     }
 
@@ -513,7 +512,7 @@ private struct PeerShortcutsSection: View {
                         if lastTriggeredID.value == item.id {
                             Text(t("Ran", "Lancé"))
                                 .font(.caption)
-                                .foregroundStyle(Color.weftOrange)
+                                .foregroundStyle(.secondary)
                         } else {
                             Image(systemName: "play.fill")
                                 .font(.caption)

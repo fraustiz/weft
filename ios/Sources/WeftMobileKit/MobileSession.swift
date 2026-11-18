@@ -1659,7 +1659,11 @@ public final class MobileSession: ObservableObject {
     }
 
     @discardableResult
-    public func sendFiles(_ urls: [URL], to peerHex: String) async -> Int {
+    public func sendFiles(
+        _ urls: [URL],
+        to peerHex: String,
+        offeredName: (URL) -> String = { $0.lastPathComponent }
+    ) async -> Int {
         guard store.features.files, await awaitConnected() else { return 0 }
         var count = 0
         for url in urls {
@@ -1689,7 +1693,7 @@ public final class MobileSession: ObservableObject {
                 // Keep the original display file name when staged from a security-scoped URL.
                 await executeTransferActions(actions.map { action in
                     if case .sendPacket(let p, .fileOffer(var offer)) = action {
-                        offer.name = url.lastPathComponent
+                        offer.name = offeredName(url)
                         return .sendPacket(peerHex: p, packet: .fileOffer(offer))
                     }
                     return action

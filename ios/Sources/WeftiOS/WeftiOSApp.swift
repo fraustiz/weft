@@ -58,6 +58,17 @@ struct WeftProminentButtonStyle: ButtonStyle {
     }
 }
 
+/// Action row label: the icon carries the brand orange, the title stays neutral.
+struct WeftActionLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Label {
+            configuration.title.foregroundStyle(.primary)
+        } icon: {
+            configuration.icon.foregroundStyle(Color.weftOrange)
+        }
+    }
+}
+
 /// Hand-drawn vector symbol from `brand/final/weft-mark.svg`: three rounded pixels
 /// crossed by a needle exiting through the missing fourth pixel.
 struct BrandMark: View {
@@ -119,6 +130,40 @@ struct BrandMark: View {
             .rotated(by: -49.5 * .pi / 180.0)
         return path.applying(transform)
     }()
+}
+
+// MARK: - Clipboard Payload (System Paste Button or `weft://send-clipboard`)
+
+/// What a clipboard send carries: copied text, or a PNG/JPEG image.
+enum ClipboardPayload: Transferable {
+    case text(String)
+    case image(Data, mime: String)
+
+    /// Representations in order of preference: text first, then PNG, JPEG and
+    /// any other image re-encoded, like the pasteboard path.
+    static var transferRepresentation: some TransferRepresentation {
+        ProxyRepresentation(importing: { (text: String) in ClipboardPayload.text(text) })
+        DataRepresentation(importedContentType: .png) { ClipboardPayload.image($0, mime: "image/png") }
+        DataRepresentation(importedContentType: .jpeg) { ClipboardPayload.image($0, mime: "image/jpeg") }
+        DataRepresentation(importedContentType: .image) { data in
+            guard let image = UIImage(data: data), let payload = encoded(image) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            return payload
+        }
+    }
+
+    /// PNG when it fits the clipboard image limit, else JPEG.
+    static func encoded(_ image: UIImage) -> ClipboardPayload? {
+        if let png = image.pngData(), ClipboardImageValidator.canOffer(data: png, mime: "image/png") {
+            return .image(png, mime: "image/png")
+        }
+        if let jpg = image.jpegData(compressionQuality: 0.9),
+           ClipboardImageValidator.canOffer(data: jpg, mime: "image/jpeg") {
+            return .image(jpg, mime: "image/jpeg")
+        }
+        return nil
+    }
 }
 
 // MARK: - iOS App Coordinator (`MobileAppModel`)
@@ -340,7 +385,10 @@ final class MobileAppModel: ObservableObject {
         if file.pathExtension != "wefttext" {
             // sendFiles stages a private copy before returning, so the inbox copy
             // can be removed only after that handoff succeeds.
-            if await session.sendFiles([file], to: peerHex) == 1 {
+            // The extension queues `<UUID>_<name>`; offer the original name.
+            if await session.sendFiles([file], to: peerHex, offeredName: {
+                ShareInbox.originalName(of: $0.lastPathComponent)
+            }) == 1 {
                 try? FileManager.default.removeItem(at: file)
                 pendingShareFile = nil
             } else { shareFailed = true }
@@ -361,49 +409,52 @@ final class MobileAppModel: ObservableObject {
         }
     }
 
-    func sendClipboardNow(to peerHex: String? = nil) async {
+    /// Sends a payload handed over by the system Paste button, or read from
+    /// the pasteboard by `sendClipboardNow`.
+    func sendClipboard(_ payload: ClipboardPayload?, to peerHex: String? = nil) async {
         guard let session else { return }
+        let ok: Bool
+        switch payload {
+        case .text(let text)?:
+            ok = await session.sendClipboardText(text, to: peerHex)
+        case .image(let data, let mime)?:
+            ok = await session.sendClipboardImage(data: data, mime: mime, to: peerHex)
+        case nil:
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            return
+        }
+        if ok { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+    }
+
+    /// `weft://send-clipboard`: reads the pasteboard directly, so iOS asks the
+    /// user to allow pasting. In-app buttons use the system Paste button instead.
+    func sendClipboardNow() async {
+        await sendClipboard(Self.pasteboardPayload())
+    }
+
+    private static func pasteboardPayload() -> ClipboardPayload? {
         let pb = UIPasteboard.general
 
         // 1. Prefer non-empty text if present on the pasteboard.
         if pb.hasStrings, let text = pb.string, !text.isEmpty {
-            let ok = await session.sendClipboardText(text, to: peerHex)
-            if ok {
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            }
-            return
+            return .text(text)
         }
 
         // 2. Otherwise inspect PNG / JPEG / UIImage on the pasteboard.
         if let pngData = pb.data(forPasteboardType: UTType.png.identifier),
            ClipboardImageValidator.canOffer(data: pngData, mime: "image/png") {
-            let ok = await session.sendClipboardImage(data: pngData, mime: "image/png", to: peerHex)
-            if ok { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
-            return
+            return .image(pngData, mime: "image/png")
         }
 
         if let jpegData = pb.data(forPasteboardType: UTType.jpeg.identifier),
            ClipboardImageValidator.canOffer(data: jpegData, mime: "image/jpeg") {
-            let ok = await session.sendClipboardImage(data: jpegData, mime: "image/jpeg", to: peerHex)
-            if ok { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
-            return
+            return .image(jpegData, mime: "image/jpeg")
         }
 
         if pb.hasImages, let image = pb.image {
-            if let png = image.pngData(), ClipboardImageValidator.canOffer(data: png, mime: "image/png") {
-                let ok = await session.sendClipboardImage(data: png, mime: "image/png", to: peerHex)
-                if ok { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
-                return
-            }
-            if let jpg = image.jpegData(compressionQuality: 0.9),
-               ClipboardImageValidator.canOffer(data: jpg, mime: "image/jpeg") {
-                let ok = await session.sendClipboardImage(data: jpg, mime: "image/jpeg", to: peerHex)
-                if ok { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
-                return
-            }
+            return ClipboardPayload.encoded(image)
         }
-
-        UINotificationFeedbackGenerator().notificationOccurred(.error)
+        return nil
     }
 
     /// Writes `text` to the local pasteboard marked local-only with a 5-minute expiry
@@ -450,19 +501,17 @@ struct WeftiOSApp: App {
                                 Task { await model.sendSharedItem(to: peer.id) }
                             }
                         }
-                        .navigationTitle(Locale.preferredLanguages.first?.hasPrefix("fr") == true
-                            ? "Envoyer à un appareil" : "Send to a device")
+                        .tint(.primary)
+                        .navigationTitle(t("Send to a device", "Envoyer à un appareil"))
                         .overlay {
                             if (model.snapshot?.peers ?? []).isEmpty {
-                                Text(Locale.preferredLanguages.first?.hasPrefix("fr") == true
-                                    ? "Associez un appareil dans Weft avant d’envoyer ce partage."
-                                    : "Pair a device in Weft before sending this share.")
+                                Text(t("Pair a device in Weft before sending this share.",
+                                       "Associez un appareil dans Weft avant d’envoyer ce partage."))
                                     .padding()
                             }
                         }
-                        .alert(Locale.preferredLanguages.first?.hasPrefix("fr") == true
-                            ? "Envoi impossible. Réessayez quand l’appareil est connecté."
-                            : "Could not send. Retry when the device is connected.",
+                        .alert(t("Could not send. Retry when the device is connected.",
+                                 "Envoi impossible. Réessayez quand l’appareil est connecté."),
                             isPresented: $model.shareFailed) { Button("OK", role: .cancel) {} }
                     }
                 }

@@ -11,10 +11,13 @@ public enum Language: Sendable, Equatable {
     case english
     case french
 
-    /// The language of this process, decided once.
+    /// The language of this process, decided once from the user's preferred
+    /// languages. `Bundle.main.preferredLocalizations` is not used: it falls
+    /// back to the development region (English) whenever the bundle declares
+    /// no French localization, which made the app English on French devices.
     public static let current: Language = detect(
         forced: ProcessInfo.processInfo.environment["WEFT_LANG"],
-        preferred: Bundle.main.preferredLocalizations + Locale.preferredLanguages
+        preferred: Locale.preferredLanguages
     )
 
     /// `forced` wins when it names a language; else the first preferred
@@ -36,6 +39,20 @@ public enum Language: Sendable, Equatable {
 /// Picks the English or the French version of a text.
 public func t(_ english: String, _ french: String) -> String {
     Language.current == .french ? french : english
+}
+
+// MARK: - Share extension inbox
+
+public enum ShareInbox {
+    /// The share extension queues a file as `<UUID>_<original name>`; this
+    /// returns the original name, or `fileName` unchanged without that prefix.
+    public static func originalName(of fileName: String) -> String {
+        let parts = fileName.split(separator: "_", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2, UUID(uuidString: String(parts[0])) != nil, !parts[1].isEmpty else {
+            return fileName
+        }
+        return String(parts[1])
+    }
 }
 
 // MARK: - Hex helpers
