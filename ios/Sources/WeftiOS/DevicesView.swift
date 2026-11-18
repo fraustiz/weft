@@ -130,25 +130,41 @@ struct DevicesView: View {
     }
 }
 
-/// "Send Clipboard" row. The system Paste button hands over the pasteboard
-/// without a prompt; programmatic `UIPasteboard` reads are refused on iOS 27
-/// unless the user allows them. `nil` peer sends to the whole group.
+/// "Send Clipboard" row: the whole row is the button. It reads the pasteboard,
+/// so iOS asks to allow pasting unless Weft is allowed in Settings; when it
+/// sends nothing, an alert says why. `nil` peer sends to the whole group.
 struct SendClipboardRow: View {
     @ObservedObject var model: MobileAppModel
     let peerHex: String?
 
     var body: some View {
-        HStack(spacing: 12) {
+        Button {
+            Task { await model.sendClipboardNow(to: peerHex) }
+        } label: {
             Label(t("Send Clipboard", "Envoyer le presse-papiers"), systemImage: "doc.on.clipboard")
                 .labelStyle(WeftActionLabelStyle())
-            Spacer(minLength: 0)
-            PasteButton(payloadType: ClipboardPayload.self) { [model, peerHex] items in
-                guard let payload = items.first else { return }
-                Task { @MainActor in await model.sendClipboard(payload, to: peerHex) }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        // Like the other action rows: neutral title, orange icon.
+        .buttonStyle(.plain)
+        .alert(item: $model.clipboardProblem) { problem in
+            switch problem {
+            case .empty:
+                Alert(title: Text(t("Nothing to send", "Rien à envoyer")),
+                      message: Text(t("Copy some text or a PNG or JPEG image first.",
+                                      "Copiez d’abord du texte ou une image PNG ou JPEG.")))
+            case .denied:
+                Alert(title: Text(t("Pasting is not allowed", "Collage non autorisé")),
+                      message: Text(t("In Settings › Weft › Paste from Other Apps, choose Allow so Weft can send your clipboard without asking.",
+                                      "Dans Réglages › Weft › Coller depuis d’autres apps, choisissez Autoriser pour que Weft envoie le presse-papiers sans demander.")),
+                      primaryButton: .default(Text(t("Open Settings", "Ouvrir Réglages"))) {
+                          if let url = URL(string: UIApplication.openSettingsURLString) {
+                              UIApplication.shared.open(url)
+                          }
+                      },
+                      secondaryButton: .cancel(Text(t("Not Now", "Plus tard"))))
             }
-            .labelStyle(.titleAndIcon)
-            .buttonBorderShape(.roundedRectangle(radius: 10))
-            .tint(.weftOrange)
         }
     }
 }

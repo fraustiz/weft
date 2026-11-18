@@ -146,23 +146,9 @@ struct BrandMark: View {
 // MARK: - Clipboard Payload (System Paste Button or `weft://send-clipboard`)
 
 /// What a clipboard send carries: copied text, or a PNG/JPEG image.
-enum ClipboardPayload: Transferable {
+enum ClipboardPayload {
     case text(String)
     case image(Data, mime: String)
-
-    /// Representations in order of preference: text first, then PNG, JPEG and
-    /// any other image re-encoded, like the pasteboard path.
-    static var transferRepresentation: some TransferRepresentation {
-        ProxyRepresentation(importing: { (text: String) in ClipboardPayload.text(text) })
-        DataRepresentation(importedContentType: .png) { ClipboardPayload.image($0, mime: "image/png") }
-        DataRepresentation(importedContentType: .jpeg) { ClipboardPayload.image($0, mime: "image/jpeg") }
-        DataRepresentation(importedContentType: .image) { data in
-            guard let image = UIImage(data: data), let payload = encoded(image) else {
-                throw CocoaError(.fileReadCorruptFile)
-            }
-            return payload
-        }
-    }
 
     /// PNG when it fits the clipboard image limit, else JPEG.
     static func encoded(_ image: UIImage) -> ClipboardPayload? {
@@ -189,6 +175,16 @@ final class MobileAppModel: ObservableObject {
     @Published var receivedLinkToOpen: URL?
     @Published var pendingShareFile: URL?
     @Published var shareFailed = false
+    /// Why the last "Send Clipboard" tap sent nothing, for the row's alert.
+    @Published var clipboardProblem: ClipboardProblem?
+
+    enum ClipboardProblem: Identifiable {
+        /// Nothing Weft can send: no text, PNG or JPEG.
+        case empty
+        /// There is content but iOS refused to paste it.
+        case denied
+        var id: Self { self }
+    }
 
     private(set) var session: MobileSession?
     private let alarmPlayer = AlarmPlayer()
@@ -420,8 +416,7 @@ final class MobileAppModel: ObservableObject {
         }
     }
 
-    /// Sends a payload handed over by the system Paste button, or read from
-    /// the pasteboard by `sendClipboardNow`.
+    /// Sends a payload read from the pasteboard by `sendClipboardNow`.
     func sendClipboard(_ payload: ClipboardPayload?, to peerHex: String? = nil) async {
         guard let session else { return }
         let ok: Bool
@@ -437,10 +432,19 @@ final class MobileAppModel: ObservableObject {
         if ok { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
     }
 
-    /// `weft://send-clipboard`: reads the pasteboard directly, so iOS asks the
-    /// user to allow pasting. In-app buttons use the system Paste button instead.
-    func sendClipboardNow() async {
-        await sendClipboard(Self.pasteboardPayload())
+    /// "Send Clipboard" row and `weft://send-clipboard`: reads the pasteboard
+    /// directly, so iOS asks the user to allow pasting unless Settings › Weft ›
+    /// Paste from Other Apps is set to Allow.
+    func sendClipboardNow(to peerHex: String? = nil) async {
+        let pb = UIPasteboard.general
+        // Reading these flags never prompts.
+        let hasContent = pb.hasStrings || pb.hasImages
+        guard let payload = Self.pasteboardPayload() else {
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            clipboardProblem = hasContent ? .denied : .empty
+            return
+        }
+        await sendClipboard(payload, to: peerHex)
     }
 
     private static func pasteboardPayload() -> ClipboardPayload? {
