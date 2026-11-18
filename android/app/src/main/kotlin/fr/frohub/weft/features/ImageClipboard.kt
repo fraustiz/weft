@@ -19,27 +19,43 @@ private fun safeImageDimensions(bytes: ByteArray): Boolean {
         bounds.outWidth.toLong() * bounds.outHeight <= 16L * 1024 * 1024
 }
 
+/** What [readClipboardImage] found, so the user is told why an image is refused. */
+sealed interface ImageRead {
+    class Image(val mime: String, val bytes: ByteArray) : ImageRead
+    /** Over [MAX_CLIPBOARD_IMAGE_BYTES]. */
+    data object TooLarge : ImageRead
+    /** Not a PNG or JPEG image. */
+    data object Unsupported : ImageRead
+    /** Not readable, or not an image this phone can decode. */
+    data object Unreadable : ImageRead
+}
+
 /** Only content URIs are read: no file paths or remote URLs from another app. */
-suspend fun readClipboardImage(context: Context, uri: Uri): Pair<String, ByteArray>? = withContext(Dispatchers.IO) {
-    if (uri.scheme != "content") return@withContext null
+suspend fun readClipboardImage(context: Context, uri: Uri): ImageRead = withContext(Dispatchers.IO) {
+    if (uri.scheme != "content") return@withContext ImageRead.Unreadable
     try {
-        val mime = context.contentResolver.getType(uri)?.lowercase() ?: return@withContext null
-        if (mime !in setOf("image/png", "image/jpeg")) return@withContext null
+        val mime = context.contentResolver.getType(uri)?.lowercase() ?: return@withContext ImageRead.Unsupported
+        if (mime !in setOf("image/png", "image/jpeg")) return@withContext ImageRead.Unsupported
         val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
             val output = ByteArrayOutputStream()
             val buffer = ByteArray(16 * 1024)
             while (true) {
                 val count = input.read(buffer)
                 if (count < 0) break
-                if (output.size() + count > MAX_CLIPBOARD_IMAGE_BYTES) return@withContext null
+                if (output.size() + count > MAX_CLIPBOARD_IMAGE_BYTES) return@withContext ImageRead.TooLarge
                 output.write(buffer, 0, count)
             }
             output.toByteArray()
-        } ?: return@withContext null
-        (mime to bytes).takeIf { isClipboardImage(mime, bytes) && safeImageDimensions(bytes) }
-    } catch (_: java.io.IOException) { null }
-      catch (_: SecurityException) { null }
-      catch (_: IllegalArgumentException) { null }
+        } ?: return@withContext ImageRead.Unreadable
+        when {
+            bytes.isEmpty() -> ImageRead.Unreadable
+            !isClipboardImage(mime, bytes) -> ImageRead.Unsupported
+            !safeImageDimensions(bytes) -> ImageRead.Unreadable
+            else -> ImageRead.Image(mime, bytes)
+        }
+    } catch (_: java.io.IOException) { ImageRead.Unreadable }
+      catch (_: SecurityException) { ImageRead.Unreadable }
+      catch (_: IllegalArgumentException) { ImageRead.Unreadable }
 }
 
 /** Writes only our private cache directory; FileProvider grants readers access to this URI. */

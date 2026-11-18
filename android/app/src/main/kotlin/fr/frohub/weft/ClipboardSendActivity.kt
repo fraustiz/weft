@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.annotation.StringRes
 import androidx.core.content.IntentCompat
+import fr.frohub.weft.features.ImageRead
 import fr.frohub.weft.features.isShareableUrl
 import fr.frohub.weft.features.readClipboardImage
 import kotlinx.coroutines.Dispatchers
@@ -77,12 +78,10 @@ class ClipboardSendActivity : Activity() {
             return finish()
         }
         val uri = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, android.net.Uri::class.java)
-        if (uri == null) { toast(R.string.toast_clipboard_not_text); return finish() }
+        if (uri == null) { toast(R.string.toast_image_unreadable); return finish() }
         val app = weft
         app.core.scope.launch {
-            val image = readClipboardImage(app, uri)
-            val result = image?.let { app.features.sendClipboardImage(it.first, it.second) }
-            val message = result?.let { toastFor(it, R.string.toast_image_requested) } ?: R.string.toast_clipboard_not_text
+            val message = sendImage(app, uri)
             withContext(Dispatchers.Main) {
                 Toast.makeText(app, message, Toast.LENGTH_SHORT).show()
                 finish()
@@ -111,9 +110,7 @@ class ClipboardSendActivity : Activity() {
             val app = weft
             val uri = item.uri
             app.core.scope.launch {
-                val image = readClipboardImage(app, uri)
-                val result = image?.let { app.features.sendClipboardImage(it.first, it.second) }
-                val message = result?.let { toastFor(it, R.string.toast_image_requested) } ?: R.string.toast_clipboard_not_text
+                val message = sendImage(app, uri)
                 withContext(Dispatchers.Main) { Toast.makeText(app, message, Toast.LENGTH_SHORT).show() }
             }
             return
@@ -150,11 +147,26 @@ class ClipboardSendActivity : Activity() {
     }
 }
 
+/** Reads and sends an image; returns the toast that tells how it ended. */
+@StringRes
+private suspend fun sendImage(app: WeftApplication, uri: android.net.Uri): Int =
+    when (val read = readClipboardImage(app, uri)) {
+        is ImageRead.Image -> toastFor(app.features.sendClipboardImage(read.mime, read.bytes),
+            R.string.toast_image_requested, R.string.toast_image_too_large)
+        ImageRead.TooLarge -> R.string.toast_image_too_large
+        ImageRead.Unsupported -> R.string.toast_image_unsupported
+        ImageRead.Unreadable -> R.string.toast_image_unreadable
+    }
+
 /** The toast that tells how a send ended. */
 @StringRes
-private fun toastFor(result: SendResult, @StringRes sentMessage: Int): Int = when (result) {
+private fun toastFor(
+    result: SendResult,
+    @StringRes sentMessage: Int,
+    @StringRes tooLarge: Int = R.string.toast_too_large,
+): Int = when (result) {
     is SendResult.Sent -> sentMessage
     SendResult.NotConnected -> R.string.toast_not_connected
     SendResult.NoPairedDevice -> R.string.toast_no_paired_device
-    SendResult.TooLarge -> R.string.toast_too_large
+    SendResult.TooLarge -> tooLarge
 }

@@ -225,10 +225,19 @@ impl Clipboard for AppClipboard {
                 Content::TooLarge
             }
             PasteboardContent::Text { text } => Content::Text(text),
-            PasteboardContent::Image { mime, bytes } => ImageMime::parse(&mime)
-                .and_then(|mime| ClipboardImage::new(mime, bytes))
-                .map(Content::Image)
-                .unwrap_or(Content::TooLarge),
+            PasteboardContent::Image { mime, bytes } => {
+                let len = bytes.len();
+                match ImageMime::parse(&mime).and_then(|mime| ClipboardImage::new(mime, bytes)) {
+                    Some(image) => {
+                        tracing::debug!(%mime, len, "pasteboard image read");
+                        Content::Image(image)
+                    }
+                    None => {
+                        tracing::debug!(%mime, len, "pasteboard image refused: type, signature or size");
+                        Content::TooLarge
+                    }
+                }
+            }
             PasteboardContent::TooLarge => Content::TooLarge,
             PasteboardContent::Excluded => Content::Excluded,
             PasteboardContent::NoText => Content::NoText,
@@ -694,6 +703,7 @@ impl WeftCore {
                 outcome.sent = true;
             }
             Outgoing::SendImage(image) => {
+                tracing::debug!(?image, "pasteboard image handed to the worker");
                 self.send(Command::SendImage(image));
                 outcome.sent = true;
             }

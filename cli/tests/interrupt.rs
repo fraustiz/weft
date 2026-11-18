@@ -150,3 +150,49 @@ async fn frames_kept_while_pairing_are_handled_from_the_queue() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn queued_lan_frame_precedes_a_later_relay_frame() {
+    timed(async {
+        let url = start_relay().await;
+        let (a_dev, b_dev) = (TestDevice::new(&url), TestDevice::new(&url));
+        let mut a = a_dev.connect().await;
+        let mut b = b_dev.connect().await;
+        pair(&mut a, &mut b).await;
+
+        let direct = a
+            .seal_for(b.device_id(), weft_protocol::Kind::ClipboardText, b"LAN")
+            .unwrap();
+        a.send_text("relay fallback").await.unwrap();
+        // Keep the relay frame read ahead so both paths are ready.
+        a.settle().await.unwrap();
+        b.settle().await.unwrap();
+
+        let first = b
+            .next_event_with_lan(
+                Some(STEP),
+                std::future::pending(),
+                std::future::ready(direct.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first, Next::Interrupted(direct.clone()));
+        assert_eq!(
+            b.receive_frame(&direct).await.unwrap(),
+            Event::Clipboard {
+                from: a.device_id(),
+                text: "LAN".into(),
+            }
+        );
+        assert_eq!(
+            b.next_event_or(Some(STEP), std::future::pending::<()>())
+                .await
+                .unwrap(),
+            Next::Event(Event::Clipboard {
+                from: a.device_id(),
+                text: "relay fallback".into(),
+            })
+        );
+    })
+    .await;
+}

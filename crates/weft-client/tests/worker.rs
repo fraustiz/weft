@@ -2918,3 +2918,99 @@ async fn commands_are_listed_and_run_by_id_only() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_silent_open_lan_stream_falls_back_to_the_relay_in_order() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut phone) = paired(&url).await;
+        let (pc, phone_id) = (tested.id(), phone.id());
+        phone.send(pc, &phone_capabilities()).await;
+        phone.expect_packet(pc, is_capabilities).await;
+        // The LAN listener trusts the devices known when it started: a new
+        // connection, which a second one with the same identity forces,
+        // makes it trust the phone.
+        let intruder = Session::connect(tested.dir.clone()).await.unwrap();
+        tested
+            .wait(|snapshot| matches!(snapshot.status, Status::Offline { .. }))
+            .await;
+        tested.wait(Snapshot::is_connected).await;
+        drop(intruder);
+        // The phone opens a stream to the computer, on the port it announced
+        // last: the earlier listeners are closed.
+        let stream = loop {
+            let Packet::LanEndpoints { port, .. } = phone
+                .expect_packet(pc, |packet| matches!(packet, Packet::LanEndpoints { .. }))
+                .await
+            else {
+                unreachable!();
+            };
+            if let Ok(stream) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                break stream;
+            }
+        };
+        // A text sent on it shows the computer installed the route.
+        let identity = phone.session.identity_arc();
+        let devices = phone.session.state().devices.clone();
+        let mut lan = weft_client::lan::Connection::authenticate(stream, &identity, &devices)
+            .await
+            .unwrap();
+        let text = phone
+            .session
+            .seal_for(pc, weft_protocol::Kind::ClipboardText, b"over the LAN")
+            .unwrap();
+        lan.send(&text).await.unwrap();
+        tested.expect_clipboard(&["over the LAN"]).await;
+
+        let links: Vec<_> = ["a", "b", "c"]
+            .iter()
+            .map(|path| Packet::ShareUrl {
+                url: format!("https://example.org/{path}"),
+            })
+            .collect();
+        for link in &links {
+            tested
+                .worker
+                .send(Command::SendPacket(phone_id, link.clone()));
+        }
+        // The peer reads the first frame but stays silent and holds the TCP
+        // socket open. Its TCP stack took all the bytes without a LAN receipt.
+        let frame = tokio::time::timeout(STEP, lan.receive())
+            .await
+            .unwrap()
+            .unwrap();
+        let first = phone.session.receive_frame(&frame).await.unwrap();
+        let Event::Packet { json, .. } = first else {
+            panic!("{first:?}");
+        };
+        assert_eq!(packets::parse(&json), Parsed::Known(links[0].clone()));
+
+        // The relay brings the three again, in order: the first is dropped
+        // as a replay, the others arrive.
+        let mut seen = Vec::new();
+        while seen.len() < 3 {
+            match phone.next_any().await {
+                Event::Dropped { from, reason } if from == Some(pc) => seen.push(Err(reason)),
+                Event::Packet { from, json } if from == pc => {
+                    if let Parsed::Known(packet @ Packet::ShareUrl { .. }) = packets::parse(&json) {
+                        seen.push(Ok(packet));
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            seen,
+            [
+                Err(weft_cli::DropReason::Replay(
+                    weft_cli::state::ReplayError::Duplicate
+                )),
+                Ok(links[1].clone()),
+                Ok(links[2].clone()),
+            ]
+        );
+        drop(lan);
+        tested.stop().await;
+    })
+    .await;
+}

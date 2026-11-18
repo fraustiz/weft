@@ -1691,3 +1691,112 @@ async fn announces_and_runs_shortcuts() {
     })
     .await;
 }
+
+/// What the Android app announces with its default switches
+/// (`android/.../features/Capabilities.kt`): the base types, then every
+/// feature on by default.
+const ANDROID_INCOMING: &[&str] = &[
+    "capabilities",
+    "state.request",
+    "clipboard.image.offer",
+    "clipboard.image.accept",
+    "file.ack",
+    "file.done",
+    "file.cancel",
+    "file.reject",
+    "battery",
+    "connectivity",
+    "ring",
+    "ring.stop",
+    "ping",
+    "share.url",
+    "file.offer",
+    "file.accept",
+    "notification.dismiss",
+    "notification.action",
+    "notification.reply",
+    "notification.request",
+    "call.mute",
+    "media",
+    "media.command",
+    "media.art",
+    "volume",
+    "volume.set",
+    "command.list",
+];
+const ANDROID_OUTGOING: &[&str] = &[
+    "capabilities",
+    "state.request",
+    "clipboard.image.offer",
+    "clipboard.image.accept",
+    "file.ack",
+    "file.done",
+    "file.cancel",
+    "file.reject",
+    "battery",
+    "connectivity",
+    "ring",
+    "ring.stop",
+    "ping",
+    "share.url",
+    "file.offer",
+    "file.accept",
+    "notification",
+    "notification.removed",
+    "call",
+    "media",
+    "media.command",
+    "media.art",
+    "volume",
+    "volume.set",
+    "input.pointer",
+    "input.click",
+    "input.key",
+    "presenter",
+    "command.run",
+];
+
+#[tokio::test]
+async fn a_copied_image_is_offered_to_an_android_peer() {
+    timed(async {
+        let url = start_relay().await;
+        let (tested, mut peer) = paired(&url).await;
+        let mac = tested.id();
+        let android = Packet::Capabilities(packets::Capabilities {
+            platform: "android".into(),
+            incoming: ANDROID_INCOMING.iter().map(|k| k.to_string()).collect(),
+            outgoing: ANDROID_OUTGOING.iter().map(|k| k.to_string()).collect(),
+        });
+        peer.session
+            .send_packet(mac, &android.to_json())
+            .await
+            .unwrap();
+        let peer_hex = weft_cli::hex(&peer.id());
+        tested
+            .wait(|snapshot| {
+                snapshot
+                    .devices
+                    .iter()
+                    .any(|device| device.id == peer_hex && device.platform.is_some())
+            })
+            .await;
+        assert!(!tested.core.poll_pasteboard().sent);
+
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.resize(2_975, 0x42);
+        tested.pasteboard.copy(PasteboardContent::Image {
+            mime: "image/png".into(),
+            bytes: png.clone(),
+        });
+        assert!(tested.core.poll_pasteboard().sent);
+        let Packet::ClipboardImageOffer(offer) = peer
+            .expect_packet(|packet| matches!(packet, Packet::ClipboardImageOffer(_)))
+            .await
+        else {
+            unreachable!();
+        };
+        assert_eq!(offer.size, png.len() as u64);
+        tested.blocking(|core| core.stop()).await;
+    })
+    .await;
+}

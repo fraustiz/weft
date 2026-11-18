@@ -11,7 +11,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -774,11 +774,32 @@ impl Session {
         timeout: Option<Duration>,
         interrupt: F,
     ) -> Result<Next<F::Output>> {
+        self.next_event_with_lan(timeout, interrupt, std::future::pending())
+            .await
+    }
+
+    /// Also receives accepted LAN envelopes. An already queued LAN envelope
+    /// goes first, so a subsequent frame sent through the relay cannot pass it.
+    pub async fn next_event_with_lan<F: Future>(
+        &mut self,
+        timeout: Option<Duration>,
+        interrupt: F,
+        lan: impl Future<Output = F::Output>,
+    ) -> Result<Next<F::Output>> {
         let deadline = timeout.map(|timeout| Instant::now() + timeout);
+        let mut lan = std::pin::pin!(lan);
         let frame = tokio::select! {
             frame = self.next_frame(deadline) => frame?,
             output = interrupt => return Ok(Next::Interrupted(output)),
+            output = &mut lan => return Ok(Next::Interrupted(output)),
         };
+        // A LAN frame can arrive during the WebSocket poll above.
+        if let Some(output) = lan.now_or_never() {
+            if let Some(frame) = frame {
+                self.pending.push_front(frame);
+            }
+            return Ok(Next::Interrupted(output));
+        }
         match frame {
             Some(frame) => self.handle(&frame).await.map(Next::Event),
             None => Ok(Next::Idle),

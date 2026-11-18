@@ -73,10 +73,10 @@ class LanRulesTest {
         val header = Header(kind = Kind.PACKET, sender = sender, recipient = recipient,
             messageId = ByteArray(16) { 3 }, counter = 1uL).encode()
         val frame = header + ByteArray(Weft.NONCE_LENGTH + Weft.TAG_LENGTH + 2)
-        assertTrue(LanRules.envelope(frame, sender.toHex(), recipient.toHex()))
-        assertFalse(LanRules.envelope(frame, recipient.toHex(), sender.toHex()))
-        assertFalse(LanRules.envelope(frame.copyOf(10), sender.toHex(), recipient.toHex()))
-        assertFalse(LanRules.envelope(frame.copyOf(Lan.MAX_FRAME_LENGTH + 1), sender.toHex(), recipient.toHex()))
-        assertFalse(LanRules.envelope(byteArrayOf(0xb2.toByte()) + ByteArray(120), sender.toHex(), recipient.toHex()))
+        assertNotNull(LanRules.envelope(frame, sender.toHex(), recipient.toHex()))
+        assertNull(LanRules.envelope(frame, recipient.toHex(), sender.toHex()))
+        assertNull(LanRules.envelope(frame.copyOf(10), sender.toHex(), recipient.toHex()))
+        assertNull(LanRules.envelope(frame.copyOf(Lan.MAX_FRAME_LENGTH + 1), sender.toHex(), recipient.toHex()))
+        assertNull(LanRules.envelope(byteArrayOf(0xb2.toByte()) + ByteArray(120), sender.toHex(), recipient.toHex()))
     }
 }

@@ -66,8 +66,8 @@ pub const AUTH_ACCEPTED: u8 = 0xA2;
 pub const LAN_CHALLENGE: u8 = 0xC0;
 /// First byte of a direct LAN authentication frame (`0xC1 || device_id_16 || sig_64`).
 pub const LAN_AUTH: u8 = 0xC1;
-/// Domain-separation prefix for direct LAN mutual authentication signatures.
-pub const LAN_CONTEXT: &[u8] = b"weft-lan-v1";
+/// Domain-separation prefix for direct LAN mutual authentication with frame receipts.
+pub const LAN_CONTEXT: &[u8] = b"weft-lan-v2";
 /// Length of an encoded [`LanChallenge`] frame.
 pub const LAN_CHALLENGE_LEN: usize = 1 + AUTH_NONCE_LEN;
 /// Length of an encoded [`LanAuth`] frame.
@@ -970,7 +970,7 @@ fn lan_signed_message(peer_nonce: &[u8; 32], own_nonce: &[u8; 32]) -> [u8; LAN_C
     out
 }
 
-/// Signs `b"weft-lan-v1" || peer_nonce || own_nonce` with `identity`'s Ed25519
+/// Signs `b"weft-lan-v2" || peer_nonce || own_nonce` with `identity`'s Ed25519
 /// signing key.
 pub fn sign_lan_auth(identity: &Identity, peer_nonce: &[u8; 32], own_nonce: &[u8; 32]) -> LanAuth {
     let message = lan_signed_message(peer_nonce, own_nonce);
@@ -1208,6 +1208,16 @@ mod tests {
             Ok(())
         );
 
+        // An older peer must fail authentication before receipt framing starts.
+        let legacy_message = [b"weft-lan-v1".as_slice(), chal_b.nonce(), chal_a.nonce()].concat();
+        let legacy = LanAuth {
+            device_id: a.device_id(),
+            signature: sodium::sign_detached(&legacy_message, &a.sign_sk),
+        };
+        assert_eq!(
+            verify_lan_auth(&a.sign_pk(), chal_b.nonce(), chal_a.nonce(), &legacy),
+            Err(Error::InvalidSignature)
+        );
         // Swapped nonces (reflection attempt) must fail.
         assert_eq!(
             verify_lan_auth(&a.sign_pk(), chal_a.nonce(), chal_b.nonce(), &auth_a),

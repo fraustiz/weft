@@ -1,12 +1,12 @@
 package fr.frohub.weft.protocol
 
-/** Wire-compatible with Rust's weft-lan-v1 challenge and Ed25519 authentication. */
+/** Wire-compatible with Rust's weft-lan-v2 challenge and Ed25519 authentication. */
 object Lan {
     const val CHALLENGE_LENGTH = 33
     const val AUTH_LENGTH = 81
     const val MAX_FRAME_LENGTH = Weft.HEADER_LENGTH + Weft.NONCE_LENGTH +
         Weft.MAX_CLIPBOARD_TEXT_LENGTH + Weft.TAG_LENGTH
-    private val context = "weft-lan-v1".toByteArray(Charsets.US_ASCII)
+    private val context = "weft-lan-v2".toByteArray(Charsets.US_ASCII)
 
     fun challenge(): ByteArray = byteArrayOf(0xc0.toByte()) + Sodium.randomBytes(32)
 

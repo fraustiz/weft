@@ -20,8 +20,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /** Encrypted envelopes only; the core still authenticates/decrypts and persists replay state. */
@@ -29,23 +27,19 @@ internal class LanTransport private constructor(
     parent: CoroutineScope,
     private val identity: Identity,
     devices: List<TrustedDevice>,
-    private val onFrame: suspend (ByteArray) -> Unit,
+    private val acceptFrame: (ByteArray) -> Boolean,
     private val server: ServerSocket,
 ) : AutoCloseable {
     private val job = SupervisorJob(parent.coroutineContext[Job])
     private val scope = CoroutineScope(Dispatchers.IO + job)
     private val own = identity.deviceId.toHex()
     private val trusted = devices.associateBy { it.deviceIdHex }
-    private val routes = ConcurrentHashMap<String, Link>()
+    private val routes = ConcurrentHashMap<String, LanLink>()
     private val sockets = ConcurrentHashMap.newKeySet<Socket>()
     private val dialing = ConcurrentHashMap.newKeySet<String>()
     private val handshakes = Semaphore(10)
     private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
     val port: Int get() = server.localPort
-
-    private class Link(val socket: Socket, val output: DataOutputStream) {
-        val writing = Mutex()
-    }
 
     init {
         scope.launch {
@@ -92,7 +86,7 @@ internal class LanTransport private constructor(
     }
 
     private suspend fun authenticateAndRead(socket: Socket, expected: String?): Boolean {
-        var installed: Pair<String, Link>? = null
+        var installed: Pair<String, LanLink>? = null
         try {
             socket.soTimeout = TIMEOUT
             socket.tcpNoDelay = true
@@ -116,24 +110,20 @@ internal class LanTransport private constructor(
                 peer
             }
             if (closed.get()) return false
-            val link = Link(socket, output)
+            val link = LanLink(socket, scope, TIMEOUT.toLong())
             if (routes.putIfAbsent(authenticated, link) != null) return false
             installed = authenticated to link
-            socket.soTimeout = 0 // Idle connections are allowed; a frame body has its own deadline.
-            while (!closed.get()) {
-                val length = input.readInt()
-                if (length !in 1..Lan.MAX_FRAME_LENGTH) throw IOException("invalid LAN size")
-                val frame = ByteArray(length)
-                deadline(socket) { input.readFully(frame) }
-                if (!LanRules.envelope(frame, authenticated, own)) throw IOException("invalid LAN route")
-                onFrame(frame)
+            socket.soTimeout = 0
+            link.read { frame ->
+                val header = LanRules.envelope(frame, authenticated, own)
+                // The core may itself be waiting for a receipt. A full queue refuses this frame.
+                if (header != null && acceptFrame(frame)) header.messageId else null
             }
-            return true
         } catch (e: CancellationException) { throw e }
         catch (_: IOException) { return installed != null }
         catch (_: SecurityException) { return false }
         finally {
-            installed?.let { (peer, link) -> routes.remove(peer, link) }
+            installed?.let { (peer, link) -> link.close(); routes.remove(peer, link) }
             sockets.remove(socket)
             runCatching { socket.close() }
         }
@@ -144,32 +134,20 @@ internal class LanTransport private constructor(
         if (closed.get() || frame.size < 34) return@withContext false
         val peer = frame.copyOfRange(18, 34).toHex()
         val link = routes[peer] ?: return@withContext false
-        if (!LanRules.envelope(frame, own, peer)) return@withContext false
-        link.writing.withLock {
-            try {
-                deadline(link.socket) {
-                    link.output.writeInt(frame.size)
-                    link.output.write(frame)
-                    link.output.flush()
-                }
-                true
-            } catch (_: IOException) {
-                routes.remove(peer, link)
-                runCatching { link.socket.close() }
-                false
-            }
-        }
+        val header = LanRules.envelope(frame, own, peer) ?: return@withContext false
+        link.send(frame, header.messageId)
     }
 
     /** Closing the socket also interrupts blocking writes, unlike SO_TIMEOUT alone. */
     private suspend fun <T> deadline(socket: Socket, block: () -> T): T {
-        val timer = scope.launch { delay(TIMEOUT.toLong()); runCatching { socket.close() } }
+        val timer = scope.launch(Dispatchers.Default) { delay(TIMEOUT.toLong()); runCatching { socket.close() } }
         return try { block() } finally { timer.cancel() }
     }
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         runCatching { server.close() }
+        routes.values.forEach(LanLink::close)
         sockets.forEach { runCatching { it.close() } }
         routes.clear()
         scope.cancel()
@@ -177,11 +155,14 @@ internal class LanTransport private constructor(
 
     companion object {
         private const val TIMEOUT = 5_000
-        suspend fun start(parent: CoroutineScope, identity: Identity, devices: List<TrustedDevice>, onFrame: suspend (ByteArray) -> Unit): LanTransport? {
+        suspend fun start(
+            parent: CoroutineScope, identity: Identity, devices: List<TrustedDevice>,
+            acceptFrame: (ByteArray) -> Boolean,
+        ): LanTransport? {
             var created: LanTransport? = null
             return try {
                 withContext(Dispatchers.IO) {
-                    try { LanTransport(parent, identity, devices, onFrame, ServerSocket(0)).also { created = it } }
+                    try { LanTransport(parent, identity, devices, acceptFrame, ServerSocket(0)).also { created = it } }
                     catch (_: IOException) { null }
                     catch (_: SecurityException) { null }
                 }

@@ -8,19 +8,20 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 use weft_cli::state::TrustedDevice;
 use weft_protocol::{
-    Header, Identity, LAN_AUTH_LEN, LAN_CHALLENGE_LEN, LanAuth, LanChallenge,
-    MAX_ENVELOPE_FRAME_LEN, sign_lan_auth, verify_lan_auth,
+    HEADER_LEN, Header, Identity, Kind, LAN_AUTH_LEN, LAN_CHALLENGE_LEN, LanAuth, LanChallenge,
+    MAX_ENVELOPE_FRAME_LEN, NONCE_LEN, TAG_LEN, sign_lan_auth, verify_lan_auth,
 };
 
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
+const MIN_FRAME_LEN: usize = HEADER_LEN + NONCE_LEN + TAG_LEN;
 
 fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid LAN frame")
@@ -41,6 +42,7 @@ impl Connection {
         identity: &Identity,
         trusted: &[TrustedDevice],
     ) -> io::Result<Self> {
+        stream.set_nodelay(true)?;
         let own = identity.device_id();
         let peer = timeout(IO_TIMEOUT, async {
             let challenge = LanChallenge::generate();
@@ -73,52 +75,87 @@ impl Connection {
         self.peer
     }
 
-    /// Writes an already sealed envelope. On failure, the caller may send the
-    /// same bytes through the relay; the shared replay window rejects duplicates.
+    /// Exchanges a single sealed envelope and its receipt on an otherwise
+    /// idle connection. The managed transport supports simultaneous sends.
     pub async fn send(&mut self, frame: &[u8]) -> io::Result<()> {
-        self.check(frame, self.own, self.peer)?;
+        let id = check_frame(frame, self.own, self.peer)?;
         timeout(IO_TIMEOUT, async {
-            self.stream.write_u32(frame.len() as u32).await?;
-            self.stream.write_all(frame).await
+            write_frame(&mut self.stream, frame).await?;
+            match read_record(&mut self.stream).await? {
+                Record::Receipt(received) if received == id => Ok(()),
+                _ => Err(invalid()),
+            }
         })
         .await?
     }
 
+    /// Reads a complete envelope without acknowledging it.
     pub async fn receive(&mut self) -> io::Result<Vec<u8>> {
-        let frame = timeout(IO_TIMEOUT, async {
-            let len = self.stream.read_u32().await? as usize;
-            if len > MAX_ENVELOPE_FRAME_LEN {
-                return Err(invalid());
+        match read_record(&mut self.stream).await? {
+            Record::Frame(frame) => {
+                check_frame(&frame, self.peer, self.own)?;
+                Ok(frame)
             }
-            let mut frame = vec![0; len];
-            self.stream.read_exact(&mut frame).await?;
-            Ok::<_, io::Error>(frame)
-        })
-        .await??;
-        self.check(&frame, self.peer, self.own)?;
-        Ok(frame)
+            Record::Receipt(_) => Err(invalid()),
+        }
     }
 
-    fn check(&self, frame: &[u8], sender: [u8; 16], recipient: [u8; 16]) -> io::Result<()> {
-        if frame.len() > MAX_ENVELOPE_FRAME_LEN {
-            return Err(invalid());
-        }
-        let prefix = frame.get(..weft_protocol::HEADER_LEN).ok_or_else(invalid)?;
-        let header = Header::decode(prefix).map_err(|_| invalid())?;
-        if header.sender != sender || header.recipient != recipient {
-            return Err(invalid());
-        }
-        Ok(())
+    /// Sends a receipt after the receiver has accepted a complete envelope.
+    pub async fn acknowledge(&mut self, frame: &[u8]) -> io::Result<()> {
+        let id = check_frame(frame, self.peer, self.own)?;
+        timeout(IO_TIMEOUT, write_receipt(&mut self.stream, id)).await?
     }
+}
+
+type MessageId = [u8; 16];
+
+// LAN v2 records use a big-endian u32. A positive length is followed by the
+// sealed envelope, unchanged. Zero is followed by the 16-byte message ID of
+// an accepted envelope. Each direction has at most one send awaiting receipt.
+enum Record {
+    Frame(Vec<u8>),
+    Receipt(MessageId),
+}
+
+async fn read_record(reader: &mut (impl AsyncRead + Unpin)) -> io::Result<Record> {
+    // Allow idle routes, but bound the rest of a record once it starts.
+    let mut prefix = [0; 4];
+    prefix[0] = reader.read_u8().await?;
+    timeout(IO_TIMEOUT, async {
+        reader.read_exact(&mut prefix[1..]).await?;
+        let len = u32::from_be_bytes(prefix) as usize;
+        if len == 0 {
+            let mut id = [0; 16];
+            reader.read_exact(&mut id).await?;
+            return Ok(Record::Receipt(id));
+        }
+        if !(MIN_FRAME_LEN..=MAX_ENVELOPE_FRAME_LEN).contains(&len) {
+            return Err(invalid());
+        }
+        let mut frame = vec![0; len];
+        reader.read_exact(&mut frame).await?;
+        Ok(Record::Frame(frame))
+    })
+    .await?
+}
+
+async fn write_frame(writer: &mut (impl AsyncWrite + Unpin), frame: &[u8]) -> io::Result<()> {
+    writer.write_u32(frame.len() as u32).await?;
+    writer.write_all(frame).await
+}
+
+async fn write_receipt(writer: &mut (impl AsyncWrite + Unpin), id: MessageId) -> io::Result<()> {
+    let mut receipt = [0; 20];
+    receipt[4..].copy_from_slice(&id);
+    writer.write_all(&receipt).await
 }
 
 enum NetworkEvent {
     Connected(Connection),
-    Frame(Vec<u8>),
     DialFailed([u8; 16]),
 }
 
-type WriteRequest = (Vec<u8>, oneshot::Sender<bool>);
+type WriteRequest = (Vec<u8>, MessageId, oneshot::Sender<()>);
 
 /// Per-relay-connection LAN routes. Dropping it aborts all listeners, dials and
 /// stream tasks. Bounded queues limit memory even if the relay is busy.
@@ -128,6 +165,7 @@ pub struct Transport {
     trusted: Vec<TrustedDevice>,
     events: mpsc::Receiver<NetworkEvent>,
     event_sink: mpsc::Sender<NetworkEvent>,
+    incoming: mpsc::Sender<Vec<u8>>,
     routes: BTreeMap<[u8; 16], mpsc::Sender<WriteRequest>>,
     dialing: std::collections::BTreeSet<[u8; 16]>,
     tasks: JoinSet<()>,
@@ -135,7 +173,11 @@ pub struct Transport {
 }
 
 impl Transport {
-    pub async fn start(identity: Arc<Identity>, trusted: Vec<TrustedDevice>) -> io::Result<Self> {
+    pub async fn start(
+        identity: Arc<Identity>,
+        trusted: Vec<TrustedDevice>,
+        incoming: mpsc::Sender<Vec<u8>>,
+    ) -> io::Result<Self> {
         let listener = TcpListener::bind("0.0.0.0:0").await?;
         let port = listener.local_addr()?.port();
         let (event_sink, events) = mpsc::channel(16);
@@ -165,6 +207,7 @@ impl Transport {
             trusted,
             events,
             event_sink,
+            incoming,
             routes: BTreeMap::new(),
             dialing: Default::default(),
             tasks,
@@ -239,50 +282,56 @@ impl Transport {
             return;
         }
         self.dialing.remove(&peer);
-        let (mut reader, mut writer) = connection.stream.into_split();
-        let (writes, mut requests) = mpsc::channel::<WriteRequest>(2);
+        let (mut reader, writer) = connection.stream.into_split();
+        let writer = Mutex::new(writer);
+        let (writes, mut requests) = mpsc::channel::<WriteRequest>(1);
+        let (receipts, mut received) = mpsc::channel(1);
         self.routes.insert(peer, writes);
-        let (sink, own) = (self.event_sink.clone(), self.own);
+        let (incoming, own) = (self.incoming.clone(), self.own);
         self.tasks.spawn(async move {
             let receive = async {
-                loop {
-                    let len = reader.read_u32().await? as usize;
-                    if len > MAX_ENVELOPE_FRAME_LEN {
-                        return Err(invalid());
-                    }
-                    let mut frame = vec![0; len];
-                    timeout(IO_TIMEOUT, reader.read_exact(&mut frame)).await??;
-                    check_frame(&frame, peer, own)?;
-                    if sink.send(NetworkEvent::Frame(frame)).await.is_err() {
-                        return Ok::<_, io::Error>(());
+                while let Ok(record) = read_record(&mut reader).await {
+                    match record {
+                        Record::Receipt(id) => receipts.try_send(id).map_err(|_| invalid())?,
+                        Record::Frame(frame) => {
+                            let id = check_frame(&frame, peer, own)?;
+                            // The worker might itself be waiting for a receipt. A full queue
+                            // ends the route so this unaccepted frame can go through the relay.
+                            incoming.try_send(frame).map_err(|_| invalid())?;
+                            timeout(IO_TIMEOUT, async {
+                                write_receipt(&mut *writer.lock().await, id).await
+                            })
+                            .await??;
+                        }
                     }
                 }
+                Ok::<_, io::Error>(())
             };
             let send = async {
-                while let Some((frame, ack)) = requests.recv().await {
-                    let result = timeout(IO_TIMEOUT, async {
-                        writer.write_u32(frame.len() as u32).await?;
-                        writer.write_all(&frame).await
+                while let Some((frame, id, confirmed)) = requests.recv().await {
+                    timeout(IO_TIMEOUT, async {
+                        write_frame(&mut *writer.lock().await, &frame).await?;
+                        if received.recv().await != Some(id) {
+                            return Err(invalid());
+                        }
+                        Ok(())
                     })
-                    .await;
-                    let success = matches!(result, Ok(Ok(())));
-                    let _ = ack.send(success);
-                    if !success {
-                        break;
-                    }
+                    .await??;
+                    let _ = confirmed.send(());
                 }
+                Ok::<_, io::Error>(())
             };
+            // Either direction failing closes the socket and drops the in-flight receipt waiter.
             tokio::select! { _ = receive => {}, _ = send => {} }
         });
     }
 
-    /// Returns only frames from authenticated streams, ready for the common
-    /// decryption/replay path. Channel receive is cancellation safe.
-    pub async fn receive(&mut self) -> Option<Vec<u8>> {
-        loop {
-            match self.events.recv().await? {
+    /// Installs newly authenticated routes while the worker waits for other
+    /// input. The event receive is cancellation safe.
+    pub async fn maintain(&mut self) {
+        while let Some(event) = self.events.recv().await {
+            match event {
                 NetworkEvent::Connected(connection) => self.install(connection),
-                NetworkEvent::Frame(frame) => return Some(frame),
                 NetworkEvent::DialFailed(peer) => {
                     self.dialing.remove(&peer);
                 }
@@ -290,19 +339,25 @@ impl Transport {
         }
     }
 
+    /// Whether an authenticated stream to `peer` is open, for logs.
+    pub fn has_route(&self, peer: &[u8; 16]) -> bool {
+        self.routes
+            .get(peer)
+            .is_some_and(|route| !route.is_closed())
+    }
+
+    /// Returns true only after the peer accepts this envelope. The worker
+    /// sends serially, so an unconfirmed frame falls back before the next send.
     pub async fn send(&mut self, peer: [u8; 16], frame: &[u8]) -> bool {
         while self.tasks.try_join_next().is_some() {}
-        if check_frame(frame, self.own, peer).is_err() {
+        let Ok(id) = check_frame(frame, self.own, peer) else {
             return false;
-        }
+        };
         let Some(route) = self.routes.get(&peer) else {
             return false;
         };
-        let (ack, result) = oneshot::channel();
-        if route.try_send((frame.to_vec(), ack)).is_err() {
-            return false;
-        }
-        matches!(timeout(IO_TIMEOUT, result).await, Ok(Ok(true)))
+        let (confirmed, result) = oneshot::channel();
+        route.try_send((frame.to_vec(), id, confirmed)).is_ok() && result.await.is_ok()
     }
 }
 
@@ -313,16 +368,21 @@ fn private_address(ip: &IpAddr) -> bool {
     }
 }
 
-fn check_frame(frame: &[u8], sender: [u8; 16], recipient: [u8; 16]) -> io::Result<()> {
-    if frame.len() > MAX_ENVELOPE_FRAME_LEN {
+fn check_frame(frame: &[u8], sender: [u8; 16], recipient: [u8; 16]) -> io::Result<MessageId> {
+    if !(MIN_FRAME_LEN..=MAX_ENVELOPE_FRAME_LEN).contains(&frame.len()) {
         return Err(invalid());
     }
-    let prefix = frame.get(..weft_protocol::HEADER_LEN).ok_or_else(invalid)?;
-    let header = Header::decode(prefix).map_err(|_| invalid())?;
-    if header.sender != sender || header.recipient != recipient {
+    let header = Header::decode(&frame[..HEADER_LEN]).map_err(|_| invalid())?;
+    if header.sender != sender
+        || header.recipient != recipient
+        || !matches!(
+            header.kind,
+            Kind::ClipboardText | Kind::Packet | Kind::FileChunk
+        )
+    {
         return Err(invalid());
     }
-    Ok(())
+    Ok(header.message_id)
 }
 
 #[cfg(test)]
@@ -339,60 +399,70 @@ mod tests {
         }
     }
 
+    fn sealed_packet(from: &Identity, to: &Identity, counter: u64) -> Vec<u8> {
+        let header = Header {
+            version: VERSION,
+            kind: Kind::Packet,
+            sender: from.device_id(),
+            recipient: to.device_id(),
+            message_id: random_message_id(),
+            counter,
+        };
+        let keys = session_keys(from, &to.device_id(), &to.kx_pk()).unwrap();
+        seal(
+            &header,
+            &vec![b'x'; weft_protocol::MAX_PACKET_LEN],
+            &keys.tx,
+        )
+        .unwrap()
+    }
+
     #[tokio::test]
-    async fn managed_routes_exchange_frames_and_report_failure_for_relay_fallback() {
+    async fn simultaneous_sends_succeed_and_backpressure_refuses_new_frames() {
         let mut a = Arc::new(Identity::generate());
         let mut b = Arc::new(Identity::generate());
         if a.device_id() > b.device_id() {
             std::mem::swap(&mut a, &mut b);
         }
-        let mut left = Transport::start(a.clone(), vec![trusted(&b)])
+        let (to_left, mut left_frames) = mpsc::channel(1);
+        let (to_right, mut right_frames) = mpsc::channel(1);
+        let mut left = Transport::start(a.clone(), vec![trusted(&b)], to_left)
             .await
             .unwrap();
-        let mut right = Transport::start(b.clone(), vec![trusted(&a)])
+        let mut right = Transport::start(b.clone(), vec![trusted(&a)], to_right)
             .await
             .unwrap();
         left.connect(b.device_id(), right.port, &["127.0.0.1".into()]);
         timeout(IO_TIMEOUT, async {
-            loop {
-                if left.routes.contains_key(&b.device_id())
-                    && right.routes.contains_key(&a.device_id())
-                {
-                    break;
-                }
-                tokio::select! {
-                    _ = left.receive() => {},
-                    _ = right.receive() => {},
-                    _ = tokio::time::sleep(Duration::from_millis(10)) => {},
-                }
+            for transport in [&mut left, &mut right] {
+                let NetworkEvent::Connected(connection) = transport.events.recv().await.unwrap()
+                else {
+                    panic!("missing LAN connection");
+                };
+                transport.install(connection);
             }
         })
         .await
         .unwrap();
-        let header = Header {
-            version: VERSION,
-            kind: Kind::Packet,
-            sender: a.device_id(),
-            recipient: b.device_id(),
-            message_id: random_message_id(),
-            counter: 1,
-        };
-        let keys = session_keys(&a, &b.device_id(), &b.kx_pk()).unwrap();
-        let frame = seal(&header, b"{}", &keys.tx).unwrap();
-        assert!(left.send(b.device_id(), &frame).await);
+
+        let first = sealed_packet(&a, &b, 1);
+        let reverse = sealed_packet(&b, &a, 1);
         assert_eq!(
-            timeout(IO_TIMEOUT, right.receive()).await.unwrap().unwrap(),
-            frame
+            tokio::join!(
+                left.send(b.device_id(), &first),
+                right.send(a.device_id(), &reverse),
+            ),
+            (true, true)
         );
-        drop(right);
-        timeout(IO_TIMEOUT, async {
-            while !left.routes.get(&b.device_id()).unwrap().is_closed() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        assert!(!left.send(b.device_id(), &frame).await);
+        assert_eq!(left_frames.try_recv().unwrap(), reverse);
+
+        // The right worker hasn't consumed its first frame yet. The second
+        // is refused rather than acknowledged or blocking the stream reader.
+        let next = sealed_packet(&a, &b, 2);
+        assert!(!left.send(b.device_id(), &next).await);
+        assert_eq!(right_frames.try_recv().unwrap(), first);
+        assert!(right_frames.try_recv().is_err());
+        assert!(!left.has_route(&b.device_id()));
     }
 
     #[tokio::test]
@@ -424,8 +494,12 @@ mod tests {
         };
         let keys = session_keys(&a, &b.device_id(), &b.kx_pk()).unwrap();
         let frame = seal(&header, b"test", &keys.tx).unwrap();
-        sender.send(&frame).await.unwrap();
-        assert_eq!(receiver.receive().await.unwrap(), frame);
+        let (sent, ()) = tokio::join!(sender.send(&frame), async {
+            let received = receiver.receive().await.unwrap();
+            assert_eq!(received, frame);
+            receiver.acknowledge(&received).await.unwrap();
+        });
+        sent.unwrap();
         assert!(receiver.send(&frame).await.is_err());
         assert!(sender.send(&[0; 10]).await.is_err());
     }

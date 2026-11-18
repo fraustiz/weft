@@ -28,13 +28,16 @@ import fr.frohub.weft.protocol.encodeWelcome
 import fr.frohub.weft.protocol.open
 import fr.frohub.weft.protocol.sessionKeys
 import java.io.File
+import java.util.concurrent.ArrayBlockingQueue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -116,6 +119,9 @@ class WeftCore internal constructor(
 
     @Volatile private var lan: LanTransport? = null
     private val frameMutex = Mutex()
+    // Keep accepted frames queued when LAN routes are replaced.
+    private val lanFrames = ArrayBlockingQueue<ByteArray>(16)
+    private val lanReady = Channel<Unit>(Channel.CONFLATED)
 
     val sender = RelayClipboardSender(repository, ::identity, relay, ::awaitConnected,
         direct = { frame -> lan?.send(frame) == true })
@@ -152,6 +158,9 @@ class WeftCore internal constructor(
 
     init {
         scope.launch {
+            for (ready in lanReady) frameMutex.withLock { drainLanFrames() }
+        }
+        scope.launch {
             try {
                 // Counters, names and replay updates must not reopen the listener.
                 combine(relay.status, repository.state) { connection, state ->
@@ -162,7 +171,7 @@ class WeftCore internal constructor(
                     lan = null
                     if (connected) {
                         val state = repository.load()
-                        val transport = LanTransport.start(scope, identity(), state.devices, ::handleFrame)
+                        val transport = LanTransport.start(scope, identity(), state.devices, ::queueLanFrame)
                         lan = transport
                         if (transport != null) {
                             announceLan(state.devices.map { it.deviceIdHex })
@@ -651,8 +660,32 @@ class WeftCore internal constructor(
         sender.sendEnvelope(deviceIds, Kind.PACKET, packet, allowDirect = false)
     }
 
-    /** Serializes relay and authenticated LAN frames through the same replay/trust path. */
+    private fun queueLanFrame(frame: ByteArray): Boolean {
+        if (!lanFrames.offer(frame)) return false
+        lanReady.trySend(Unit)
+        return true
+    }
+
+    /** Runs under [frameMutex]. Limit a pass to the frames already accepted. */
+    private suspend fun drainLanFrames() {
+        repeat(lanFrames.size) {
+            try {
+                processFrame(lanFrames.remove())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "LAN frame handling failed: ${e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    /** Earlier accepted LAN frames go first, including when a peer falls back to the relay. */
     internal suspend fun handleFrame(frame: ByteArray) = frameMutex.withLock {
+        drainLanFrames()
+        processFrame(frame)
+    }
+
+    private suspend fun processFrame(frame: ByteArray) {
         try {
             when (classify(frame)) {
                 FrameType.ENVELOPE -> handleEnvelope(frame)

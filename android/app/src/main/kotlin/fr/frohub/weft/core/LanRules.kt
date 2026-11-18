@@ -1,6 +1,7 @@
 package fr.frohub.weft.core
 
 import fr.frohub.weft.protocol.Header
+import fr.frohub.weft.protocol.Kind
 import fr.frohub.weft.protocol.Lan
 import fr.frohub.weft.protocol.Weft
 import fr.frohub.weft.protocol.WeftException
@@ -32,11 +33,14 @@ internal object LanRules {
         return value to valid
     }
 
-    fun envelope(frame: ByteArray, sender: String, recipient: String): Boolean {
-        if (frame.size !in (Weft.HEADER_LENGTH + Weft.NONCE_LENGTH + Weft.TAG_LENGTH)..Lan.MAX_FRAME_LENGTH) return false
+    fun envelope(frame: ByteArray, sender: String, recipient: String): Header? {
+        if (frame.size !in (Weft.HEADER_LENGTH + Weft.NONCE_LENGTH + Weft.TAG_LENGTH)..Lan.MAX_FRAME_LENGTH) return null
         return try {
             val header = Header.decode(frame.copyOfRange(0, Weft.HEADER_LENGTH))
-            header.sender.toHex() == sender && header.recipient.toHex() == recipient
-        } catch (_: WeftException) { false }
+            header.takeIf {
+                it.sender.toHex() == sender && it.recipient.toHex() == recipient &&
+                    (it.kind == Kind.CLIPBOARD_TEXT || it.kind == Kind.PACKET || it.kind == Kind.FILE_CHUNK)
+            }
+        } catch (_: WeftException) { null }
     }
 }
