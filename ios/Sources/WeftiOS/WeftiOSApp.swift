@@ -177,6 +177,9 @@ final class MobileAppModel: ObservableObject {
     @Published var shareFailed = false
     /// Why the last "Send Clipboard" tap sent nothing, for the row's alert.
     @Published var clipboardProblem: ClipboardProblem?
+    /// Whether the pasteboard holds text or an image. Reading these flags
+    /// never prompts, so the "Send Clipboard" row can be dimmed when empty.
+    @Published private(set) var clipboardHasContent = false
 
     enum ClipboardProblem: Identifiable {
         /// Nothing Weft can send: no text, PNG or JPEG.
@@ -196,6 +199,18 @@ final class MobileAppModel: ObservableObject {
 
     init() {
         bootstrap()
+        refreshClipboardState()
+        NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.refreshClipboardState() }
+            .store(in: &cancellables)
+    }
+
+    /// Other apps' copies post no notification here: also called when the
+    /// app becomes active.
+    func refreshClipboardState() {
+        let pb = UIPasteboard.general
+        clipboardHasContent = pb.hasStrings || pb.hasImages
     }
 
     private func bootstrap() {
@@ -336,6 +351,7 @@ final class MobileAppModel: ObservableObject {
     }
 
     func onSceneBecameActive() {
+        refreshClipboardState()
         loadSharedItem()
         session?.start()
         refreshBatteryState()

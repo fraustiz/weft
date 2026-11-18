@@ -145,9 +145,13 @@ struct SendClipboardRow: View {
                 .labelStyle(WeftActionLabelStyle())
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
+                // The plain style keeps explicit colors when disabled: dim them.
+                .opacity(model.clipboardHasContent ? 1 : 0.35)
         }
         // Like the other action rows: neutral title, orange icon.
         .buttonStyle(.plain)
+        .disabled(!model.clipboardHasContent)
+        .accessibilityHint(model.clipboardHasContent ? "" : t("The clipboard is empty", "Le presse-papiers est vide"))
         .alert(item: $model.clipboardProblem) { problem in
             switch problem {
             case .empty:
