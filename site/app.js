@@ -153,7 +153,9 @@
         { opacity: 0, transform: "translateY(10px) scale(0.96)", offset: 0 },
         { opacity: 0, transform: "translateY(10px) scale(0.96)", offset: 0.08 },
         { opacity: 1, transform: "none", offset: 0.16 },
-        { opacity: 1, transform: "none", offset: 1 },
+        { opacity: 1, transform: "none", offset: 0.18 },
+        { opacity: 0, transform: "none", offset: 0.2 },
+        { opacity: 0, transform: "none", offset: 1 },
       ]],
       [clip[to], [
         { opacity: 0, transform: "scale(0.96)", offset: 0 },
@@ -198,8 +200,8 @@
       list.push([fly, [{ opacity: 0 }, { opacity: 0 }]]);
     } else if (canOffset) {
       list.push([fly, [
-        { opacity: 0, offsetDistance: d0, transform: "scale(0.9)", offset: 0 },
-        { opacity: 0, offsetDistance: d0, transform: "scale(0.9)", offset: 0.16 },
+        { opacity: 0, offsetDistance: d0, transform: "scale(1)", offset: 0 },
+        { opacity: 0, offsetDistance: d0, transform: "scale(1)", offset: 0.18 },
         { opacity: 1, offsetDistance: d0, transform: "scale(1)", offset: 0.2, easing: EASE },
         { opacity: 1, offsetDistance: d1, transform: "scale(1)", offset: 0.66 },
         { opacity: 0, offsetDistance: d1, transform: "scale(0.94)", offset: 0.72 },
@@ -210,7 +212,7 @@
       const at = ([x, y]) => `translate(${x - w / 2}px, ${y - h / 2}px)`;
       list.push([fly, [
         { opacity: 0, transform: at(p0), offset: 0 },
-        { opacity: 0, transform: at(p0), offset: 0.16 },
+        { opacity: 0, transform: at(p0), offset: 0.18 },
         { opacity: 1, transform: at(p0), offset: 0.2, easing: EASE },
         { opacity: 1, transform: at(p1), offset: 0.66 },
         { opacity: 0, transform: at(p1), offset: 0.72 },
