@@ -22,6 +22,19 @@ name: App release
 # Secrets: SPARKLE_ED_PRIVATE_KEY (the EdDSA private key whose public half
 # is macos/sparkle-public-key.txt), ANDROID_KEYSTORE_BASE64,
 # ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD.
+#
+# Windows code signing (SignPath Foundation, see CODE_SIGNING_POLICY.md) is
+# off until the repository variable SIGNPATH_ORGANIZATION_ID is set. Then,
+# on tag pushes only, the windows job uploads the unsigned executable,
+# submits it to SignPath, waits for a maintainer to approve the request
+# there, and publishes the signed executable (its SHA-256 goes in
+# windows-update.json). Dry runs never submit a signing request.
+#   variables: SIGNPATH_ORGANIZATION_ID (turns signing on),
+#              SIGNPATH_PROJECT_SLUG (default "weft"),
+#              SIGNPATH_SIGNING_POLICY_SLUG (default "release-signing"),
+#              SIGNPATH_ARTIFACT_CONFIGURATION_SLUG (default: the project's
+#              default artifact configuration)
+#   secret:    SIGNPATH_API_TOKEN (a SignPath CI user's API token)
 
 on:
   push:
@@ -215,6 +228,11 @@ jobs:
   windows:
     needs: meta
     runs-on: windows-latest
+    permissions:
+      contents: read
+      # SignPath reads the unsigned artifact and the run's details with the
+      # job's token.
+      actions: read
     env:
       VERSION: ${{ needs.meta.outputs.version }}
       TAG: ${{ needs.meta.outputs.tag }}
@@ -239,6 +257,46 @@ jobs:
           export WEFT_VERSION_CODE
           echo "versionName $WEFT_VERSION, versionCode $WEFT_VERSION_CODE"
           cargo build --manifest-path windows/Cargo.toml --release --locked
+      # Code signing: tag pushes only, once SignPath has accepted the project
+      # (see the header). Every request waits for a manual approval.
+      - name: Upload the unsigned executable
+        id: unsigned
+        if: needs.meta.outputs.publish == 'true' && vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-unsigned
+          path: windows/target/release/weft-windows.exe
+          if-no-files-found: error
+          retention-days: 1
+      - name: Sign with SignPath
+        if: steps.unsigned.outcome == 'success'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'weft' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          # A person approves the request in SignPath.
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: ${{ runner.temp }}/signed
+      - name: Use the signed executable
+        if: steps.unsigned.outcome == 'success'
+        shell: pwsh
+        run: |
+          $signed = Join-Path $env:RUNNER_TEMP 'signed/weft-windows.exe'
+          if (-not (Test-Path -PathType Leaf $signed)) {
+            Write-Output "::error::no signed executable at $signed"
+            Get-ChildItem -Recurse (Join-Path $env:RUNNER_TEMP 'signed')
+            exit 1
+          }
+          Copy-Item -Force $signed windows/target/release/weft-windows.exe
+          # Fails unless the Authenticode signature is valid.
+          $signature = Get-AuthenticodeSignature windows/target/release/weft-windows.exe
+          $signature | Format-List Status, StatusMessage, SignerCertificate
+          if ($signature.Status -ne 'Valid') { exit 1 }
       - name: Executable and windows-update.json
         shell: bash
         run: |
@@ -330,10 +388,14 @@ jobs:
         run: |
           ls -l dist
           # --latest: the apps look for releases/latest/download/…
+          # --notes goes before the generated changelog; SignPath asks release
+          # pages to link the code signing policy.
+          policy="https://github.com/$GITHUB_REPOSITORY/blob/$TAG/CODE_SIGNING_POLICY.md"
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "Weft $VERSION" \
+            --notes "Code signing policy: [CODE_SIGNING_POLICY.md]($policy)" \
             --generate-notes \
             --latest \
             "dist/Weft-$VERSION-mac.zip" \

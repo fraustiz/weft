@@ -87,8 +87,10 @@ iOS (Swift) ──────┼── WSS 443 ── relay ── WSS 443 ─�
 
 Builds are published on [GitHub Releases](https://github.com/fraustiz/weft/releases/latest) (no app stores for now):
 - the macOS app is ad-hoc signed and not notarized: open it the first time with right-click → Open;
-- on Windows, download `weft-X.Y.Z-windows.exe`. The executable is unsigned, so SmartScreen warns on first launch;
+- on Windows, download `weft-X.Y.Z-windows.exe`. The executable is unsigned for now (the project is applying to the SignPath Foundation's free code signing program), so SmartScreen warns on first launch;
 - the Android APK is signed with the project's release key.
+
+**[Code signing policy](CODE_SIGNING_POLICY.md):** what is signed and by whom, the team roles, what Weft sends over the network (privacy), and how to uninstall Weft on Windows, macOS and Android.
 
 The iOS app is published as `Weft-X.Y.Z-ios.ipa` for testers, without the App Store or TestFlight: install it with [SideStore](https://sidestore.io) or [AltStore](https://altstore.io) using your own free Apple ID. A free Apple ID signs apps for 7 days, after which SideStore or AltStore has to refresh it, and the iOS app does not update itself. The Linux client is not part of the releases yet: build it from source ([`linux/README.md`](linux/README.md)).
 
@@ -111,7 +113,7 @@ git tag app-v1.2.0 && git push origin app-v1.2.0
 
 [`.github/workflows/app-release.yml`](.github/workflows/app-release.yml) builds the apps at version `X.Y.Z` (build number and `versionCode`: the commit count) and publishes the GitHub Release with `Weft-X.Y.Z-mac.zip`, `appcast.xml`, `weft-X.Y.Z.apk`, `android-update.json`, `weft-X.Y.Z-windows.exe`, `windows-update.json` and `Weft-X.Y.Z-ios.ipa`. Run it manually (Actions › App release › Run workflow) for a dry run that builds and signs without publishing.
 
-Repository secrets required by the release workflow: `SPARKLE_ED_PRIVATE_KEY`, `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
+Repository secrets required by the release workflow: `SPARKLE_ED_PRIVATE_KEY`, `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. Windows code signing through SignPath stays off until the repository variable `SIGNPATH_ORGANIZATION_ID` and the secret `SIGNPATH_API_TOKEN` are set (see the header of the workflow); each signing request then waits for manual approval in SignPath.
 
 Keep the Sparkle EdDSA private key and the Android release keystore in a keychain or password manager and in the repository secrets — never in the repository. Losing the Sparkle private key or the Android signing key prevents installed copies from accepting future updates; leaking the Sparkle private key lets anyone sign a macOS update. `macos/scripts/update-e2e.sh` exercises the Sparkle update flow locally with a temporary key.
 
