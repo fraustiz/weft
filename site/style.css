@@ -75,7 +75,7 @@ kbd { font-family: var(--font-outlier); font-size: 0.92em; }
 .device--mac { grid-area: mac; z-index: 3; justify-items: end; }
 .device .clip { z-index: 6; }
 .bezel { --pad: var(--space-xs); position: relative; padding: var(--pad); border-radius: 46px; background: var(--color-bezel); box-shadow: 0 0 0 1px var(--color-sheen), 0 40px 80px -30px var(--color-shadow), 0 0 60px -20px var(--color-glow); }
-.bezel img { border-radius: 37px; }
+.bezel img { width: 100%; border-radius: 37px; }
 .device--phone .bezel { width: min(100%, 320px); }
 .window { position: relative; width: min(100%, 680px); border-radius: 12px; box-shadow: 0 0 0 1px var(--color-sheen), 0 50px 100px -40px var(--color-shadow); }
 .window img { width: 100%; border-radius: 12px; }
