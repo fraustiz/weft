@@ -3,7 +3,10 @@ name: App release
 # Pushing a tag app-vX.Y.Z builds the macOS, Android, Windows and iOS apps at
 # version X.Y.Z, and publishes them as the GitHub release of that tag:
 #
-#   Weft-X.Y.Z-mac.zip         the app, ad-hoc signed, zipped with ditto
+#   Weft-X.Y.Z-mac.dmg         the app, ad-hoc signed, in a disk image with
+#                              an Applications link: what people download
+#   Weft-X.Y.Z-mac.zip         the same app zipped with ditto: the appcast's
+#                              enclosure, what Sparkle downloads for updates
 #   appcast.xml                Sparkle's feed: the app checks
 #                              releases/latest/download/appcast.xml
 #   weft-X.Y.Z.apk             the Android app, signed with the release key
@@ -153,10 +156,38 @@ jobs:
           grep -q '<sparkle:minimumSystemVersion>' dist/appcast.xml
           grep -q "<sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>" dist/appcast.xml
           cat dist/appcast.xml
+      - name: Disk image
+        # After the appcast: generate_appcast scans dist/, and a .dmg there
+        # would get an item of its own. Sparkle keeps updating from the zip.
+        run: |
+          items="$(grep -o '<item>' dist/appcast.xml | wc -l | tr -d ' ')"
+          [[ "$items" == 1 ]] || { echo "::error::the appcast has $items items, expected 1"; exit 1; }
+          url="https://github.com/fraustiz/weft/releases/download/$TAG/Weft-$VERSION-mac.zip"
+          if [[ "$(grep -o '<enclosure ' dist/appcast.xml | wc -l | tr -d ' ')" != 1 ]] || ! grep -qF "url=\"$url\"" dist/appcast.xml; then
+            echo "::error::the appcast's only enclosure should be $url"
+            exit 1
+          fi
+          dmg="dist/Weft-$VERSION-mac.dmg"
+          staging="$RUNNER_TEMP/dmg"
+          rm -rf "$staging" && mkdir -p "$staging"
+          # ditto keeps the ad hoc signature, extended attributes and symlinks.
+          ditto macos/build/Weft.app "$staging/Weft.app"
+          ln -s /Applications "$staging/Applications"
+          hdiutil create -volname "Weft" -srcfolder "$staging" -ov -format UDZO "$dmg"
+          hdiutil verify "$dmg"
+          mnt="$RUNNER_TEMP/dmg-mount"
+          mkdir -p "$mnt"
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt"
+          trap 'hdiutil detach "$mnt" -quiet || hdiutil detach "$mnt" -force' EXIT
+          codesign --verify --deep --strict "$mnt/Weft.app"
+          [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$mnt/Weft.app/Contents/Info.plist")" == "$VERSION" ]]
+          [[ "$(readlink "$mnt/Applications")" == /Applications ]]
+          ls -l "$dmg"
       - uses: actions/upload-artifact@v7
         with:
           name: mac
           path: |
+            dist/Weft-${{ env.VERSION }}-mac.dmg
             dist/Weft-${{ env.VERSION }}-mac.zip
             dist/appcast.xml
           if-no-files-found: error
@@ -398,6 +429,7 @@ jobs:
             --notes "Code signing policy: [CODE_SIGNING_POLICY.md]($policy)" \
             --generate-notes \
             --latest \
+            "dist/Weft-$VERSION-mac.dmg" \
             "dist/Weft-$VERSION-mac.zip" \
             dist/appcast.xml \
             "dist/weft-$VERSION.apk" \

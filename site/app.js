@@ -33,7 +33,14 @@
   };
 
   /* Downloads ------------------------------------------------------------ */
-  const ASSETS = { android: /\.apk$/i, mac: /-mac\.zip$/i, windows: /-windows\.exe$/i, ios: /-ios\.ipa$/i };
+  // Each platform lists its asset patterns in order of preference: the Mac
+  // gets the .dmg, or the zip on releases published before the .dmg existed.
+  const ASSETS = {
+    android: [/\.apk$/i],
+    mac: [/-mac\.dmg$/i, /-mac\.zip$/i],
+    windows: [/-windows\.exe$/i],
+    ios: [/-ios\.ipa$/i],
+  };
   const LABELS = T.download;
 
   function detectPlatform() {
@@ -58,11 +65,25 @@
     }
     const version = String(release.tag_name || "").replace(/^app-v/, "");
     if (version) document.querySelectorAll("[data-release-version]").forEach((el) => { el.textContent = version; });
+    const assets = release.assets || [];
     const urls = {};
-    for (const asset of release.assets || []) {
-      for (const [key, re] of Object.entries(ASSETS)) if (re.test(asset.name)) urls[key] = asset.browser_download_url;
+    const files = {};
+    for (const [key, patterns] of Object.entries(ASSETS)) {
+      for (const re of patterns) {
+        const asset = assets.find((a) => re.test(a.name));
+        if (!asset) continue;
+        urls[key] = asset.browser_download_url;
+        files[key] = asset.name.slice(asset.name.lastIndexOf("."));
+        break;
+      }
     }
-    document.querySelectorAll("[data-dl]").forEach((a) => { if (urls[a.dataset.dl]) a.href = urls[a.dataset.dl]; });
+    document.querySelectorAll("[data-dl]").forEach((a) => {
+      const key = a.dataset.dl;
+      if (!urls[key]) return;
+      a.href = urls[key];
+      const file = a.querySelector(".pf-file");
+      if (file) file.textContent = files[key];
+    });
     const platform = detectPlatform();
     const primary = document.querySelector('[data-dl="primary"]');
     if (primary && platform && urls[platform]) {

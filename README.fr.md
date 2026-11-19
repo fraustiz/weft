@@ -86,7 +86,7 @@ iOS (Swift) ──────┼── WSS 443 ── relais ── WSS 443 ┼
 ## Distribution
 
 Les versions sont publiées sur [GitHub Releases](https://github.com/fraustiz/weft/releases/latest) (pas de magasin d'applications pour l'instant) :
-- l'app macOS est signée ad hoc et non notariée : ouvrez-la la première fois par clic droit › Ouvrir ;
+- sur macOS, téléchargez `Weft-X.Y.Z-mac.dmg`, ouvrez-le et glissez Weft dans Applications. L'app est signée ad hoc et non notariée : ouvrez-la la première fois par clic droit › Ouvrir ;
 - sur Windows, téléchargez `weft-X.Y.Z-windows.exe`. L'exécutable n'est pas encore signé (le projet demande à rejoindre le programme gratuit de signature de code de la SignPath Foundation) et SmartScreen affiche un avertissement au premier lancement ;
 - l'APK Android est signée avec la clé de publication du projet.
 
@@ -101,7 +101,7 @@ Ouvrez la fiche de l'appareil destinataire dans Weft. Glissez des fichiers depui
 ### Versions et mises à jour
 
 Les trois apps consultent GitHub Releases (`releases/latest/download/…`) et se mettent à jour elles-mêmes :
-- **macOS :** `Weft-X.Y.Z-mac.zip` + `appcast.xml`, vérifiés par [Sparkle](https://sparkle-project.org) avec une signature EdDSA, d'après [`macos/sparkle-public-key.txt`](macos/sparkle-public-key.txt).
+- **macOS :** `Weft-X.Y.Z-mac.zip` + `appcast.xml` (le zip est ce que Sparkle télécharge pour les mises à jour ; `Weft-X.Y.Z-mac.dmg` ne sert qu'à la première installation), vérifiés par [Sparkle](https://sparkle-project.org) avec une signature EdDSA, d'après [`macos/sparkle-public-key.txt`](macos/sparkle-public-key.txt).
 - **Android :** `weft-X.Y.Z.apk` + `android-update.json`, vérifiés par SHA-256 avant de confier l'APK au `PackageInstaller` d'Android (qui exige la même signature que l'app installée).
 - **Windows :** `weft-X.Y.Z-windows.exe` + `windows-update.json`, vérifiés par SHA-256 et par validation de l'en-tête PE avant une mise à jour sur place.
 
@@ -111,7 +111,7 @@ Pour publier une version, poussez un tag `app-vX.Y.Z` :
 git tag app-v1.2.0 && git push origin app-v1.2.0
 ```
 
-[`.github/workflows/app-release.yml`](.github/workflows/app-release.yml) construit les apps en version `X.Y.Z` (numéro de build et `versionCode` : le nombre de commits) et publie la Release GitHub avec `Weft-X.Y.Z-mac.zip`, `appcast.xml`, `weft-X.Y.Z.apk`, `android-update.json`, `weft-X.Y.Z-windows.exe`, `windows-update.json` et `Weft-X.Y.Z-ios.ipa`. Lancé à la main (Actions › App release › Run workflow), il fait un essai qui construit et signe sans rien publier.
+[`.github/workflows/app-release.yml`](.github/workflows/app-release.yml) construit les apps en version `X.Y.Z` (numéro de build et `versionCode` : le nombre de commits) et publie la Release GitHub avec `Weft-X.Y.Z-mac.dmg`, `Weft-X.Y.Z-mac.zip` (utilisé par Sparkle pour les mises à jour), `appcast.xml`, `weft-X.Y.Z.apk`, `android-update.json`, `weft-X.Y.Z-windows.exe`, `windows-update.json` et `Weft-X.Y.Z-ios.ipa`. Lancé à la main (Actions › App release › Run workflow), il fait un essai qui construit et signe sans rien publier.
 
 Secrets du dépôt nécessaires au workflow de publication : `SPARKLE_ED_PRIVATE_KEY`, `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. La signature de code Windows par SignPath reste désactivée tant que la variable de dépôt `SIGNPATH_ORGANIZATION_ID` et le secret `SIGNPATH_API_TOKEN` ne sont pas définis (voir l'en-tête du workflow) ; chaque demande de signature attend alors une approbation manuelle dans SignPath.
 
