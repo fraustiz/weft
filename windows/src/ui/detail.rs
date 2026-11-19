@@ -154,15 +154,9 @@ fn link_box(link: &str, context: &ViewContext<Weft>) -> View {
     ))
 }
 
-/// Send files, Ring, Ping, Send link and Messages, each only if both
-/// devices handle it.
-fn actions(
-    weft: &Weft,
-    device: [u8; 16],
-    name: &str,
-    peer: &PeerInfo,
-    context: &ViewContext<Weft>,
-) -> View {
+/// Send files, Send link and Messages, each only if both devices handle
+/// it. Ring and Ping act on the device itself, so they sit in its header.
+fn actions(weft: &Weft, name: &str, peer: &PeerInfo, context: &ViewContext<Weft>) -> View {
     if peer.capabilities.is_none() {
         let text = if is_french() {
             format!("Les actions s'affichent quand {name} est en ligne")
@@ -185,20 +179,6 @@ fn actions(
         ));
     }
     let mut other_buttons = Vec::new();
-    if features.ring && peer.handles("ring") {
-        let ringing = weft.rang.is_some_and(|(rang, _)| rang == device);
-        other_buttons.push(if ringing {
-            button(
-                t("Stop ringing", "Arrêter la sonnerie"),
-                context.message(Message::StopRinging),
-            )
-        } else {
-            button(t("Ring", "Faire sonner"), context.message(Message::Ring))
-        });
-    }
-    if peer.handles("ping") {
-        other_buttons.push(button(t("Ping", "Ping"), context.message(Message::Ping)));
-    }
     let links = features.links && peer.handles("share.url");
     if links {
         other_buttons.push(button(
@@ -271,6 +251,57 @@ pub fn volume_shown(weft: &Weft, device: [u8; 16]) -> Option<u8> {
     Draft::for_device(&weft.volume_draft, device)
         .map(|(level, _)| level)
         .or_else(|| weft.snapshot.peer(&device).volume?.level)
+}
+
+/// A quiet icon button for the device header, a Segoe Fluent glyph.
+fn header_button(glyph: &str, name: &str, on_click: Callback<()>) -> View {
+    Button::new()
+        .style(ButtonStyle::Subtle)
+        .automation_name(name)
+        .on_click(on_click)
+        .content(FontIcon::new().glyph(glyph))
+        .tooltip(name)
+}
+
+/// Ring (or Stop ringing) and Ping, each only if both devices handle it,
+/// for the right of the device header. Nothing until it is online.
+fn header_actions(
+    weft: &Weft,
+    device: [u8; 16],
+    peer: &PeerInfo,
+    context: &ViewContext<Weft>,
+) -> Vec<View> {
+    let mut buttons = Vec::new();
+    if peer.capabilities.is_none() {
+        return buttons;
+    }
+    if weft.snapshot.features.ring && peer.handles("ring") {
+        let ringing = weft.rang.is_some_and(|(rang, _)| rang == device);
+        buttons.push(if ringing {
+            // RingerSilent
+            header_button(
+                "\u{E7ED}",
+                t("Stop ringing", "Arrêter la sonnerie"),
+                context.message(Message::StopRinging),
+            )
+        } else {
+            // Ringer
+            header_button(
+                "\u{EA8F}",
+                t("Ring", "Faire sonner"),
+                context.message(Message::Ring),
+            )
+        });
+    }
+    if peer.handles("ping") {
+        // Streaming, waves from a point
+        buttons.push(header_button(
+            "\u{E93E}",
+            t("Ping", "Ping"),
+            context.message(Message::Ping),
+        ));
+    }
+    buttons
 }
 
 /// A player button: an icon, with its name for screen readers and as a
@@ -622,7 +653,7 @@ pub fn view(weft: &Weft, device: [u8; 16], context: &mut ViewContext<Weft>) -> V
         "Back to devices"
     };
     let header = Grid::new()
-        .columns([GridLength::Auto, GridLength::STAR])
+        .columns([GridLength::Auto, GridLength::STAR, GridLength::Auto])
         .column_spacing(8.0)
         .children((
             Button::new()
@@ -642,10 +673,18 @@ pub fn view(weft: &Weft, device: [u8; 16], context: &mut ViewContext<Weft>) -> V
                     title(name.clone()),
                     secondary(words::device_id(known)).font_size(12.0),
                 )),
+            StackPanel::new()
+                .grid_column(2)
+                .orientation(Orientation::Horizontal)
+                .spacing(4.0)
+                .vertical_alignment(VerticalAlignment::Center)
+                .keyed_children(super::widgets::keyed(header_actions(
+                    weft, device, &peer, context,
+                ))),
         ));
     let mut views: Vec<View> = vec![header];
     views.extend(status(weft, &peer));
-    views.push(actions(weft, device, &name, &peer, context));
+    views.push(actions(weft, &name, &peer, context));
     let media: Vec<View> = now_playing(weft, device, &name, &peer, context)
         .into_iter()
         .chain(volume(weft, device, &peer, context))
