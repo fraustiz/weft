@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weft, copiez ici, collez là-bas</title>
+<meta name="description" content="Weft fait passer le presse-papiers, les images et les fichiers d’un appareil à l’autre, chiffrés de bout en bout. Android, iOS, macOS, Windows et Linux.">
+<meta name="theme-color" content="#17130F">
+<link rel="icon" href="assets/weft-favicon.svg" type="image/svg+xml">
+<link rel="preload" href="assets/fonts/BricolageGrotesque-Variable-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#contenu">Aller au contenu</a>
+
+<header class="nav">
+  <nav class="wrap nav-in" aria-label="Principale">
+    <a class="nav-brand" href="./" aria-label="Weft, accueil"><img src="assets/weft-lockup.svg" width="92" height="36" alt=""></a>
+    <ul class="nav-links">
+      <li><a href="#gestes">Fonctions</a></li>
+      <li><a href="#relais">Sécurité</a></li>
+      <li><a href="https://github.com/fraustiz/weft">Code source</a></li>
+    </ul>
+    <a class="btn btn--primary btn--sm" href="#telecharger">Télécharger</a>
+  </nav>
+</header>
+
+<main id="contenu">
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="wrap hero-top">
+      <h1 id="hero-title"><span class="h1-a">Copiez ici.</span> <span class="h1-b">Collez là-bas.</span></h1>
+      <div class="hero-side">
+        <p class="lead">Texte, images et fichiers passent d’un appareil à l’autre, chiffrés.</p>
+        <div class="actions">
+          <a class="btn btn--primary" data-dl="primary" href="https://github.com/fraustiz/weft/releases/latest">Télécharger Weft</a>
+          <a class="btn btn--ghost" href="#telecharger">Toutes les plateformes</a>
+        </div>
+        <p class="hero-meta">Version <span data-release-version>0.3.2</span>, libre et sans compte.</p>
+      </div>
+    </div>
+
+    <figure class="stage wrap" id="scene" data-state="rest" data-example="text" aria-labelledby="scene-caption">
+      <div class="glow" aria-hidden="true"></div>
+      <svg class="thread" aria-hidden="true" focusable="false">
+        <defs>
+          <linearGradient id="thread-grad" gradientUnits="userSpaceOnUse">
+            <stop offset="0" class="stop-a"/><stop offset="1" class="stop-b"/>
+          </linearGradient>
+          <filter id="thread-blur" x="-20%" y="-50%" width="140%" height="200%"><feGaussianBlur stdDeviation="9"/></filter>
+        </defs>
+        <path class="thread-halo" filter="url(#thread-blur)"/>
+        <path class="thread-base"/>
+        <path class="thread-lit"/>
+      </svg>
+
+      <div class="device device--phone">
+        <div class="bezel">
+          <img src="assets/shots/android-home.png" width="540" height="1200" fetchpriority="high" alt="Weft sur Android, connecté, avec le bouton Envoyer le presse-papiers">
+          <span class="press press--phone" aria-hidden="true"></span>
+          <span class="flash flash--phone" aria-hidden="true"></span>
+          <div class="clip clip--phone"><span class="clip-k">Texte</span><span class="clip-body"><span class="clip-t">Rendez-vous quai Saint‑Antoine, 14 h</span></span></div>
+        </div>
+        <p class="marker marker--phone"><span class="marker-verb">Copier</span><span class="marker-how">sur le téléphone</span></p>
+      </div>
+
+      <div class="device device--mac">
+        <div class="window">
+          <img src="assets/shots/mac.png" width="720" height="640" fetchpriority="high" alt="Weft sur macOS, dans le même groupe que le téléphone, avec Envoyer un fichier et un champ Lien">
+          <span class="press press--mac" aria-hidden="true"></span>
+          <span class="flash flash--mac" aria-hidden="true"></span>
+          <div class="clip clip--mac"><span class="clip-k">Texte</span><span class="clip-body"><span class="clip-t">Rendez-vous quai Saint‑Antoine, 14 h</span></span></div>
+        </div>
+        <p class="marker marker--mac"><span class="marker-verb">Coller</span><span class="marker-how">sur le Mac, <kbd>⌘V</kbd></span></p>
+      </div>
+
+      <div class="clip clip--fly" aria-hidden="true"><span class="clip-k">Chiffré</span><span class="clip-body"></span></div>
+
+      <figcaption class="stage-caption" id="scene-caption">
+        <span class="visually-hidden">Exemples de transferts entre un téléphone Android et un Mac : un texte, une image, un fichier et un lien.</span>
+        <span class="stage-status" aria-hidden="true">Un texte copié sur le téléphone, collé sur le Mac.</span>
+      </figcaption>
+      <div class="stage-controls" hidden>
+        <button class="ctl-pause" type="button" aria-pressed="false" aria-controls="scene">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path class="i-pause" d="M3.5 2.5h3v11h-3zM9.5 2.5h3v11h-3z"/><path class="i-play" d="M4 2.5v11l9-5.5z"/></svg>
+          <span class="ctl-label">Pause</span>
+        </button>
+        <div class="ctl-examples" role="group" aria-label="Choisir un exemple">
+          <button type="button" data-ex="text" aria-pressed="true">Texte</button>
+          <button type="button" data-ex="image" aria-pressed="false">Image</button>
+          <button type="button" data-ex="file" aria-pressed="false">Fichier</button>
+          <button type="button" data-ex="link" aria-pressed="false">Lien</button>
+        </div>
+      </div>
+
+      <template id="body-text"><span class="clip-t">Rendez-vous quai Saint‑Antoine, 14 h</span></template>
+      <template id="body-image"><span class="clip-thumb" role="img" aria-label="Photo de fleurs"></span><span class="clip-t">Photo copiée</span></template>
+      <template id="body-file"><svg class="clip-icon" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false"><path d="M6 2.5h8l4.5 4.5v14.5H6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 2.5V7h4.5M9 12h6M9 15.5h6M9 19h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span class="clip-t">Devis‑cuisine.pdf<span class="clip-m">1,2 Mo</span></span></template>
+      <template id="body-link"><svg class="clip-icon" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false"><path d="M10 14a4 4 0 0 0 5.7 0l3.6-3.6a4 4 0 0 0-5.7-5.7L12.5 5.8M14 10a4 4 0 0 0-5.7 0l-3.6 3.6a4 4 0 0 0 5.7 5.7l1.1-1.1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span class="clip-t clip-t--url">github.com/fraustiz/weft</span></template>
+    </figure>
+  </section>
+
+  <section class="gestures" id="gestes" aria-labelledby="gestes-title">
+    <div class="wrap">
+      <h2 id="gestes-title">Plus qu’un presse-papiers.</h2>
+      <ol class="shots">
+        <li class="shot shot--1">
+          <div class="bezel bezel--ios"><img src="assets/shots/ios-share.png" width="274" height="597" loading="lazy" alt="Extension de partage iOS : une photo prête, bouton Ajouter à Weft"></div>
+          <h3>Partager</h3>
+          <p>Photos, fichiers et liens, depuis n’importe quelle app.</p>
+        </li>
+        <li class="shot shot--2">
+          <div class="bezel"><img src="assets/shots/android-device.png" width="540" height="1200" loading="lazy" alt="Page Android d’un Mac associé : lecture en cours, volume, Faire sonner, Ping"></div>
+          <h3>Piloter</h3>
+          <p>La musique et le volume de l’ordinateur, depuis le téléphone.</p>
+        </li>
+        <li class="shot shot--3">
+          <div class="bezel bezel--ios"><img src="assets/shots/ios-device.png" width="274" height="597" loading="lazy" alt="Page iOS d’un iMac associé : Envoyer un fichier, Faire sonner, Ping, Partager un lien"></div>
+          <h3>Retrouver</h3>
+          <p>Faites sonner l’autre appareil, ou envoyez-lui un fichier.</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="relay" id="relais" aria-labelledby="relais-title">
+    <div class="wrap relay-in">
+      <h2 id="relais-title">Le relais transporte.<br>Il ne lit rien.</h2>
+      <figure class="routes">
+        <svg class="routes-svg" viewBox="0 0 640 240" role="img" aria-labelledby="routes-cap">
+          <path class="r-wire" d="M150 150 C 230 150, 240 60, 320 60 C 400 60, 410 150, 490 150"/>
+          <path class="r-lan" d="M150 186 L490 186"/>
+          <g class="r-node"><rect x="10" y="134" width="140" height="68" rx="14"/><text x="80" y="170">Téléphone</text></g>
+          <g class="r-node"><rect x="490" y="134" width="140" height="68" rx="14"/><text x="560" y="170">Ordinateur</text></g>
+          <g class="r-node r-node--relay"><rect x="250" y="28" width="140" height="64" rx="14"/><text x="320" y="62">Relais</text></g>
+          <text class="r-cap" x="320" y="214">route directe, sur le même réseau</text>
+        </svg>
+        <figcaption id="routes-cap">Le relais passe même sur un Wi-Fi qui isole les appareils. Sur un même réseau, une route directe s’ajoute.</figcaption>
+      </figure>
+      <dl class="facts">
+        <div><dt>Chiffré sur l’appareil</dt><dd>XChaCha20-Poly1305, libsodium. Le relais ne voit que qui parle à qui, et quand.</dd></div>
+        <div><dt>Sans compte</dt><dd>Chaque installation crée ses clés. On associe par QR code.</dd></div>
+        <div><dt>Votre relais, si vous voulez</dt><dd>Une image Docker, une adresse à changer. <a href="/relay">Le relais public</a></dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="download" id="telecharger" aria-labelledby="dl-title">
+    <div class="wrap">
+      <h2 id="dl-title">Téléchargez Weft <span data-release-version>0.3.2</span>.</h2>
+      <ul class="platforms">
+        <li><a class="pf" data-dl="android" href="https://github.com/fraustiz/weft/releases/latest"><span class="pf-name">Android</span><span class="pf-note">Android 8 ou plus</span><span class="pf-file">.apk</span></a></li>
+        <li><a class="pf" data-dl="mac" href="https://github.com/fraustiz/weft/releases/latest"><span class="pf-name">macOS</span><span class="pf-note">macOS 14 ou plus</span><span class="pf-file">.zip</span></a></li>
+        <li><a class="pf" data-dl="windows" href="https://github.com/fraustiz/weft/releases/latest"><span class="pf-name">Windows</span><span class="pf-note">Non signé, SmartScreen prévient</span><span class="pf-file">.exe</span></a></li>
+        <li><a class="pf" data-dl="ios" href="https://github.com/fraustiz/weft/releases/latest"><span class="pf-name">iOS</span><span class="pf-note">Testeurs, SideStore ou AltStore</span><span class="pf-file">.ipa</span></a></li>
+        <li><a class="pf" href="https://github.com/fraustiz/weft/tree/main/linux"><span class="pf-name">Linux</span><span class="pf-note">Expérimental, sans interface</span><span class="pf-file">guide</span></a></li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <img class="foot-lockup" src="assets/weft-lockup.svg" width="306" height="120" alt="Weft">
+    <p>Logiciel libre sous licence MIT. Code, versions et signalements sur <a href="https://github.com/fraustiz/weft">GitHub</a>. Informations du <a href="/relay">relais public weft.frohub.eu</a>. Polices Bricolage Grotesque et Geist, licence OFL.</p>
+  </div>
+</footer>
+
+<script src="app.js" defer></script>
+</body>
+</html>

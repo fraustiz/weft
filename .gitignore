@@ -2,3 +2,6 @@
 target/
 *.sqlite3
 *.sqlite3-*
+
+# Design tool state for the landing page
+site/.hallmark/
