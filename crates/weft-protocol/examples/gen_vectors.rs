@@ -124,13 +124,38 @@
 //!                          big-endian) || data, message_id = 31 32 … 40,
 //!                          counter = 3 (after the ping and the device name),
 //!                          nonce = e1 e2 … f8, key = `session.b.tx`
+//!
+//! `lan` (one weft-lan-v3 connection between A and B; who dialed does not
+//! change any value):
+//!   a_nonce, b_nonce        32-byte challenge nonces sent by A and by B
+//!   a_challenge_frame       0xC2 || a_nonce
+//!   b_challenge_frame       0xC2 || b_nonce
+//!   a_signed_message        "weft-lan-v3" || b_nonce || a_nonce
+//!   a_auth_frame            0xC3 || device id of A || Ed25519 signature of
+//!                           a_signed_message by A
+//!   b_signed_message        "weft-lan-v3" || a_nonce || b_nonce
+//!   b_auth_frame            0xC3 || device id of B || signature by B
+//!   receipts.a_to_b         receipts B sends for A's envelopes:
+//!     key_input             "weft-lan-v3 receipt" || device id of A ||
+//!                           device id of B || a_nonce || b_nonce
+//!     key                   `crypto_generichash(outlen = 32, key_input,
+//!                           key = session.a.tx)` (= session.b.rx)
+//!     message_id            16-byte message id (the clipboard text's)
+//!     mac                   `crypto_generichash(outlen = 16, message_id,
+//!                           key = key)`
+//!     record                00 00 00 00 || message_id || mac
+//!   receipts.b_to_a         the same for B's envelopes, receipts sent by A:
+//!                           device ids and nonces swapped, key =
+//!                           session.b.tx (= session.a.rx), message id of
+//!                           the ping
 
 use serde_json::{Value, json};
 use weft_protocol::{
-    AUTH_ACCEPTED, Challenge, ControlError, ControlFrame, Header, Identity, Kind,
-    MAX_DEVICE_NAME_LEN, MAX_FILE_CHUNK_DATA_LEN, MAX_PACKET_LEN, PairRequest, PairingCode,
-    PeerKeys, SessionKeys, VERSION, encode_device_added, encode_device_name, encode_device_removed,
-    encode_file_chunk, encode_welcome, seal_with_nonce, session_keys, sign_auth,
+    AUTH_ACCEPTED, Challenge, ControlError, ControlFrame, Header, Identity, Kind, LAN_CONTEXT,
+    LAN_RECEIPT_CONTEXT, LanChallenge, LanReceiptKey, LanReceiptKeys, MAX_DEVICE_NAME_LEN,
+    MAX_FILE_CHUNK_DATA_LEN, MAX_PACKET_LEN, PairRequest, PairingCode, PeerKeys, SessionKeys,
+    VERSION, encode_device_added, encode_device_name, encode_device_removed, encode_file_chunk,
+    encode_welcome, seal_with_nonce, session_keys, sign_auth, sign_lan_auth,
 };
 
 /// `N` consecutive bytes starting at `start`, e.g. `seq::<4>(0x10)` = 10 11 12 13.
@@ -417,6 +442,70 @@ fn features_json(
     })
 }
 
+/// The `lan` section: one weft-lan-v3 connection between A and B.
+fn lan_json(a: &Identity, b: &Identity, a_keys: &SessionKeys, b_keys: &SessionKeys) -> Value {
+    let (a_nonce, b_nonce) = (seq::<32>(0x30), seq::<32>(0x70));
+    let a_auth = sign_lan_auth(a, &b_nonce, &a_nonce);
+    let b_auth = sign_lan_auth(b, &a_nonce, &b_nonce);
+    let at_a = LanReceiptKeys::derive(a, &b.device_id(), &b.kx_pk(), &a_nonce, &b_nonce)
+        .expect("LAN receipt keys for A");
+    let at_b = LanReceiptKeys::derive(b, &a.device_id(), &a.kx_pk(), &b_nonce, &a_nonce)
+        .expect("LAN receipt keys for B");
+    assert_eq!(at_a.outgoing.as_bytes(), at_b.incoming.as_bytes());
+    assert_eq!(at_a.incoming.as_bytes(), at_b.outgoing.as_bytes());
+
+    let receipt = |sender: &Identity,
+                   recipient: &Identity,
+                   sender_nonce: &[u8; 32],
+                   recipient_nonce: &[u8; 32],
+                   direction_key: &[u8; 32],
+                   message_id: [u8; 16]| {
+        let key = LanReceiptKey::derive(
+            direction_key,
+            &sender.device_id(),
+            &recipient.device_id(),
+            sender_nonce,
+            recipient_nonce,
+        );
+        let key_input = [
+            LAN_RECEIPT_CONTEXT,
+            &sender.device_id(),
+            &recipient.device_id(),
+            sender_nonce,
+            recipient_nonce,
+        ]
+        .concat();
+        let mac = key.mac(&message_id);
+        assert!(key.verify(&message_id, &mac));
+        json!({
+            "key_input": hex(&key_input),
+            "key": hex(key.as_bytes()),
+            "message_id": hex(&message_id),
+            "mac": hex(&mac),
+            "record": hex(&[[0u8; 4].as_slice(), &message_id, &mac].concat()),
+        })
+    };
+    let a_to_b = receipt(a, b, &a_nonce, &b_nonce, &a_keys.tx, seq::<16>(0xa0));
+    let b_to_a = receipt(b, a, &b_nonce, &a_nonce, &b_keys.tx, seq::<16>(0xd0));
+    assert_eq!(a_to_b["key"], hex(at_a.outgoing.as_bytes()));
+    assert_eq!(b_to_a["key"], hex(at_a.incoming.as_bytes()));
+
+    json!({
+        "a_nonce": hex(&a_nonce),
+        "b_nonce": hex(&b_nonce),
+        "a_challenge_frame": hex(&LanChallenge::from_nonce(a_nonce).encode()),
+        "b_challenge_frame": hex(&LanChallenge::from_nonce(b_nonce).encode()),
+        "a_signed_message": hex(&[LAN_CONTEXT, &b_nonce, &a_nonce].concat()),
+        "a_auth_frame": hex(&a_auth.encode()),
+        "b_signed_message": hex(&[LAN_CONTEXT, &a_nonce, &b_nonce].concat()),
+        "b_auth_frame": hex(&b_auth.encode()),
+        "receipts": {
+            "a_to_b": a_to_b,
+            "b_to_a": b_to_a,
+        },
+    })
+}
+
 /// Builds the full vectors document, ending with a newline.
 pub fn vectors_json() -> String {
     let (a_sign_seed, a_kx_seed) = (seq::<32>(0x00), seq::<32>(0x20));
@@ -485,6 +574,7 @@ pub fn vectors_json() -> String {
         "device_name": device_name_json(&a, &b, &b_keys),
         "features": features_json(&a, &b, &a_keys, &b_keys),
         "invitation": invitation_json(&a, &b),
+        "lan": lan_json(&a, &b, &a_keys, &b_keys),
     });
     let mut out = serde_json::to_string_pretty(&doc).expect("serialize vectors");
     out.push('\n');

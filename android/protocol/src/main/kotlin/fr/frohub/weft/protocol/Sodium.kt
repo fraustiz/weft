@@ -134,6 +134,15 @@ internal object Sodium {
         return out
     }
 
+    /** BLAKE2b with a 16-byte output and a 32-byte key. */
+    fun genericHash16Keyed(input: ByteArray, key: ByteArray): ByteArray {
+        val out = ByteArray(DEVICE_ID_BYTES)
+        check(native.crypto_generichash(out, out.size, input, input.size.toLong(), key, key.size) == 0) {
+            "crypto_generichash failed"
+        }
+        return out
+    }
+
     /** `sodium_memcmp`: constant-time equality of two arrays of the same size. */
     fun memcmp(a: ByteArray, b: ByteArray): Boolean {
         require(a.size == b.size) { "memcmp needs arrays of the same size" }

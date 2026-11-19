@@ -15,8 +15,12 @@ The Linux client is a daemon and CLI using the desktop's installed utilities;
 see `linux/README.md` for dependencies. Its adapter tests use fake utilities;
 they do not establish that a real Wayland or X11 desktop works.
 
-Authenticated LAN transport is under validation. Falling back to the relay
-reuses the same sealed envelope so replay protection still applies.
+Authenticated LAN transport (`weft-lan-v3`, see `docs/protocol.md`, section 7)
+is under validation. Receipts carry a MAC under a per-connection, per-direction
+key derived from the pairwise session keys, so an on-path attacker cannot
+confirm a frame it dropped. Falling back to the relay reuses the same sealed
+envelope so replay protection still applies. A `weft-lan-v2` peer fails the
+handshake and uses the relay.
 Android now shares this authenticated transport, using numeric private IPv4
 endpoints announced through the relay. Routes are opportunistic: reconnects
 and later endpoint announcements retry them; there is no periodic redial.

@@ -61,7 +61,7 @@ iOS (Swift) ──────┼── WSS 443 ── relais ── WSS 443 ┼
   - CLI : binaire Rust `weft` pour associer, diffuser le presse-papiers et écrire des scripts depuis un terminal.
 - **Relais :** écrit en Rust (`axum` + SQLite), publié en image Docker multi-architecture sur `ghcr.io/fraustiz/weft/relay`. Une instance publique tourne sur `weft.frohub.eu`, et chacun peut héberger la sienne (voir [`relay/README.md`](relay/README.md)) ; l'adresse du relais se règle dans les apps.
 - **Sans compte :** chaque installation crée ses propres paires de clés Ed25519 et X25519, et les appareils s'associent directement par QR code.
-- **Routes LAN :** les appareils associés annoncent leurs adresses IPv4 privées par le relais, s'authentifient mutuellement par un défi signé (`weft-lan-v2`) et échangent en direct les mêmes enveloppes scellées. Chaque trame est confirmée par un accusé ; une trame non confirmée repart par le relais avec les mêmes octets, et la protection anti-rejeu écarte tout doublon.
+- **Routes LAN :** les appareils associés annoncent leurs adresses IPv4 privées par le relais, s'authentifient mutuellement par un défi signé (`weft-lan-v3`) et échangent en direct les mêmes enveloppes scellées. Chaque trame est confirmée par un accusé authentifié par une clé que seuls les deux appareils associés peuvent dériver, propre à cette connexion et à ce sens ; une trame non confirmée, ou dont l'accusé ne se vérifie pas, repart par le relais avec les mêmes octets, et la protection anti-rejeu écarte tout doublon.
 
 ## Organisation du dépôt
 

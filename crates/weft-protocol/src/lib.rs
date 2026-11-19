@@ -62,12 +62,19 @@ pub const AUTH_RESPONSE: u8 = 0xA1;
 /// The one-byte frame the relay sends when authentication succeeds.
 pub const AUTH_ACCEPTED: u8 = 0xA2;
 
-/// First byte of a direct LAN challenge frame (`0xC0 || nonce_32`).
-pub const LAN_CHALLENGE: u8 = 0xC0;
-/// First byte of a direct LAN authentication frame (`0xC1 || device_id_16 || sig_64`).
-pub const LAN_AUTH: u8 = 0xC1;
-/// Domain-separation prefix for direct LAN mutual authentication with frame receipts.
-pub const LAN_CONTEXT: &[u8] = b"weft-lan-v2";
+/// First byte of a direct LAN challenge frame (`0xC2 || nonce_32`).
+///
+/// weft-lan-v2 used `0xC0`/`0xC1`. The v3 bytes differ so a v2 peer and a v3
+/// peer reject each other's very first frame; they then use the relay.
+pub const LAN_CHALLENGE: u8 = 0xC2;
+/// First byte of a direct LAN authentication frame (`0xC3 || device_id_16 || sig_64`).
+pub const LAN_AUTH: u8 = 0xC3;
+/// Domain-separation prefix for direct LAN mutual authentication.
+pub const LAN_CONTEXT: &[u8] = b"weft-lan-v3";
+/// Domain-separation prefix for the per-connection LAN receipt keys.
+pub const LAN_RECEIPT_CONTEXT: &[u8] = b"weft-lan-v3 receipt";
+/// Length of a LAN receipt MAC (keyed BLAKE2b, 16-byte output).
+pub const LAN_RECEIPT_MAC_LEN: usize = 16;
 /// Length of an encoded [`LanChallenge`] frame.
 pub const LAN_CHALLENGE_LEN: usize = 1 + AUTH_NONCE_LEN;
 /// Length of an encoded [`LanAuth`] frame.
@@ -886,7 +893,7 @@ pub fn classify(frame: &[u8]) -> FrameType {
     }
 }
 
-/// Direct LAN challenge frame (`0xC0 || nonce_32`).
+/// Direct LAN challenge frame (`0xC2 || nonce_32`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LanChallenge {
     nonce: [u8; AUTH_NONCE_LEN],
@@ -908,7 +915,7 @@ impl LanChallenge {
         &self.nonce
     }
 
-    /// `0xC0 || nonce_32`.
+    /// `0xC2 || nonce_32`.
     pub fn encode(&self) -> [u8; LAN_CHALLENGE_LEN] {
         let mut out = [0u8; LAN_CHALLENGE_LEN];
         out[0] = LAN_CHALLENGE;
@@ -930,7 +937,7 @@ impl LanChallenge {
     }
 }
 
-/// Direct LAN mutual authentication response (`0xC1 || device_id_16 || sig_64`).
+/// Direct LAN mutual authentication response (`0xC3 || device_id_16 || sig_64`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LanAuth {
     pub device_id: [u8; DEVICE_ID_LEN],
@@ -938,7 +945,7 @@ pub struct LanAuth {
 }
 
 impl LanAuth {
-    /// `0xC1 || device_id_16 || signature_64`.
+    /// `0xC3 || device_id_16 || signature_64`.
     pub fn encode(&self) -> [u8; LAN_AUTH_LEN] {
         let mut out = [0u8; LAN_AUTH_LEN];
         out[0] = LAN_AUTH;
@@ -970,7 +977,7 @@ fn lan_signed_message(peer_nonce: &[u8; 32], own_nonce: &[u8; 32]) -> [u8; LAN_C
     out
 }
 
-/// Signs `b"weft-lan-v2" || peer_nonce || own_nonce` with `identity`'s Ed25519
+/// Signs `b"weft-lan-v3" || peer_nonce || own_nonce` with `identity`'s Ed25519
 /// signing key.
 pub fn sign_lan_auth(identity: &Identity, peer_nonce: &[u8; 32], own_nonce: &[u8; 32]) -> LanAuth {
     let message = lan_signed_message(peer_nonce, own_nonce);
@@ -996,6 +1003,105 @@ pub fn verify_lan_auth(
         return Err(Error::InvalidSignature);
     }
     Ok(())
+}
+
+/// Key that authenticates the receipts for one direction of one LAN
+/// connection. Erased via `sodium_memzero` when dropped.
+pub struct LanReceiptKey([u8; 32]);
+
+impl LanReceiptKey {
+    /// Derives the receipt key for envelopes going from `sender` to
+    /// `recipient` on one connection:
+    ///
+    /// ```text
+    /// key = BLAKE2b-256(key = direction_key,
+    ///                   "weft-lan-v3 receipt" || sender_id || recipient_id
+    ///                   || sender_nonce || recipient_nonce)
+    /// ```
+    ///
+    /// `direction_key` is the session key that seals envelopes from sender to
+    /// recipient: the sender's `tx`, which is the recipient's `rx`. Each
+    /// `*_nonce` is the challenge nonce that device sent on this connection.
+    /// Every field has a fixed length and is placed by its role in the
+    /// direction, not by who dialed, so both ends compute the same key, the
+    /// two directions get different keys, and so does every connection.
+    pub fn derive(
+        direction_key: &[u8; 32],
+        sender: &[u8; DEVICE_ID_LEN],
+        recipient: &[u8; DEVICE_ID_LEN],
+        sender_nonce: &[u8; AUTH_NONCE_LEN],
+        recipient_nonce: &[u8; AUTH_NONCE_LEN],
+    ) -> LanReceiptKey {
+        let mut input = [0u8; LAN_RECEIPT_CONTEXT.len() + 2 * DEVICE_ID_LEN + 2 * AUTH_NONCE_LEN];
+        let mut at = 0;
+        for part in [
+            LAN_RECEIPT_CONTEXT,
+            sender,
+            recipient,
+            sender_nonce,
+            recipient_nonce,
+        ] {
+            input[at..at + part.len()].copy_from_slice(part);
+            at += part.len();
+        }
+        LanReceiptKey(sodium::generichash_32_keyed(&input, direction_key))
+    }
+
+    /// `BLAKE2b-128(key = receipt_key, message_id)`.
+    pub fn mac(&self, message_id: &[u8; 16]) -> [u8; LAN_RECEIPT_MAC_LEN] {
+        sodium::generichash_16_keyed(message_id, &self.0)
+    }
+
+    /// Checks a receipt MAC in constant time (`sodium_memcmp`).
+    pub fn verify(&self, message_id: &[u8; 16], mac: &[u8; LAN_RECEIPT_MAC_LEN]) -> bool {
+        sodium::memcmp_16(&self.mac(message_id), mac)
+    }
+
+    /// The raw key, for test vectors.
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl Drop for LanReceiptKey {
+    fn drop(&mut self) {
+        sodium::memzero(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for LanReceiptKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LanReceiptKey { .. }")
+    }
+}
+
+/// Both receipt keys of one authenticated LAN connection, seen from one end.
+#[derive(Debug)]
+pub struct LanReceiptKeys {
+    /// Verifies the receipts the peer sends for our envelopes.
+    pub outgoing: LanReceiptKey,
+    /// Authenticates the receipts we send for the peer's envelopes.
+    pub incoming: LanReceiptKey,
+}
+
+impl LanReceiptKeys {
+    /// Derives both directions after a successful LAN handshake from the
+    /// pairwise session keys (only the two paired devices know them) and the
+    /// two challenge nonces of this connection.
+    pub fn derive(
+        local: &Identity,
+        peer_device_id: &[u8; 16],
+        peer_kx_pk: &[u8; 32],
+        own_nonce: &[u8; 32],
+        peer_nonce: &[u8; 32],
+    ) -> Result<LanReceiptKeys, Error> {
+        let keys = session_keys(local, peer_device_id, peer_kx_pk)?;
+        let own = local.device_id;
+        Ok(LanReceiptKeys {
+            outgoing: LanReceiptKey::derive(&keys.tx, &own, peer_device_id, own_nonce, peer_nonce),
+            incoming: LanReceiptKey::derive(&keys.rx, peer_device_id, &own, peer_nonce, own_nonce),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1208,16 +1314,31 @@ mod tests {
             Ok(())
         );
 
-        // An older peer must fail authentication before receipt framing starts.
-        let legacy_message = [b"weft-lan-v1".as_slice(), chal_b.nonce(), chal_a.nonce()].concat();
-        let legacy = LanAuth {
-            device_id: a.device_id(),
-            signature: sodium::sign_detached(&legacy_message, &a.sign_sk),
-        };
+        // Older peers must fail authentication before receipt framing starts:
+        // their frames carry other type bytes, and their signatures another context.
+        let mut v2_challenge = encoded_chal;
+        v2_challenge[0] = 0xC0;
         assert_eq!(
-            verify_lan_auth(&a.sign_pk(), chal_b.nonce(), chal_a.nonce(), &legacy),
-            Err(Error::InvalidSignature)
+            LanChallenge::decode(&v2_challenge),
+            Err(Error::UnexpectedFrameType(0xC0))
         );
+        let mut v2_auth = auth_a.encode();
+        v2_auth[0] = 0xC1;
+        assert_eq!(
+            LanAuth::decode(&v2_auth),
+            Err(Error::UnexpectedFrameType(0xC1))
+        );
+        for context in [b"weft-lan-v1".as_slice(), b"weft-lan-v2"] {
+            let legacy_message = [context, chal_b.nonce(), chal_a.nonce()].concat();
+            let legacy = LanAuth {
+                device_id: a.device_id(),
+                signature: sodium::sign_detached(&legacy_message, &a.sign_sk),
+            };
+            assert_eq!(
+                verify_lan_auth(&a.sign_pk(), chal_b.nonce(), chal_a.nonce(), &legacy),
+                Err(Error::InvalidSignature)
+            );
+        }
         // Swapped nonces (reflection attempt) must fail.
         assert_eq!(
             verify_lan_auth(&a.sign_pk(), chal_a.nonce(), chal_b.nonce(), &auth_a),
@@ -1235,6 +1356,32 @@ mod tests {
             verify_lan_auth(&stranger.sign_pk(), chal_b.nonce(), chal_a.nonce(), &forged),
             Err(Error::InvalidSignature)
         );
+    }
+
+    #[test]
+    fn lan_receipt_keys_match_across_ends_and_differ_by_direction_and_connection() {
+        let a = Identity::generate();
+        let b = Identity::generate();
+        let (na, nb) = ([1u8; 32], [2u8; 32]);
+        let at_a = LanReceiptKeys::derive(&a, &b.device_id(), &b.kx_pk(), &na, &nb).unwrap();
+        let at_b = LanReceiptKeys::derive(&b, &a.device_id(), &a.kx_pk(), &nb, &na).unwrap();
+        assert_eq!(at_a.outgoing.as_bytes(), at_b.incoming.as_bytes());
+        assert_eq!(at_a.incoming.as_bytes(), at_b.outgoing.as_bytes());
+        assert_ne!(at_a.outgoing.as_bytes(), at_a.incoming.as_bytes());
+
+        let id = [7u8; 16];
+        let mac = at_b.incoming.mac(&id);
+        assert!(at_a.outgoing.verify(&id, &mac));
+        // The other direction, another connection, another id or a flipped bit fail.
+        assert!(!at_a.incoming.verify(&id, &mac));
+        let other =
+            LanReceiptKeys::derive(&a, &b.device_id(), &b.kx_pk(), &na, &[3u8; 32]).unwrap();
+        assert!(!other.outgoing.verify(&id, &mac));
+        assert!(!at_a.outgoing.verify(&[8u8; 16], &mac));
+        let mut flipped = mac;
+        flipped[15] ^= 1;
+        assert!(!at_a.outgoing.verify(&id, &flipped));
+        assert!(!at_a.outgoing.verify(&id, &[0u8; 16]));
     }
 
     #[test]

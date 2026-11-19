@@ -2,6 +2,7 @@ package fr.frohub.weft.core
 
 import fr.frohub.weft.protocol.Identity
 import fr.frohub.weft.protocol.Lan
+import fr.frohub.weft.protocol.WeftException
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.IOException
@@ -107,15 +108,19 @@ internal class LanTransport private constructor(
                 val device = trusted[peer] ?: throw IOException("unknown LAN peer")
                 if (peer == own || expected != null && peer != expected ||
                     !Lan.verify(auth, device.signPublicKey, ownNonce, nonce)) throw IOException("invalid LAN authentication")
-                peer
+                val keys = try {
+                    Lan.receiptKeys(identity, device.deviceId, device.kxPublicKey, ownNonce, nonce)
+                } catch (_: WeftException) { throw IOException("LAN key exchange failed") }
+                peer to keys
             }
             if (closed.get()) return false
-            val link = LanLink(socket, scope, TIMEOUT.toLong())
-            if (routes.putIfAbsent(authenticated, link) != null) return false
-            installed = authenticated to link
+            val (peer, keys) = authenticated
+            val link = LanLink(socket, scope, TIMEOUT.toLong(), keys)
+            if (routes.putIfAbsent(peer, link) != null) return false
+            installed = peer to link
             socket.soTimeout = 0
             link.read { frame ->
-                val header = LanRules.envelope(frame, authenticated, own)
+                val header = LanRules.envelope(frame, peer, own)
                 // The core may itself be waiting for a receipt. A full queue refuses this frame.
                 if (header != null && acceptFrame(frame)) header.messageId else null
             }

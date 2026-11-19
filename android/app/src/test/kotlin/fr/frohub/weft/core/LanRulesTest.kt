@@ -12,16 +12,20 @@ import kotlinx.coroutines.runBlocking
 class LanRulesTest {
     @Test fun rustChallengeWireShapeAndBounds() {
         val nonce = ByteArray(32) { it.toByte() }
-        assertArrayEquals(nonce, Lan.nonce(byteArrayOf(0xc0.toByte()) + nonce))
-        assertNull(Lan.nonce(byteArrayOf(0xc1.toByte()) + nonce))
+        assertArrayEquals(nonce, Lan.nonce(byteArrayOf(0xc2.toByte()) + nonce))
+        assertNull(Lan.nonce(byteArrayOf(0xc3.toByte()) + nonce))
+        // A weft-lan-v2 challenge (0xc0) fails at once, so mixed versions use the relay.
+        assertNull(Lan.nonce(byteArrayOf(0xc0.toByte()) + nonce))
         assertNull(Lan.nonce(ByteArray(32)))
         assertNull(Lan.nonce(ByteArray(34)))
         assertEquals(33, Lan.CHALLENGE_LENGTH)
         assertEquals(81, Lan.AUTH_LENGTH)
+        assertEquals(36, Lan.RECEIPT_RECORD_LENGTH)
         assertEquals(262242, Lan.MAX_FRAME_LENGTH)
         // Malformed authentication is rejected before any native crypto is called.
         assertFalse(Lan.verify(ByteArray(80), ByteArray(32), nonce, nonce))
         assertFalse(Lan.verify(ByteArray(81), ByteArray(32), nonce, nonce))
+        assertFalse(Lan.verify(byteArrayOf(0xc1.toByte()) + ByteArray(80), ByteArray(32), nonce, nonce))
     }
 
     @Test fun failedDirectSendFallsBackWithoutResealing() = runBlocking {

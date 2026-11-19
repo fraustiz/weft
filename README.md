@@ -61,7 +61,7 @@ iOS (Swift) ──────┼── WSS 443 ── relay ── WSS 443 ─�
   - CLI: `weft` Rust binary for pairing, clipboard streaming and scripting from a terminal.
 - **Relay:** written in Rust (`axum` + SQLite), published as a multi-arch Docker image at `ghcr.io/fraustiz/weft/relay`. A public instance runs at `weft.frohub.eu`, and anyone can self-host their own (see [`relay/README.md`](relay/README.md)); the relay URL is configurable in the apps.
 - **No accounts:** each install generates its own Ed25519 and X25519 key pairs, and devices pair directly with a QR code.
-- **LAN routes:** paired devices announce their private IPv4 endpoints through the relay, authenticate each other with a signed challenge (`weft-lan-v2`), and exchange the same sealed envelopes directly. Each frame is confirmed by a receipt; an unconfirmed frame goes out again through the relay with the same bytes, and replay protection drops any duplicate.
+- **LAN routes:** paired devices announce their private IPv4 endpoints through the relay, authenticate each other with a signed challenge (`weft-lan-v3`), and exchange the same sealed envelopes directly. Each frame is confirmed by a receipt authenticated with a key only the two paired devices can derive, bound to that connection and direction; an unconfirmed frame, or one whose receipt fails to verify, goes out again through the relay with the same bytes, and replay protection drops any duplicate.
 
 ## Repository layout
 

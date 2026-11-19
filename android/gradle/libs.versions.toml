@@ -22,6 +22,8 @@ zxing = "3.5.4"
 androidx-core = "1.18.0"
 # JVM unit tests only: Android provides org.json at run time, the local JVM does not.
 json = "20260814"
+# JVM unit tests only: an independent BLAKE2b and Ed25519 for the shared LAN vectors (no libsodium on the JVM).
+bouncycastle = "1.80.2"
 
 [libraries]
 lazysodium-android = { module = "com.goterl:lazysodium-android", version.ref = "lazysodium" }
@@ -45,6 +47,7 @@ camera-view = { module = "androidx.camera:camera-view", version.ref = "camerax" 
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidx-core" }
 json = { module = "org.json:json", version.ref = "json" }
+bouncycastle = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
 
 [plugins]

@@ -171,9 +171,53 @@ Queue bounds and delivery:
 - a third device C and the three group envelopes (welcome, device added, device removed), in the `pairing` section.
 - a Device name envelope from B to A, in the `device_name` section.
 - a Packet envelope from A to B and a File chunk envelope from B to A, in the `features` section.
+- one direct LAN connection (challenges, authentication frames, receipt keys, MACs and receipt records), in the `lan` section (section 7).
 
 Keys are derived from fixed seeds:
 - signing pair: `crypto_sign_seed_keypair` (32-byte seed) ;
 - kx pair: `crypto_kx_seed_keypair` (32-byte seed).
 
 Production code always uses random keys; seeds only exist to make the vectors reproducible.
+
+## 7. Direct LAN transport (`weft-lan-v3`)
+
+Two paired devices on the same network can exchange envelopes over TCP instead of the relay. Each announces `{"type":"lan.endpoints","port":…,"addrs":[…]}` in a Packet envelope through the relay (numeric private IPv4 only, at most 4 addresses, port 1024–65535). Only the device with the lower device id dials, so a pair has at most one route. The LAN carries only live envelopes (`0x01` ClipboardText, `0x07` Packet, `0x08` File chunk), **unchanged**: they stay end-to-end sealed and go through the same replay checks as relayed ones.
+
+Implementations: `crates/weft-client/src/lan.rs` with `crates/weft-protocol` (Rust: macOS, Windows, Linux, CLI) and `android/protocol` `Lan.kt` with `android/app` `LanTransport.kt` / `LanLink.kt` (Kotlin). iOS does not implement the LAN transport and always uses the relay.
+
+### Handshake
+
+Both ends run the same steps, whoever dialed, within 5 seconds:
+
+1. Send `0xC2 || nonce` (33 bytes, `nonce` = 32 random bytes), then read the peer's. A different first byte or length fails; a peer nonce equal to ours fails (reflection).
+2. Send `0xC3 || own device id (16) || signature (64)` (81 bytes), where the signature is `crypto_sign_detached("weft-lan-v3" || peer_nonce || own_nonce, sign_sk)`.
+3. Read the peer's `0xC3` frame. Its device id must belong to a **locally trusted** device other than ourselves (and, for the dialer, to the device it meant to reach); the signature is checked with that device's trusted `sign_pk` over `"weft-lan-v3" || own_nonce || peer_nonce`. The order of the nonces makes a reflected answer fail. Keys never come from the TCP stream.
+
+The signature does not name the verifier: the acceptor does not know who dialed before reading the `0xC3` frame. An on-path attacker can therefore relay a handshake between two genuine devices, but it learns no key: everything after the handshake that matters (the envelopes and the receipts) is bound to secrets only the two paired devices hold.
+
+### Receipt keys
+
+After the handshake, each direction of the connection gets its own receipt key. For envelopes going from device S (sender) to device R (recipient):
+
+```
+receipt_key(S → R) = crypto_generichash(outlen = 32,
+    input = "weft-lan-v3 receipt" || id_S (16) || id_R (16) || nonce_S (32) || nonce_R (32),
+    key   = session key sealing S → R envelopes)
+```
+
+- The key is S's `tx`, which is R's `rx` (section 2), so both ends compute the same value and nobody else can.
+- `nonce_S` and `nonce_R` are the `0xC2` nonces S and R sent on **this** connection. Fields are placed by their role in the direction (sender first), never by who dialed, so the derivation is the same on both ends.
+- The two directions get different keys (different session key and field order), and every connection gets fresh keys.
+
+### Records
+
+After the handshake, each record starts with a big-endian `u32` length:
+
+- `length > 0`: an envelope of that many bytes (at least header + nonce + tag, at most `58 + 24 + 256 KiB + 16`), unchanged. Its header must name the authenticated peer as sender and us as recipient, and its kind must be a live kind.
+- `length = 0`: a receipt, `message_id (16) || mac (16)`, 36 bytes in all, with `mac = crypto_generichash(outlen = 16, input = message_id, key = receipt_key(sender of the envelope → its recipient))`.
+
+The recipient sends a receipt only after it has queued the complete envelope. Each direction has at most one envelope waiting for its receipt. The sender accepts a receipt only if its message id is the one it waits for and its MAC verifies in constant time (`sodium_memcmp`). A receipt with a wrong or missing MAC, from the other direction or from another connection, an unexpected receipt or a timeout (5 seconds) ends the connection, and the envelope waiting for its receipt goes out again **through the relay with the same bytes**; the recipient's replay protection drops it if it had in fact arrived. The message id is visible in the clear header, so without the MAC an on-path attacker could drop an envelope and confirm it anyway.
+
+### Versions
+
+`weft-lan-v2` used `0xC0` / `0xC1`, the context `"weft-lan-v2"` and 20-byte receipts without MAC. A v2 and a v3 device reject each other's first frame and close the connection; they then use the relay. There is no periodic redial: a new route is only tried on a later `lan.endpoints` announcement (on reconnect, or in answer to `capabilities` / `state.request`); receiving an announcement never triggers one in return, so mismatched versions cost one failed handshake per announcement.

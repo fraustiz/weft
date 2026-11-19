@@ -263,6 +263,41 @@ class VectorTests {
         }
         return x.size < y.size
     }
+
+    /** weft-lan-v3, as in crates/weft-protocol/tests/vectors.rs (committed_lan_vectors_verify_at_both_ends). */
+    @Test
+    fun lanHandshakeAndReceipts() {
+        val d = Devices()
+        val lan = d.vectors.getJSONObject("lan")
+        val aNonce = lan.bytes("a_nonce")
+        val bNonce = lan.bytes("b_nonce")
+        assertArrayEquals(aNonce, Lan.nonce(lan.bytes("a_challenge_frame")))
+        assertArrayEquals(bNonce, Lan.nonce(lan.bytes("b_challenge_frame")))
+        // Ed25519 is deterministic: both answers match byte for byte and verify at the other end.
+        assertEquals(lan.getString("a_auth_frame"), hex(Lan.authenticate(d.a, bNonce, aNonce)))
+        assertEquals(lan.getString("b_auth_frame"), hex(Lan.authenticate(d.b, aNonce, bNonce)))
+        assertTrue(Lan.verify(lan.bytes("a_auth_frame"), d.a.signPublicKey, bNonce, aNonce))
+        assertTrue(Lan.verify(lan.bytes("b_auth_frame"), d.b.signPublicKey, aNonce, bNonce))
+        assertFalse(Lan.verify(lan.bytes("a_auth_frame"), d.a.signPublicKey, aNonce, bNonce))
+
+        val atA = Lan.receiptKeys(d.a, d.b.deviceId, d.b.kxPublicKey, aNonce, bNonce)
+        val atB = Lan.receiptKeys(d.b, d.a.deviceId, d.a.kxPublicKey, bNonce, aNonce)
+        val receipts = lan.getJSONObject("receipts")
+        for ((name, verifier, signer) in listOf(
+            Triple("a_to_b", atA, atB),
+            Triple("b_to_a", atB, atA),
+        )) {
+            val receipt = receipts.getJSONObject(name)
+            assertEquals(name, receipt.getString("key"), hex(verifier.outgoing.bytes))
+            assertEquals(name, receipt.getString("key"), hex(signer.incoming.bytes))
+            val id = receipt.bytes("message_id")
+            val mac = receipt.bytes("mac")
+            assertEquals(name, receipt.getString("mac"), hex(signer.mac(id)))
+            assertTrue(name, verifier.verify(id, mac))
+            assertFalse(name, signer.verify(id, mac))
+            assertEquals(name, receipt.getString("record"), hex(ByteArray(4) + id + mac))
+        }
+    }
 }
 
 // endregion

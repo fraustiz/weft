@@ -260,11 +260,40 @@ pub fn generichash_32_keyed(input: &[u8], key: &[u8; 32]) -> [u8; 32] {
     out
 }
 
+/// `crypto_generichash` (BLAKE2b) with a 32-byte key, 16-byte output.
+pub fn generichash_16_keyed(input: &[u8], key: &[u8; 32]) -> [u8; 16] {
+    init();
+    let mut out = [0u8; 16];
+    // SAFETY: out is 16 bytes and key 32 bytes (both within BLAKE2b's
+    // ranges); the input length is passed explicitly.
+    let rc = unsafe {
+        ffi::crypto_generichash(
+            out.as_mut_ptr(),
+            out.len(),
+            input.as_ptr(),
+            input.len() as u64,
+            key.as_ptr(),
+            key.len(),
+        )
+    };
+    assert_eq!(rc, 0, "crypto_generichash failed");
+    out
+}
+
 /// `sodium_memcmp`: constant-time equality of two 32-byte values.
 pub fn memcmp_32(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    memcmp(a, b)
+}
+
+/// `sodium_memcmp`: constant-time equality of two 16-byte values.
+pub fn memcmp_16(a: &[u8; 16], b: &[u8; 16]) -> bool {
+    memcmp(a, b)
+}
+
+fn memcmp<const N: usize>(a: &[u8; N], b: &[u8; N]) -> bool {
     init();
-    // SAFETY: both buffers are exactly 32 bytes.
-    let rc = unsafe { ffi::sodium_memcmp(a.as_ptr().cast(), b.as_ptr().cast(), a.len()) };
+    // SAFETY: both buffers are exactly N bytes.
+    let rc = unsafe { ffi::sodium_memcmp(a.as_ptr().cast(), b.as_ptr().cast(), N) };
     rc == 0
 }
 

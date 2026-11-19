@@ -16,11 +16,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-/** A LAN v2 stream after mutual authentication. Both directions can send at the same time. */
+/**
+ * A LAN v3 stream after mutual authentication. Both directions can send at the same time.
+ * Receipts carry a MAC under [receipts], keys only the two paired devices can derive for this
+ * connection, so an on-path relay of the handshake cannot confirm a frame it dropped.
+ */
 internal class LanLink(
     private val socket: Socket,
     private val scope: CoroutineScope,
     private val timeoutMillis: Long,
+    private val receipts: Lan.Receipts,
 ) : AutoCloseable {
     private class Pending(val id: ByteArray, val received: CompletableDeferred<Boolean> = CompletableDeferred())
 
@@ -62,22 +67,23 @@ internal class LanLink(
                 if (length != 0 && length !in MIN_FRAME_LENGTH..Lan.MAX_FRAME_LENGTH) {
                     throw IOException("invalid LAN size")
                 }
-                length to ByteArray(if (length == 0) Weft.MESSAGE_ID_LENGTH else length).also(input::readFully)
+                val size = if (length == 0) Lan.RECEIPT_RECORD_LENGTH - 4 else length
+                length to ByteArray(size).also(input::readFully)
             }
             if (length == 0) {
+                val id = bytes.copyOfRange(0, Weft.MESSAGE_ID_LENGTH)
+                val mac = bytes.copyOfRange(Weft.MESSAGE_ID_LENGTH, bytes.size)
                 val receipt = pending.get()
-                if (receipt == null || !receipt.id.contentEquals(bytes) || !receipt.received.complete(true)) {
+                // A bad receipt ends the link: the pending frame then goes through the relay.
+                if (receipt == null || !receipt.id.contentEquals(id) || !receipts.verify(id, mac) ||
+                    !receipt.received.complete(true)) {
                     throw IOException("unexpected LAN receipt")
                 }
             } else {
                 val id = accept(bytes) ?: throw IOException("LAN frame refused")
-                // A zero big-endian length marks a receipt followed by the envelope's message ID.
-                deadline {
-                    writing.withLock {
-                        output.writeInt(0)
-                        output.write(id)
-                    }
-                }
+                // A zero big-endian length marks a receipt: the envelope's message ID and its MAC.
+                val record = ByteArray(4) + id + receipts.mac(id)
+                deadline { writing.withLock { output.write(record) } }
             }
         }
     }

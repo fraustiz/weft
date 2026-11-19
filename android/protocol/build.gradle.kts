@@ -20,6 +20,7 @@ android {
     sourceSets {
         // The Rust reference test vectors, read in place (not copied into this tree).
         getByName("androidTest").assets.srcDir(rootProject.file("../crates/weft-protocol/vectors"))
+        getByName("test").resources.srcDir(rootProject.file("../crates/weft-protocol/vectors"))
     }
 }
 
@@ -33,6 +34,8 @@ dependencies {
     }
 
     testImplementation(libs.junit)
+    testImplementation(libs.json)
+    testImplementation(libs.bouncycastle)
     androidTestImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.ext.junit)

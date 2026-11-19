@@ -283,3 +283,68 @@ fn committed_invitation_vectors_decode() {
     );
     assert_eq!(ControlFrame::GroupJoin { device_id: b_id }.encode(), frame);
 }
+
+/// Checks the weft-lan-v3 section the way each end of a connection would:
+/// both handshake frames verify, and each end derives the receipt keys of
+/// the vectors from its own identity, whoever dialed. The Kotlin client
+/// asserts the same values (android/protocol LanVectorTests and VectorTests).
+#[test]
+fn committed_lan_vectors_verify_at_both_ends() {
+    use weft_protocol::{
+        Identity, LanAuth, LanChallenge, LanReceiptKeys, session_keys, verify_lan_auth,
+    };
+
+    let doc: serde_json::Value = serde_json::from_str(include_str!("../vectors/v1.json")).unwrap();
+    let identity = |name: &str| {
+        let device = &doc["devices"][name];
+        Identity::from_seeds(unhex(&device["sign_seed"]), unhex(&device["kx_seed"]))
+    };
+    let (a, b) = (identity("a"), identity("b"));
+    let lan = &doc["lan"];
+    let a_nonce = LanChallenge::decode(&unhex_vec(&lan["a_challenge_frame"]))
+        .unwrap()
+        .nonce()
+        .to_owned();
+    let b_nonce = LanChallenge::decode(&unhex_vec(&lan["b_challenge_frame"]))
+        .unwrap()
+        .nonce()
+        .to_owned();
+    assert_eq!(a_nonce, unhex::<32>(&lan["a_nonce"]));
+    assert_eq!(b_nonce, unhex::<32>(&lan["b_nonce"]));
+
+    let a_auth = LanAuth::decode(&unhex_vec(&lan["a_auth_frame"])).unwrap();
+    let b_auth = LanAuth::decode(&unhex_vec(&lan["b_auth_frame"])).unwrap();
+    assert_eq!(a_auth.device_id, a.device_id());
+    // B checks A's answer to its nonce, and A checks B's.
+    verify_lan_auth(&a.sign_pk(), &b_nonce, &a_nonce, &a_auth).unwrap();
+    verify_lan_auth(&b.sign_pk(), &a_nonce, &b_nonce, &b_auth).unwrap();
+    assert!(verify_lan_auth(&a.sign_pk(), &a_nonce, &b_nonce, &a_auth).is_err());
+
+    let at_a = LanReceiptKeys::derive(&a, &b.device_id(), &b.kx_pk(), &a_nonce, &b_nonce).unwrap();
+    let at_b = LanReceiptKeys::derive(&b, &a.device_id(), &a.kx_pk(), &b_nonce, &a_nonce).unwrap();
+    let receipts = &lan["receipts"];
+    for (name, verifier, signer) in [
+        ("a_to_b", &at_a.outgoing, &at_b.incoming),
+        ("b_to_a", &at_b.outgoing, &at_a.incoming),
+    ] {
+        let receipt = &receipts[name];
+        let key = unhex::<32>(&receipt["key"]);
+        assert_eq!(verifier.as_bytes(), &key, "{name}");
+        assert_eq!(signer.as_bytes(), &key, "{name}");
+        let id = unhex::<16>(&receipt["message_id"]);
+        let mac = unhex::<16>(&receipt["mac"]);
+        assert_eq!(signer.mac(&id), mac, "{name}");
+        assert!(verifier.verify(&id, &mac), "{name}");
+        let record = unhex_vec(&receipt["record"]);
+        assert_eq!(record, [[0u8; 4].as_slice(), &id, &mac].concat(), "{name}");
+    }
+    // The key of one direction does not verify the other's receipt.
+    let (b_id, b_mac) = (
+        unhex::<16>(&receipts["b_to_a"]["message_id"]),
+        unhex::<16>(&receipts["b_to_a"]["mac"]),
+    );
+    assert!(!at_a.outgoing.verify(&b_id, &b_mac));
+    // The receipt key input uses the session key of that direction.
+    let keys = session_keys(&a, &b.device_id(), &b.kx_pk()).unwrap();
+    assert_eq!(keys.tx, unhex::<32>(&doc["session"]["a"]["tx"]));
+}
