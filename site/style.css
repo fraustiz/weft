@@ -45,6 +45,8 @@ kbd { font-family: var(--font-outlier); font-size: 0.92em; }
 .nav-links { display: flex; gap: var(--space-lg); margin: 0 0 0 auto; padding: 0; list-style: none; font-size: var(--text-sm); }
 .nav-links a { color: var(--color-ink-2); text-decoration: none; white-space: nowrap; }
 .nav-links a:hover { color: var(--color-ink); }
+.nav-lang { margin-left: calc(-1 * var(--space-sm)); padding: var(--space-2xs) var(--space-xs); border-radius: 6px; font: 500 var(--text-sm)/1 var(--font-outlier); color: var(--color-ink-2); text-decoration: none; }
+.nav-lang:hover { color: var(--color-ink); }
 
 /* Hero */
 .hero { position: relative; padding-top: var(--space-lg); overflow-x: clip; }
@@ -81,6 +83,8 @@ kbd { font-family: var(--font-outlier); font-size: 0.92em; }
 /* Button in android-home.png (540 × 1200): x 22–517, y 309–381; the frame sits 3px outside it. */
 .press--phone { --img-w: calc(100% - 2 * var(--pad)); left: calc(var(--pad) + var(--img-w) * 22 / 540 - 3px); width: calc(var(--img-w) * 496 / 540 + 6px); top: calc(var(--pad) + (100% - 2 * var(--pad)) * 309 / 1200 - 3px); height: calc((100% - 2 * var(--pad)) * 73 / 1200 + 6px); }
 .press--mac { left: 34.2%; width: 20.8%; top: 24.1%; height: 5.1%; border-radius: 8px; }
+/* English capture: "Send File…" is narrower (x 251–341 of 720) */
+.stage:not([data-example="link"]) .press--narrow { width: 13.7%; }
 .stage[data-example="link"] .press--mac { left: 33.1%; width: 64.6%; top: 42.6%; height: 6.8%; }
 .stage[data-example="text"] .press--phone, .stage[data-example="file"] .press--mac, .stage[data-example="link"] .press--mac { opacity: 1; }
 .flash { position: absolute; inset: -8px; border-radius: 18px; box-shadow: 0 0 0 3px var(--color-accent-hot), 0 0 60px 10px var(--color-glow); opacity: 0; pointer-events: none; }
@@ -167,6 +171,7 @@ kbd { font-family: var(--font-outlier); font-size: 0.92em; }
 /* Narrower */
 @media (max-width: 72rem) {
   .nav-links { display: none; }
+  .nav-lang { margin-left: auto; }
   .nav-in { justify-content: space-between; }
 }
 @media (max-width: 60rem) {

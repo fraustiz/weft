@@ -1,17 +1,40 @@
-// Weft landing: download links from the latest GitHub release, and the
-// transfer scene: the copied text runs along the lit thread from the phone to
-// the Mac, once, on request, with pause, resume and replay.
+// Weft landing (French at /, English at /en/): download links from the latest
+// GitHub release, and the looping transfer scene along the lit thread.
 (() => {
   "use strict";
 
+  const EN = document.documentElement.lang.startsWith("en");
+  const T = EN ? {
+    download: { android: "Download for Android", mac: "Download for Mac", windows: "Download for Windows", ios: "Download for iPhone" },
+    encrypted: "Encrypted", play: "Play", pause: "Pause",
+    examples: {
+      text: { kind: "Text", phone: ["Copy", "on the phone"], mac: ["Paste", "on the Mac, ⌘V"],
+        caption: "A text copied on the phone, pasted on the Mac." },
+      image: { kind: "Image", mac: ["Copy", "on the Mac, ⌘C"], phone: ["Accept", "on the phone"],
+        caption: "An image copied on the Mac is offered to the phone." },
+      file: { kind: "File", mac: ["Send", "a file, or drop it"], phone: ["Receive", "in Downloads"],
+        caption: "A file sent from the Mac lands in the phone’s Downloads." },
+      link: { kind: "Link", mac: ["Share", "a link"], phone: ["Open", "on the phone"],
+        caption: "A link sent from the Mac opens on the phone." },
+    },
+  } : {
+    download: { android: "Télécharger pour Android", mac: "Télécharger pour Mac", windows: "Télécharger pour Windows", ios: "Télécharger pour iPhone" },
+    encrypted: "Chiffré", play: "Lecture", pause: "Pause",
+    examples: {
+      text: { kind: "Texte", phone: ["Copier", "sur le téléphone"], mac: ["Coller", "sur le Mac, ⌘V"],
+        caption: "Un texte copié sur le téléphone, collé sur le Mac." },
+      image: { kind: "Image", mac: ["Copier", "sur le Mac, ⌘C"], phone: ["Accepter", "sur le téléphone"],
+        caption: "Une image copiée sur le Mac est proposée au téléphone." },
+      file: { kind: "Fichier", mac: ["Envoyer", "un fichier, ou le déposer"], phone: ["Recevoir", "dans Téléchargements"],
+        caption: "Un fichier envoyé du Mac arrive dans les Téléchargements du téléphone." },
+      link: { kind: "Lien", mac: ["Partager", "un lien"], phone: ["Ouvrir", "sur le téléphone"],
+        caption: "Un lien envoyé du Mac s’ouvre sur le téléphone." },
+    },
+  };
+
   /* Downloads ------------------------------------------------------------ */
   const ASSETS = { android: /\.apk$/i, mac: /-mac\.zip$/i, windows: /-windows\.exe$/i, ios: /-ios\.ipa$/i };
-  const LABELS = {
-    android: "Télécharger pour Android",
-    mac: "Télécharger pour Mac",
-    windows: "Télécharger pour Windows",
-    ios: "Télécharger pour iPhone",
-  };
+  const LABELS = T.download;
 
   function detectPlatform() {
     const ua = navigator.userAgent || "";
@@ -75,19 +98,11 @@
   const canOffset = CSS.supports("offset-path", 'path("M0 0 L1 1")');
 
   const EXAMPLES = [
-    { id: "text", from: "phone", press: "phone", kind: "Texte",
-      phone: ["Copier", "sur le téléphone"], mac: ["Coller", "sur le Mac, ⌘V"],
-      caption: "Un texte copié sur le téléphone, collé sur le Mac." },
-    { id: "image", from: "mac", press: null, kind: "Image",
-      mac: ["Copier", "sur le Mac, ⌘C"], phone: ["Accepter", "sur le téléphone"],
-      caption: "Une image copiée sur le Mac est proposée au téléphone." },
-    { id: "file", from: "mac", press: "mac", kind: "Fichier",
-      mac: ["Envoyer", "un fichier, ou le déposer"], phone: ["Recevoir", "dans Téléchargements"],
-      caption: "Un fichier envoyé du Mac arrive dans les Téléchargements du téléphone." },
-    { id: "link", from: "mac", press: "mac", kind: "Lien",
-      mac: ["Partager", "un lien"], phone: ["Ouvrir", "sur le téléphone"],
-      caption: "Un lien envoyé du Mac s’ouvre sur le téléphone." },
-  ];
+    { id: "text", from: "phone", press: "phone" },
+    { id: "image", from: "mac", press: null },
+    { id: "file", from: "mac", press: "mac" },
+    { id: "link", from: "mac", press: "mac" },
+  ].map((ex) => ({ ...ex, ...T.examples[ex.id] }));
   const DURATION = 5600;
   const EASE = "cubic-bezier(0.65, 0, 0.35, 1)";
 
@@ -134,7 +149,7 @@
   function stage(ex) {
     scene.dataset.example = ex.id;
     fill(clip.phone, ex); fill(clip.mac, ex); fill(fly, ex);
-    fly.querySelector(".clip-k").textContent = "Chiffré";
+    fly.querySelector(".clip-k").textContent = T.encrypted;
     fly.style.width = `${clip.phone.getBoundingClientRect().width}px`;
     setMarker("phone", ex.phone); setMarker("mac", ex.mac);
     caption.textContent = ex.caption;
@@ -257,7 +272,7 @@
   pauseBtn.addEventListener("click", () => {
     hold.user = !hold.user;
     pauseBtn.setAttribute("aria-pressed", String(hold.user));
-    pauseLabel.textContent = hold.user ? "Lecture" : "Pause";
+    pauseLabel.textContent = hold.user ? T.play : T.pause;
     update();
   });
   exButtons.forEach((b) => b.addEventListener("click", () => {
