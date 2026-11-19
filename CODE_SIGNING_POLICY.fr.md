@@ -45,6 +45,8 @@ Weft transfère des données entre vos propres appareils : c'est son but, il uti
 - **Réseau local.** Quand des appareils appairés partagent un réseau local, ils s'échangent leurs adresses IP privées (chiffrées de bout en bout, par le relais) et se connectent directement. Chaque appareil écoute sur un port TCP local et ne parle qu'aux appareils avec lesquels il est appairé.
 - **Mises à jour.** Les apps macOS, Android et Windows consultent [GitHub Releases](https://github.com/fraustiz/weft/releases) au plus une fois par jour pour savoir s'il existe une nouvelle version, et ne la téléchargent que si vous choisissez de l'installer. La vérification automatique se désactive dans les réglages de chaque app. Ces requêtes vont à GitHub, sous la [déclaration de confidentialité de GitHub](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement). L'app iOS ne cherche pas de mises à jour.
 
+Le site [weft.frohub.eu](https://weft.frohub.eu) mesure son audience avec [Umami](https://umami.is), hébergé sur le propre serveur du responsable du projet : aucun cookie, uniquement des statistiques anonymes et agrégées, rien n'est partagé avec des tiers.
+
 ## Désinstaller
 
 Avant de désinstaller, vous pouvez retirer l'appareil de votre groupe (dans Weft, sur cet appareil ou sur un autre) : le relais supprime alors sa ligne.

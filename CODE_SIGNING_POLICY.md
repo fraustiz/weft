@@ -44,6 +44,8 @@ Weft moves data between your own devices: that is its purpose, so it uses the ne
 - **Local network.** When paired devices share a local network, they tell each other their private IP addresses (end-to-end encrypted, through the relay) and connect directly. Each device listens on a local TCP port and only talks to devices it has paired with.
 - **Update checks.** The macOS, Android and Windows apps check [GitHub Releases](https://github.com/fraustiz/weft/releases) for a new version at most once a day, and download it only when you choose to install it. Automatic checks can be turned off in each app's settings. These requests go to GitHub, under [GitHub's privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement). The iOS app does not check for updates.
 
+The website [weft.frohub.eu](https://weft.frohub.eu) measures its audience with [Umami](https://umami.is), self-hosted on the project owner's own server: no cookies, anonymous aggregated statistics only, nothing shared with third parties.
+
 ## Uninstalling
 
 Before uninstalling, you can remove the device from your group (in Weft on this device or on another one): the relay then deletes its record.

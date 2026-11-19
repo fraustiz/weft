@@ -2,8 +2,11 @@
 # by nginx on port 8080. The relay keeps /v1, /healthz and /relay through more
 # specific Traefik rules.
 FROM nginx:stable-alpine
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY security-headers.conf /etc/nginx/snippets/security-headers.conf
+# nginx.conf is a template: the entrypoint fills in the DNS resolver for the
+# /stats proxy to Umami and writes it to /etc/nginx/conf.d/default.conf.
+ENV NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1
+COPY nginx.conf /etc/nginx/templates/default.conf.template
+COPY security-headers.conf umami-proxy.conf /etc/nginx/snippets/
 COPY index.html style.css tokens.css base.css app.js robots.txt sitemap.xml /usr/share/nginx/html/
 COPY en /usr/share/nginx/html/en
 COPY assets /usr/share/nginx/html/assets
