@@ -1,6 +1,8 @@
 // "Open at login", through SMAppService. It needs a real app bundle; an
 // app that is not signed by a developer may also need the user's approval
-// in System Settings › General › Login Items.
+// in System Settings › General › Login Items. macOS reports an app that
+// was never registered as "not found", so that reads as off: turning it on
+// registers the app, and if macOS refuses, its reason is shown.
 
 import Foundation
 import ServiceManagement
@@ -26,12 +28,7 @@ enum LoginItem {
         switch SMAppService.mainApp.status {
         case .enabled: return .on
         case .requiresApproval: return .needsApproval
-        case .notRegistered: return .off
-        case .notFound:
-            return .unavailable(t(
-                "macOS does not find this copy of Weft. Move Weft to Applications, then open it again.",
-                "macOS ne trouve pas cette copie de Weft. Placez Weft dans Applications, puis rouvrez-le."
-            ))
+        case .notRegistered, .notFound: return .off
         @unknown default: return .off
         }
     }
