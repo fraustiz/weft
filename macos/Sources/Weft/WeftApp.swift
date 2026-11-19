@@ -73,6 +73,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor func applicationDidFinishLaunching(_ notification: Notification) {
         Self.shared = self
+        quitOnSignals()
+        // Before the adapter starts again, or alongside: only processes
+        // launchd adopted are stopped, never this run's own.
+        DispatchQueue.global(qos: .utility).async { MediaAdapter.stopOrphans() }
         if let appearance = Brand.appearance { NSApp.appearance = appearance }
         if let accent = NSColor.controlAccentColor.usingColorSpace(.sRGB) {
             Development.record(String(
@@ -84,6 +88,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor func applicationWillTerminate(_ notification: Notification) {
         Self.model?.stop()
+    }
+
+    /// Kept for as long as the app runs.
+    @MainActor private static var signalSources: [DispatchSourceSignal] = []
+
+    /// SIGTERM (`kill`), SIGINT (Ctrl-C in a terminal) and SIGHUP end a
+    /// process at once by default, without `applicationWillTerminate`, so
+    /// the media adapter would outlive the app. They quit the normal way
+    /// instead.
+    @MainActor private func quitOnSignals() {
+        for number in [SIGTERM, SIGINT, SIGHUP] {
+            // Ignored as a signal, so it is only seen by the source below.
+            signal(number, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
+            source.setEventHandler {
+                MainActor.assumeIsolated { NSApp.terminate(nil) }
+            }
+            source.resume()
+            Self.signalSources.append(source)
+        }
     }
 
     /// Closing the last window leaves the menu bar icon.

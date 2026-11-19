@@ -257,3 +257,46 @@ private func line(_ object: [String: Any]) -> Data {
         #expect(CoverArt.jpeg(fromBase64: "aGVsbG8=") == nil)
     }
 }
+
+@Suite struct OrphanedHelpersTests {
+    /// A `KERN_PROCARGS2` buffer as the kernel lays it out.
+    static func procArgs(executable: String, arguments: [String], environment: [String] = []) -> [UInt8] {
+        var count = Int32(arguments.count)
+        var buffer = withUnsafeBytes(of: &count) { Array($0) }
+        buffer += Array(executable.utf8) + [0, 0, 0, 0]
+        for string in arguments + environment { buffer += Array(string.utf8) + [0] }
+        return buffer
+    }
+
+    static let script = "/Applications/Weft.app/Contents/Resources/MediaRemoteAdapter/mediaremote-adapter.pl"
+
+    @Test func readsTheArgumentsWithoutTheEnvironment() {
+        let arguments = ["/usr/bin/perl", Self.script, "framework", "client", "stream", "--micros"]
+        let buffer = Self.procArgs(executable: "/usr/bin/perl", arguments: arguments, environment: ["HOME=/x"])
+        #expect(OrphanedHelpers.arguments(procArgs: buffer) == arguments)
+    }
+
+    @Test func refusesATruncatedBuffer() {
+        let buffer = Self.procArgs(executable: "/usr/bin/perl", arguments: ["/usr/bin/perl", "a"])
+        #expect(OrphanedHelpers.arguments(procArgs: Array(buffer.dropLast())) == nil)
+        #expect(OrphanedHelpers.arguments(procArgs: [1, 0]) == nil)
+    }
+
+    @Test func matchesOnlyTheExactScriptPath() {
+        #expect(OrphanedHelpers.runs(Self.script, arguments: ["/usr/bin/perl", Self.script, "stream"]))
+        let dev = "/Users/x/weft/macos/build/Weft Dev.app/Contents/Resources/MediaRemoteAdapter/mediaremote-adapter.pl"
+        #expect(!OrphanedHelpers.runs(Self.script, arguments: ["/usr/bin/perl", dev, "stream"]))
+        #expect(!OrphanedHelpers.runs(Self.script, arguments: ["/usr/bin/perl", Self.script + "x"]))
+        #expect(!OrphanedHelpers.runs(Self.script, arguments: [Self.script]))
+        #expect(!OrphanedHelpers.runs(Self.script, arguments: ["/usr/bin/vim", "-R", Self.script]))
+    }
+
+    @Test func readsItsOwnArguments() throws {
+        let arguments = try #require(OrphanedHelpers.arguments(of: getpid()))
+        #expect(arguments == CommandLine.arguments)
+    }
+
+    @Test func findsNothingForAPathNothingRuns() {
+        #expect(OrphanedHelpers.find(running: "/nonexistent/\(UUID()).pl").isEmpty)
+    }
+}

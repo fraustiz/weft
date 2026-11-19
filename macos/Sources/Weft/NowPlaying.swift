@@ -36,6 +36,17 @@ struct MediaAdapter: Sendable {
         return files.allSatisfy { FileManager.default.fileExists(atPath: $0.path) } ? adapter : nil
     }
 
+    /// Stops the adapters an earlier run of this app left running when it
+    /// was killed or crashed (WeftKit/OrphanedHelpers.swift). Blocks a
+    /// moment when there are some: call it off the main thread.
+    static func stopOrphans() {
+        guard let adapter = bundled() else { return }
+        let count = OrphanedHelpers.stop(running: adapter.script.path)
+        if count > 0 {
+            log.info("stopped \(count, privacy: .public) media adapter(s) left by an earlier run")
+        }
+    }
+
     /// A process running the adapter with `arguments` after its paths.
     func process(_ arguments: [String]) -> Process {
         let process = Process()
