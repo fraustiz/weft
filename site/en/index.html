@@ -3,16 +3,99 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Weft, copy here, paste there</title>
-<meta name="description" content="Weft moves your clipboard, images and files from one device to another, end-to-end encrypted. Android, iOS, macOS, Windows and Linux.">
+<title>Weft, encrypted clipboard and file sync across your devices</title>
+<meta name="description" content="Weft moves your clipboard, images, files and links between Android, iOS, macOS, Windows and Linux, end-to-end encrypted. Open source, no account needed.">
 <meta name="theme-color" content="#17130F">
+<link rel="canonical" href="https://weft.frohub.eu/en/">
 <link rel="alternate" hreflang="fr" href="https://weft.frohub.eu/">
 <link rel="alternate" hreflang="en" href="https://weft.frohub.eu/en/">
 <link rel="alternate" hreflang="x-default" href="https://weft.frohub.eu/en/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Weft">
+<meta property="og:title" content="Weft, copy here, paste there">
+<meta property="og:description" content="Your clipboard, images, files and links move from one device to another, end-to-end encrypted. Open source, no account.">
+<meta property="og:url" content="https://weft.frohub.eu/en/">
+<meta property="og:locale" content="en_US">
+<meta property="og:locale:alternate" content="fr_FR">
+<meta property="og:image" content="https://weft.frohub.eu/assets/og/weft-en.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Weft on an Android phone and on a Mac, with the headline Copy here. Paste there.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Weft, copy here, paste there">
+<meta name="twitter:description" content="Your clipboard, images, files and links move from one device to another, end-to-end encrypted. Open source, no account.">
+<meta name="twitter:image" content="https://weft.frohub.eu/assets/og/weft-en.png">
+<meta name="twitter:image:alt" content="Weft on an Android phone and on a Mac, with the headline Copy here. Paste there.">
 <link rel="icon" href="../assets/weft-favicon.svg" type="image/svg+xml">
 <link rel="preload" href="../assets/fonts/BricolageGrotesque-Variable-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="../assets/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="../style.css">
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@graph": [
+  {
+   "@type": "WebSite",
+   "@id": "https://weft.frohub.eu/#website",
+   "name": "Weft",
+   "url": "https://weft.frohub.eu/",
+   "inLanguage": [
+    "fr",
+    "en"
+   ]
+  },
+  {
+   "@type": "WebPage",
+   "@id": "https://weft.frohub.eu/en/#page",
+   "url": "https://weft.frohub.eu/en/",
+   "inLanguage": "en",
+   "isPartOf": {
+    "@id": "https://weft.frohub.eu/#website"
+   },
+   "about": {
+    "@id": "https://weft.frohub.eu/en/#app"
+   }
+  },
+  {
+   "@type": "SoftwareApplication",
+   "@id": "https://weft.frohub.eu/en/#app",
+   "name": "Weft",
+   "url": "https://weft.frohub.eu/en/",
+   "description": "Weft moves your clipboard, images, files, links and notifications between Android, iOS, macOS, Windows and Linux. Everything is end-to-end encrypted on the device and travels through a relay that reads nothing, with a direct route on the same local network. Free software under the MIT license, no account.",
+   "applicationCategory": "UtilitiesApplication",
+   "operatingSystem": "Android 8+, iOS, macOS 14+, Windows, Linux",
+   "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "EUR"
+   },
+   "isAccessibleForFree": true,
+   "license": "https://opensource.org/licenses/MIT",
+   "downloadUrl": "https://github.com/fraustiz/weft/releases/latest",
+   "screenshot": [
+    "https://weft.frohub.eu/assets/shots/en/android-home.png",
+    "https://weft.frohub.eu/assets/shots/en/mac.png",
+    "https://weft.frohub.eu/assets/shots/en/ios-share.png"
+   ],
+   "image": "https://weft.frohub.eu/assets/og/weft-en.png",
+   "sameAs": [
+    "https://github.com/fraustiz/weft"
+   ]
+  },
+  {
+   "@type": "SoftwareSourceCode",
+   "@id": "https://weft.frohub.eu/en/#source",
+   "name": "Weft",
+   "codeRepository": "https://github.com/fraustiz/weft",
+   "license": "https://opensource.org/licenses/MIT",
+   "targetProduct": {
+    "@id": "https://weft.frohub.eu/en/#app"
+   }
+  }
+ ]
+}
+</script>
 </head>
 <body>
 <a class="skip" href="#content">Skip to content</a>
@@ -40,7 +123,7 @@
           <a class="btn btn--primary" data-dl="primary" href="https://github.com/fraustiz/weft/releases/latest">Download Weft</a>
           <a class="btn btn--ghost" href="#download">All platforms</a>
         </div>
-        <p class="hero-meta">Version <span data-release-version>0.3.2</span>, free and open source, no account.</p>
+        <p class="hero-meta">Version <span data-release-version>0.3.3</span> for Android, iOS, macOS, Windows and Linux, free and open source, no account.</p>
       </div>
     </div>
 
@@ -109,17 +192,17 @@
       <h2 id="features-title">More than a clipboard.</h2>
       <ol class="shots">
         <li class="shot shot--1">
-          <div class="bezel bezel--ios"><img src="../assets/shots/en/ios-share.png" width="274" height="597" loading="lazy" alt="iOS share extension: a photo ready, Add to Weft button"></div>
+          <div class="bezel bezel--ios"><img src="../assets/shots/en/ios-share.png" width="274" height="597" loading="lazy" decoding="async" alt="iOS share extension: a photo ready, Add to Weft button"></div>
           <h3>Share</h3>
           <p>Photos, files and links, from any app.</p>
         </li>
         <li class="shot shot--2">
-          <div class="bezel"><img src="../assets/shots/en/android-device.png" width="540" height="1200" loading="lazy" alt="Android page of a paired Mac: now playing, volume, Ring, Ping"></div>
+          <div class="bezel"><img src="../assets/shots/en/android-device.png" width="540" height="1200" loading="lazy" decoding="async" alt="Android page of a paired Mac: now playing, volume, Ring, Ping"></div>
           <h3>Control</h3>
           <p>The computer’s music and volume, from the phone.</p>
         </li>
         <li class="shot shot--3">
-          <div class="bezel bezel--ios"><img src="../assets/shots/en/ios-device.png" width="274" height="597" loading="lazy" alt="iOS page of a paired iMac: Send File, Ring, Ping, Share a link"></div>
+          <div class="bezel bezel--ios"><img src="../assets/shots/en/ios-device.png" width="274" height="597" loading="lazy" decoding="async" alt="iOS page of a paired iMac: Send File, Ring, Ping, Share a link"></div>
           <h3>Find</h3>
           <p>Ring the other device, or send it a file.</p>
         </li>
@@ -151,7 +234,7 @@
 
   <section class="download" id="download" aria-labelledby="dl-title">
     <div class="wrap">
-      <h2 id="dl-title">Download Weft <span data-release-version>0.3.2</span>.</h2>
+      <h2 id="dl-title">Download Weft <span data-release-version>0.3.3</span>.</h2>
       <ul class="platforms">
         <li><a class="pf" data-dl="android" href="https://github.com/fraustiz/weft/releases/latest"><span class="pf-name">Android</span><span class="pf-note">Android 8 or later</span><span class="pf-file">.apk</span></a></li>
         <li><a class="pf" data-dl="mac" href="https://github.com/fraustiz/weft/releases/latest"><span class="pf-name">macOS</span><span class="pf-note">macOS 14 or later</span><span class="pf-file">.zip</span></a></li>
@@ -165,8 +248,8 @@
 
 <footer class="foot">
   <div class="wrap foot-in">
-    <img class="foot-lockup" src="../assets/weft-lockup.svg" width="306" height="120" alt="Weft">
-    <p>Free software under the MIT license. Code, releases and issues on <a href="https://github.com/fraustiz/weft">GitHub</a>. About the <a href="/relay">public relay weft.frohub.eu</a>. Bricolage Grotesque and Geist fonts, OFL license. <a href="../" hreflang="fr" lang="fr">Version française</a>.</p>
+    <img class="foot-lockup" src="../assets/weft-lockup.svg" width="306" height="120" loading="lazy" decoding="async" alt="Weft">
+    <p>Weft syncs your clipboard, files, links and notifications between your devices, end-to-end encrypted. Free software under the MIT license. Code, releases and issues on <a href="https://github.com/fraustiz/weft">GitHub</a>. <a href="https://github.com/fraustiz/weft/blob/main/CODE_SIGNING_POLICY.md">Code signing policy</a> and <a href="https://github.com/fraustiz/weft/blob/main/CODE_SIGNING_POLICY.md#privacy">privacy</a>. About the <a href="/relay">public relay weft.frohub.eu</a>. Bricolage Grotesque and Geist fonts, OFL license. <a href="../" hreflang="fr" lang="fr">Version française</a>.</p>
   </div>
 </footer>
 

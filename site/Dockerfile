@@ -4,7 +4,7 @@
 FROM nginx:stable-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY security-headers.conf /etc/nginx/snippets/security-headers.conf
-COPY index.html style.css tokens.css base.css app.js /usr/share/nginx/html/
+COPY index.html style.css tokens.css base.css app.js robots.txt sitemap.xml /usr/share/nginx/html/
 COPY en /usr/share/nginx/html/en
 COPY assets /usr/share/nginx/html/assets
 # Version CSS and JS URLs by content so a CDN never serves a stale file.

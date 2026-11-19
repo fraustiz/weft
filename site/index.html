@@ -3,16 +3,99 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Weft, copiez ici, collez là-bas</title>
-<meta name="description" content="Weft fait passer le presse-papiers, les images et les fichiers d’un appareil à l’autre, chiffrés de bout en bout. Android, iOS, macOS, Windows et Linux.">
+<title>Weft, presse-papiers et fichiers chiffrés entre vos appareils</title>
+<meta name="description" content="Weft fait passer presse-papiers, images, fichiers et liens entre Android, iOS, macOS, Windows et Linux, chiffrés de bout en bout. Libre et sans compte.">
 <meta name="theme-color" content="#17130F">
+<link rel="canonical" href="https://weft.frohub.eu/">
 <link rel="alternate" hreflang="fr" href="https://weft.frohub.eu/">
 <link rel="alternate" hreflang="en" href="https://weft.frohub.eu/en/">
 <link rel="alternate" hreflang="x-default" href="https://weft.frohub.eu/en/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Weft">
+<meta property="og:title" content="Weft, copiez ici, collez là-bas">
+<meta property="og:description" content="Le presse-papiers, les images, les fichiers et les liens passent d’un appareil à l’autre, chiffrés de bout en bout. Libre et sans compte.">
+<meta property="og:url" content="https://weft.frohub.eu/">
+<meta property="og:locale" content="fr_FR">
+<meta property="og:locale:alternate" content="en_US">
+<meta property="og:image" content="https://weft.frohub.eu/assets/og/weft-fr.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Weft sur un téléphone Android et sur un Mac, avec le titre Copiez ici. Collez là-bas.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Weft, copiez ici, collez là-bas">
+<meta name="twitter:description" content="Le presse-papiers, les images, les fichiers et les liens passent d’un appareil à l’autre, chiffrés de bout en bout. Libre et sans compte.">
+<meta name="twitter:image" content="https://weft.frohub.eu/assets/og/weft-fr.png">
+<meta name="twitter:image:alt" content="Weft sur un téléphone Android et sur un Mac, avec le titre Copiez ici. Collez là-bas.">
 <link rel="icon" href="assets/weft-favicon.svg" type="image/svg+xml">
 <link rel="preload" href="assets/fonts/BricolageGrotesque-Variable-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@graph": [
+  {
+   "@type": "WebSite",
+   "@id": "https://weft.frohub.eu/#website",
+   "name": "Weft",
+   "url": "https://weft.frohub.eu/",
+   "inLanguage": [
+    "fr",
+    "en"
+   ]
+  },
+  {
+   "@type": "WebPage",
+   "@id": "https://weft.frohub.eu/#page",
+   "url": "https://weft.frohub.eu/",
+   "inLanguage": "fr",
+   "isPartOf": {
+    "@id": "https://weft.frohub.eu/#website"
+   },
+   "about": {
+    "@id": "https://weft.frohub.eu/#app"
+   }
+  },
+  {
+   "@type": "SoftwareApplication",
+   "@id": "https://weft.frohub.eu/#app",
+   "name": "Weft",
+   "url": "https://weft.frohub.eu/",
+   "description": "Weft fait passer le presse-papiers, les images, les fichiers, les liens et les notifications entre Android, iOS, macOS, Windows et Linux. Tout est chiffré de bout en bout sur l’appareil et passe par un relais qui ne lit rien, avec une route directe sur le même réseau local. Logiciel libre sous licence MIT, sans compte.",
+   "applicationCategory": "UtilitiesApplication",
+   "operatingSystem": "Android 8+, iOS, macOS 14+, Windows, Linux",
+   "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "EUR"
+   },
+   "isAccessibleForFree": true,
+   "license": "https://opensource.org/licenses/MIT",
+   "downloadUrl": "https://github.com/fraustiz/weft/releases/latest",
+   "screenshot": [
+    "https://weft.frohub.eu/assets/shots/android-home.png",
+    "https://weft.frohub.eu/assets/shots/mac.png",
+    "https://weft.frohub.eu/assets/shots/ios-share.png"
+   ],
+   "image": "https://weft.frohub.eu/assets/og/weft-fr.png",
+   "sameAs": [
+    "https://github.com/fraustiz/weft"
+   ]
+  },
+  {
+   "@type": "SoftwareSourceCode",
+   "@id": "https://weft.frohub.eu/#source",
+   "name": "Weft",
+   "codeRepository": "https://github.com/fraustiz/weft",
+   "license": "https://opensource.org/licenses/MIT",
+   "targetProduct": {
+    "@id": "https://weft.frohub.eu/#app"
+   }
+  }
+ ]
+}
+</script>
 </head>
 <body>
 <a class="skip" href="#contenu">Aller au contenu</a>
@@ -40,7 +123,7 @@
           <a class="btn btn--primary" data-dl="primary" href="https://github.com/fraustiz/weft/releases/latest">Télécharger Weft</a>
           <a class="btn btn--ghost" href="#telecharger">Toutes les plateformes</a>
         </div>
-        <p class="hero-meta">Version <span data-release-version>0.3.2</span>, libre et sans compte.</p>
+        <p class="hero-meta">Version <span data-release-version>0.3.3</span> pour Android, iOS, macOS, Windows et Linux, libre et sans compte.</p>
       </div>
     </div>
 
@@ -109,17 +192,17 @@
       <h2 id="gestes-title">Plus qu’un presse-papiers.</h2>
       <ol class="shots">
         <li class="shot shot--1">
-          <div class="bezel bezel--ios"><img src="assets/shots/ios-share.png" width="274" height="597" loading="lazy" alt="Extension de partage iOS : une photo prête, bouton Ajouter à Weft"></div>
+          <div class="bezel bezel--ios"><img src="assets/shots/ios-share.png" width="274" height="597" loading="lazy" decoding="async" alt="Extension de partage iOS : une photo prête, bouton Ajouter à Weft"></div>
           <h3>Partager</h3>
           <p>Photos, fichiers et liens, depuis n’importe quelle app.</p>
         </li>
         <li class="shot shot--2">
-          <div class="bezel"><img src="assets/shots/android-device.png" width="540" height="1200" loading="lazy" alt="Page Android d’un Mac associé : lecture en cours, volume, Faire sonner, Ping"></div>
+          <div class="bezel"><img src="assets/shots/android-device.png" width="540" height="1200" loading="lazy" decoding="async" alt="Page Android d’un Mac associé : lecture en cours, volume, Faire sonner, Ping"></div>
           <h3>Piloter</h3>
           <p>La musique et le volume de l’ordinateur, depuis le téléphone.</p>
         </li>
         <li class="shot shot--3">
-          <div class="bezel bezel--ios"><img src="assets/shots/ios-device.png" width="274" height="597" loading="lazy" alt="Page iOS d’un iMac associé : Envoyer un fichier, Faire sonner, Ping, Partager un lien"></div>
+          <div class="bezel bezel--ios"><img src="assets/shots/ios-device.png" width="274" height="597" loading="lazy" decoding="async" alt="Page iOS d’un iMac associé : Envoyer un fichier, Faire sonner, Ping, Partager un lien"></div>
           <h3>Retrouver</h3>
           <p>Faites sonner l’autre appareil, ou envoyez-lui un fichier.</p>
         </li>
@@ -151,7 +234,7 @@
 
   <section class="download" id="telecharger" aria-labelledby="dl-title">
     <div class="wrap">
-      <h2 id="dl-title">Téléchargez Weft <span data-release-version>0.3.2</span>.</h2>
+      <h2 id="dl-title">Téléchargez Weft <span data-release-version>0.3.3</span>.</h2>
       <ul class="platforms">
         <li><a class="pf" data-dl="android" href="https://github.com/fraustiz/weft/releases/latest"><span class="pf-name">Android</span><span class="pf-note">Android 8 ou plus</span><span class="pf-file">.apk</span></a></li>
         <li><a class="pf" data-dl="mac" href="https://github.com/fraustiz/weft/releases/latest"><span class="pf-name">macOS</span><span class="pf-note">macOS 14 ou plus</span><span class="pf-file">.zip</span></a></li>
@@ -165,8 +248,8 @@
 
 <footer class="foot">
   <div class="wrap foot-in">
-    <img class="foot-lockup" src="assets/weft-lockup.svg" width="306" height="120" alt="Weft">
-    <p>Logiciel libre sous licence MIT. Code, versions et signalements sur <a href="https://github.com/fraustiz/weft">GitHub</a>. Informations du <a href="/relay">relais public weft.frohub.eu</a>. Polices Bricolage Grotesque et Geist, licence OFL. <a href="en/" hreflang="en" lang="en">English version</a>.</p>
+    <img class="foot-lockup" src="assets/weft-lockup.svg" width="306" height="120" loading="lazy" decoding="async" alt="Weft">
+    <p>Weft synchronise le presse-papiers, les fichiers, les liens et les notifications entre vos appareils, chiffrés de bout en bout. Logiciel libre sous licence MIT. Code, versions et signalements sur <a href="https://github.com/fraustiz/weft">GitHub</a>. <a href="https://github.com/fraustiz/weft/blob/main/CODE_SIGNING_POLICY.fr.md">Politique de signature (Code signing policy)</a> et <a href="https://github.com/fraustiz/weft/blob/main/CODE_SIGNING_POLICY.fr.md#confidentialit%C3%A9">confidentialité</a>. Informations du <a href="/relay">relais public weft.frohub.eu</a>. Polices Bricolage Grotesque et Geist, licence OFL. <a href="en/" hreflang="en" lang="en">English version</a>.</p>
   </div>
 </footer>
 
