@@ -98,6 +98,7 @@
 </script>
 </head>
 <body>
+<canvas class="dither-bg" aria-hidden="true"></canvas>
 <a class="skip" href="#content">Skip to content</a>
 
 <header class="nav">
@@ -108,7 +109,7 @@
       <li><a href="#relay">Security</a></li>
       <li><a href="https://github.com/fraustiz/weft">Source code</a></li>
     </ul>
-    <a class="nav-lang" href="../" hreflang="fr" lang="fr" aria-label="Version française">FR</a>
+    <a class="nav-lang" href="../" hreflang="fr" lang="fr" aria-label="FR, version française">FR</a>
     <a class="btn btn--primary btn--sm" href="#download">Download</a>
   </nav>
 </header>
@@ -128,7 +129,6 @@
     </div>
 
     <figure class="stage wrap" id="scene" data-state="rest" data-example="text" aria-labelledby="scene-caption">
-      <div class="glow" aria-hidden="true"></div>
       <svg class="thread" aria-hidden="true" focusable="false">
         <defs>
           <linearGradient id="thread-grad" gradientUnits="userSpaceOnUse">
@@ -248,12 +248,45 @@
 
 <footer class="foot">
   <div class="wrap foot-in">
-    <img class="foot-lockup" src="../assets/weft-lockup.svg" width="306" height="120" loading="lazy" decoding="async" alt="Weft">
-    <p>Weft syncs your clipboard, files, links and notifications between your devices, end-to-end encrypted. Free software under the MIT license. Code, releases and issues on <a href="https://github.com/fraustiz/weft">GitHub</a>. <a href="https://github.com/fraustiz/weft/blob/main/CODE_SIGNING_POLICY.md">Code signing policy</a> and <a href="https://github.com/fraustiz/weft/blob/main/CODE_SIGNING_POLICY.md#privacy">privacy</a>. About the <a href="/relay">public relay weft.frohub.eu</a>. Bricolage Grotesque and Geist fonts, OFL license. <a href="../" hreflang="fr" lang="fr">Version française</a>.</p>
+    <div class="foot-brand">
+      <img class="foot-lockup" src="../assets/weft-lockup.svg" width="306" height="120" loading="lazy" decoding="async" alt="Weft">
+      <p>Clipboard, files, links and notifications between your devices, end-to-end encrypted.</p>
+    </div>
+    <nav class="foot-col" aria-labelledby="foot-product">
+      <h2 id="foot-product">Product</h2>
+      <ul>
+        <li><a href="#features">Features</a></li>
+        <li><a href="#relay">Security</a></li>
+        <li><a href="#download">Download</a></li>
+      </ul>
+    </nav>
+    <nav class="foot-col" aria-labelledby="foot-project">
+      <h2 id="foot-project">Project</h2>
+      <ul>
+        <li><a href="https://github.com/fraustiz/weft">Source code</a></li>
+        <li><a href="https://github.com/fraustiz/weft/releases">Releases</a></li>
+        <li><a href="https://github.com/fraustiz/weft/issues">Report an issue</a></li>
+        <li><a href="/relay">Public relay</a></li>
+      </ul>
+    </nav>
+    <nav class="foot-col" aria-labelledby="foot-docs">
+      <h2 id="foot-docs">Documents</h2>
+      <ul>
+        <li><a href="https://github.com/fraustiz/weft/blob/main/CODE_SIGNING_POLICY.md">Code signing policy</a></li>
+        <li><a href="https://github.com/fraustiz/weft/blob/main/CODE_SIGNING_POLICY.md#privacy">Privacy</a></li>
+        <li><a href="https://github.com/fraustiz/weft/blob/main/LICENSE">MIT license</a></li>
+      </ul>
+    </nav>
   </div>
+  <div class="wrap foot-base">
+    <p>Free software under the MIT license · Bricolage Grotesque and Geist fonts, OFL license</p>
+    <a href="../" hreflang="fr" lang="fr">Version française</a>
+  </div>
+  <div class="foot-giant" aria-hidden="true"><span>WE<i class="k-f">F</i><i class="k-t">T</i></span></div>
 </footer>
 
 <script src="../app.js" defer></script>
+<script src="../dither.js" defer></script>
 <script defer src="/stats/script.js" data-website-id="c52e477a-7777-4451-86c8-a5a8fe4f59fc" data-host-url="/stats" data-domains="weft.frohub.eu" data-exclude-hash="true" data-exclude-search="true"></script>
 </body>
 </html>
