@@ -1,5 +1,7 @@
 // Dithered orange waves behind the top of the landing: Perlin noise (Stefan Gustavson) through an 8x8
 // Bayer matrix, after the wii-tv launcher's backdrop (itself after React Bits' Dither).
+// Based on Dither from React Bits (https://reactbits.dev/backgrounds/dither),
+// Copyright (c) David Haz, MIT + Commons Clause License Condition v1.0.
 (() => {
   "use strict";
   const canvas = document.querySelector(".dither-bg");
