@@ -1,8 +1,5 @@
-// Weft landing: the ordered-dither backdrop behind the top of the page.
-// Fractal noise waves (classic Perlin noise by Stefan Gustavson, fbm), dithered through an 8x8 Bayer
-// matrix. Adapted from the Dither backdrop of the wii-tv launcher (itself after React Bits" Dither).
-// Every dot is either the page background or the exact brand orange (#F26A21): the wave strength comes
-// from how many dots are lit, never from a darker in-between colour that would shift the hue.
+// Dithered orange waves behind the top of the landing: Perlin noise (Stefan Gustavson) through an 8x8
+// Bayer matrix, after the wii-tv launcher's backdrop (itself after React Bits' Dither).
 (() => {
   "use strict";
   const canvas = document.querySelector(".dither-bg");
@@ -12,7 +9,7 @@
 
   const WAVE_SPEED = 0.05, WAVE_FREQUENCY = 3, WAVE_AMPLITUDE = 0.3;
   const INTRO_SECONDS = 1.8, CELL_CSS = 2, REF_CSS = 1100; // REF_CSS: reference height for the wave size
-  const PAPER = [0x17, 0x13, 0x0f];   // --color-paper / theme-color
+  const PAPER = [0x12, 0x0f, 0x0b];   // --color-paper, oklch(17% 0.010 67)
   const ORANGE = [0xf2, 0x6a, 0x21];  // brand orange, drawn as is
   const DENSITY = 0.5;                // share of lit dots on a full crest (1 = solid)
   const CREST_LOW = 0.25, CREST_HIGH = 0.95; // only the wave crests (above LOW) light up
@@ -93,7 +90,6 @@ void main() {
   outColor = vec4(f > threshold ? uWave : uBackground, 1.0);
 }`;
 
-  // Colours are passed as sRGB, so a lit pixel is exactly #F26A21.
   const srgb = rgb => rgb.map(v => v / 255);
   const background = srgb(PAPER);
   const waveRgb = srgb(ORANGE);
@@ -167,7 +163,7 @@ void main() {
 
   // Reduced motion: one still frame, redrawn on resize.
   const still = window.matchMedia("(prefers-reduced-motion: reduce)");
-  let time = 8, reveal = 0, last = 0, frame = 0, raf = 0, visible = true;
+  let time = 8, reveal = 0, last = 0, frame = 0, raf = 0, visible = true, paused = false;
   const tick = now => {
     raf = requestAnimationFrame(tick);
     if ((frame++ & 1) !== 0) return; // half the display rate is enough for slow waves
@@ -176,12 +172,13 @@ void main() {
     if (reveal < 1) reveal = Math.min(1, reveal + dt / INTRO_SECONDS);
     render(time, reveal * reveal * (3 - 2 * reveal));
   };
-  const start = () => { if (!raf && visible && !document.hidden && !still.matches) { last = 0; raf = requestAnimationFrame(tick); } };
+  const start = () => { if (!raf && visible && !paused && !document.hidden && !still.matches) { last = 0; raf = requestAnimationFrame(tick); } };
   const stop = () => { cancelAnimationFrame(raf); raf = 0; };
-  const sync = () => { if (still.matches) { stop(); render(time, 1); } else if (visible && !document.hidden) start(); else stop(); };
+  const sync = () => { if (still.matches) { stop(); render(time, 1); } else if (visible && !paused && !document.hidden) start(); else stop(); };
 
   new IntersectionObserver(([e]) => { visible = e.isIntersecting; sync(); }).observe(canvas);
   document.addEventListener("visibilitychange", sync);
+  document.addEventListener("weft:pause", e => { paused = e.detail; sync(); }); // the scene's Pause button
   still.addEventListener("change", sync);
   window.addEventListener("resize", () => { if (!raf) render(time, 1); });
   sync();

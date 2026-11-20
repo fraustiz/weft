@@ -295,6 +295,8 @@
     pauseBtn.setAttribute("aria-pressed", String(hold.user));
     pauseLabel.textContent = hold.user ? T.play : T.pause;
     update();
+    // The same button holds the backdrop waves (dither.js), so one control stops every animation.
+    document.dispatchEvent(new CustomEvent("weft:pause", { detail: hold.user }));
   });
   exButtons.forEach((b) => b.addEventListener("click", () => {
     const k = EXAMPLES.findIndex((ex) => ex.id === b.dataset.ex);
