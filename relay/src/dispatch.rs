@@ -254,7 +254,7 @@ impl Relay {
         if !state.pairing.has_pending_join(owner, joiner, now) {
             return Err(ControlError::NotAllowed);
         }
-        match state.groups.add(owner, joiner) {
+        match state.groups.add(owner, joiner, now_ms()) {
             Ok(true) => state.pairing.consume_pending_join(owner, joiner),
             // The pending join is kept: the owner may make room and retry.
             Ok(false) => return Err(ControlError::GroupFull),
@@ -275,7 +275,7 @@ impl Relay {
         if !state.pairing.has_pending_join(owner, inviter, now) {
             return Err(ControlError::NotAllowed);
         }
-        match state.groups.add(inviter, owner) {
+        match state.groups.add(inviter, owner, now_ms()) {
             Ok(true) => state.pairing.consume_pending_join(owner, inviter),
             // The pending join is kept, as for a group add.
             Ok(false) => return Err(ControlError::GroupFull),
@@ -289,7 +289,7 @@ impl Relay {
         if target != sender && !state.groups.same_group(sender, target) {
             return Err(ControlError::NotAllowed);
         }
-        if let Err(err) = state.groups.remove(target) {
+        if let Err(err) = state.groups.remove(target, now_ms()) {
             tracing::error!(%err, "group change not saved, ignored");
         }
         Ok(())
