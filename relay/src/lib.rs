@@ -14,7 +14,7 @@ mod store;
 use std::collections::HashMap;
 use std::future::Future;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -70,6 +70,13 @@ pub const PAIR_REQUEST_PER_MINUTE: usize = 20;
 pub const OFFLINE_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// Default for [`Config::max_offline_per_device`].
 pub const MAX_OFFLINE_PER_DEVICE: usize = 64;
+/// Default for [`Config::max_groups`]: the global ceiling on stored groups.
+pub const MAX_GROUPS: usize = 100_000;
+/// Default for [`Config::group_inactive_ttl`]: a group whose members are all
+/// idle this long is pruned (`docs/protocol.md`, section 6).
+pub const GROUP_INACTIVE_TTL: Duration = Duration::from_secs(90 * 24 * 60 * 60);
+/// How often the relay sweeps for inactive groups to prune.
+const GROUP_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const RATE_WINDOW: Duration = Duration::from_secs(60);
 /// Frames queued for one device before new ones are dropped.
 const OUTBOX_CAPACITY: usize = 64;
@@ -108,6 +115,20 @@ pub struct Config {
     /// Queued offline envelopes kept per recipient; beyond that, the oldest is
     /// evicted.
     pub max_offline_per_device: usize,
+    /// Largest number of groups the relay keeps at once; a new group beyond
+    /// this is refused, so an abusive client cannot grow the state without
+    /// bound.
+    pub max_groups: usize,
+    /// A group whose members have all been idle this long is pruned, along
+    /// with anything queued for them.
+    pub group_inactive_ttl: Duration,
+    /// Header carrying the real client address, set by a trusted edge proxy
+    /// (e.g. `cf-connecting-ip`). Read before `X-Forwarded-For`.
+    pub client_ip_header: Option<String>,
+    /// Addresses whose forwarded headers are trusted. Empty trusts any peer,
+    /// which is only safe when the relay is unreachable except through its
+    /// proxy.
+    pub trusted_proxies: Vec<IpAddr>,
     /// Optional operator contact shown on `GET /`.
     pub contact: Option<String>,
 }
@@ -126,6 +147,10 @@ impl Config {
             idle_timeout: IDLE_TIMEOUT,
             offline_ttl: OFFLINE_TTL,
             max_offline_per_device: MAX_OFFLINE_PER_DEVICE,
+            max_groups: MAX_GROUPS,
+            group_inactive_ttl: GROUP_INACTIVE_TTL,
+            client_ip_header: None,
+            trusted_proxies: Vec::new(),
             contact: None,
         }
     }
@@ -152,9 +177,12 @@ struct Relay {
     next_conn_id: AtomicU64,
     limiter: Arc<Limiter>,
     trust_proxy: bool,
+    client_ip_header: Option<String>,
+    trusted_proxies: Vec<IpAddr>,
     idle_timeout: Duration,
     offline_ttl: Duration,
     max_offline_per_device: usize,
+    group_inactive_ttl: Duration,
     /// Set to `true` when the relay shuts down.
     stopping: watch::Sender<bool>,
 }
@@ -174,8 +202,9 @@ pub async fn serve_with_shutdown(
 ) -> io::Result<()> {
     Challenge::new(config.relay_name.as_str(), [0; 32])
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let max_groups = config.max_groups;
     let groups = Store::open(&config.db_path)
-        .and_then(Groups::load)
+        .and_then(|store| Groups::load(store, max_groups))
         .map_err(io::Error::other)?;
     let index_html = Arc::<str>::from(render_index_html(
         &config.relay_name,
@@ -195,9 +224,12 @@ pub async fn serve_with_shutdown(
             config.max_connections_per_ip,
         )),
         trust_proxy: config.trust_proxy,
+        client_ip_header: config.client_ip_header,
+        trusted_proxies: config.trusted_proxies,
         idle_timeout: config.idle_timeout,
         offline_ttl: config.offline_ttl,
         max_offline_per_device: config.max_offline_per_device,
+        group_inactive_ttl: config.group_inactive_ttl,
         stopping: watch::channel(false).0,
     });
     let app = Router::new()
@@ -205,6 +237,21 @@ pub async fn serve_with_shutdown(
         .route("/healthz", get(|| async { "ok" }))
         .route("/v1", get(upgrade))
         .with_state(relay.clone());
+
+    // Prune groups whose members have all been idle past the TTL, until the
+    // relay shuts down.
+    tokio::spawn({
+        let relay = relay.clone();
+        async move {
+            let mut stopping = relay.stopping.subscribe();
+            loop {
+                tokio::select! {
+                    () = tokio::time::sleep(GROUP_SWEEP_INTERVAL) => relay.sweep_inactive_groups(),
+                    () = stopped(&mut stopping) => break,
+                }
+            }
+        }
+    });
 
     let signal = {
         let relay = relay.clone();
@@ -239,6 +286,29 @@ pub async fn serve_with_shutdown(
     }
 }
 
+impl Relay {
+    /// Prunes every group whose members have all been idle past the TTL and
+    /// are all currently disconnected.
+    fn sweep_inactive_groups(&self) {
+        let now = now_ms();
+        let ttl = self.group_inactive_ttl;
+        let mut state = self.state.lock().unwrap();
+        let stale = state
+            .groups
+            .inactive_unconnected_ids(now, ttl, |device| state.peers.contains_key(device));
+        if stale.is_empty() {
+            return;
+        }
+        let pruned = stale.len();
+        for group in stale {
+            if let Err(err) = state.groups.remove_group(group, now) {
+                tracing::error!(%err, group, "could not prune inactive group");
+            }
+        }
+        tracing::info!(pruned, "pruned inactive groups");
+    }
+}
+
 async fn index(State(relay): State<Arc<Relay>>) -> Html<String> {
     Html(relay.index_html.to_string())
 }
@@ -249,7 +319,13 @@ async fn upgrade(
     headers: HeaderMap,
     State(relay): State<Arc<Relay>>,
 ) -> Response {
-    let ip = client_ip(peer, &headers, relay.trust_proxy);
+    let ip = client_ip(
+        peer,
+        &headers,
+        relay.trust_proxy,
+        relay.client_ip_header.as_deref(),
+        &relay.trusted_proxies,
+    );
     let slot = match relay.limiter.acquire(ip) {
         Ok(slot) => slot,
         Err(Refusal::Full) => {
@@ -295,6 +371,8 @@ async fn handle(mut socket: WebSocket, relay: Arc<Relay>) {
     let queued = {
         let mut state = relay.state.lock().unwrap();
         state.peers.insert(device_id, Peer { conn_id, outbox });
+        // Keep the device's group from being pruned while it is in use.
+        state.groups.touch(&device_id, now_ms());
         match state
             .groups
             .load_offline(&device_id, now_ms(), relay.offline_ttl)
@@ -306,7 +384,7 @@ async fn handle(mut socket: WebSocket, relay: Arc<Relay>) {
             }
         }
     };
-    tracing::info!(
+    tracing::debug!(
         device = %short_id(&device_id),
         queued = queued.len(),
         "device connected"
@@ -329,7 +407,7 @@ async fn handle(mut socket: WebSocket, relay: Arc<Relay>) {
         state.peers.remove(&device_id);
     }
     drop(state);
-    tracing::info!(device = %short_id(&device_id), "device disconnected");
+    tracing::debug!(device = %short_id(&device_id), "device disconnected");
 }
 
 /// Sends non-expired offline envelopes right after `0xA2` and before any live
@@ -412,14 +490,14 @@ async fn relay_frames(
                     }
                 }
                 None => {
-                    tracing::info!(device = %short_id(device_id), "replaced by a newer connection");
+                    tracing::debug!(device = %short_id(device_id), "replaced by a newer connection");
                     let _ = socket.send(Message::Close(None)).await;
                     break;
                 }
             },
             () = tokio::time::sleep_until(deadline) => {
                 if pinged {
-                    tracing::info!(device = %short_id(device_id), "idle timeout");
+                    tracing::debug!(device = %short_id(device_id), "idle timeout");
                     let _ = socket.send(close(close_code::NORMAL, "idle timeout")).await;
                     break;
                 }
