@@ -3,8 +3,8 @@ name: App release
 # Pushing a tag app-vX.Y.Z builds the macOS, Android, Windows and iOS apps at
 # version X.Y.Z, and publishes them as the GitHub release of that tag:
 #
-#   Weft-X.Y.Z-mac.dmg         the app, ad-hoc signed, in a disk image with
-#                              an Applications link: what people download
+#   Weft-X.Y.Z-mac.dmg         the app in a disk image with an Applications
+#                              link: what people download
 #   Weft-X.Y.Z-mac.zip         the same app zipped with ditto: the appcast's
 #                              enclosure, what Sparkle downloads for updates
 #   appcast.xml                Sparkle's feed: the app checks
@@ -18,6 +18,9 @@ name: App release
 #   Weft-X.Y.Z-ios.ipa         the iOS app, ad hoc signed, for testers to
 #                              sideload with their own Apple ID (no updates)
 #
+# and, once the Apple secrets below are set, it uploads the iOS app to App
+# Store Connect for TestFlight (job testflight).
+#
 # Run by hand (workflow_dispatch), it builds and checks everything, signs
 # with the same secrets, and keeps the files as workflow artifacts: nothing
 # is published.
@@ -25,6 +28,27 @@ name: App release
 # Secrets: SPARKLE_ED_PRIVATE_KEY (the EdDSA private key whose public half
 # is macos/sparkle-public-key.txt), ANDROID_KEYSTORE_BASE64,
 # ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD.
+#
+# Apple (team FTXAB58KDV, an individual Apple Developer Program account).
+# Each part turns on when its secrets are set, and is skipped with a warning
+# otherwise:
+#   APPLE_DEVELOPER_ID_CERT_P12, APPLE_DEVELOPER_ID_CERT_PASSWORD
+#       the "Developer ID Application" certificate and its private key
+#       (.p12, base64): the Mac app is signed with it, hardened runtime,
+#       then notarized and stapled, the disk image too. Without it the app
+#       is signed ad hoc, as before.
+#   APPLE_DISTRIBUTION_CERT_P12, APPLE_DISTRIBUTION_CERT_PASSWORD
+#       the "Apple Distribution" certificate (.p12, base64): the iOS app is
+#       archived with it and with App Store provisioning profiles the job
+#       makes through the API (.github/scripts/app-store-profiles.py); tag
+#       pushes upload it to App Store Connect, dry runs only export it.
+#       The App IDs eu.frohub.weft.ios and eu.frohub.weft.ios.share must be
+#       registered, both linked to the App Group group.eu.frohub.weft.
+#   APP_STORE_CONNECT_API_KEY, APP_STORE_CONNECT_API_KEY_ID,
+#   APP_STORE_CONNECT_API_ISSUER_ID
+#       an App Store Connect API key with the Admin role (the text of the
+#       .p8 file, its key ID, the issuer ID): notarization, provisioning
+#       profiles and the upload.
 #
 # Windows code signing (SignPath Foundation, see CODE_SIGNING_POLICY.md) is
 # off until the repository variable SIGNPATH_ORGANIZATION_ID is set. Then,
@@ -95,6 +119,7 @@ jobs:
     env:
       VERSION: ${{ needs.meta.outputs.version }}
       TAG: ${{ needs.meta.outputs.tag }}
+      APPLE_TEAM_ID: FTXAB58KDV
     steps:
       - uses: actions/checkout@v7
         with:
@@ -108,11 +133,42 @@ jobs:
       - name: Install CMake
         # For mediaremote-adapter; usually already on the runner.
         run: command -v cmake || brew install cmake
+      - name: Signing paths
+        run: |
+          echo "KEYCHAIN=$RUNNER_TEMP/signing.keychain-db" >>"$GITHUB_ENV"
+          echo "NOTARY_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >>"$GITHUB_ENV"
+      - name: Developer ID certificate
+        id: devid
+        env:
+          P12: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+          API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+        run: |
+          if [[ -z "$P12" ]]; then
+            echo "::warning::APPLE_DEVELOPER_ID_CERT_P12 is not set: the Mac app is signed ad hoc and not notarized"
+            echo "signed=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -z "$API_KEY" || -z "$NOTARY_KEY_ID" || -z "$NOTARY_ISSUER_ID" ]]; then
+            echo "::error::notarizing needs APP_STORE_CONNECT_API_KEY, APP_STORE_CONNECT_API_KEY_ID and APP_STORE_CONNECT_API_ISSUER_ID"
+            exit 1
+          fi
+          identity="$(KIND="Developer ID Application" TEAM_ID="$APPLE_TEAM_ID" .github/scripts/import-certificate.sh)"
+          (umask 077; printf '%s\n' "$API_KEY" >"$NOTARY_KEY_PATH")
+          echo "identity=$identity" >>"$GITHUB_OUTPUT"
+          echo "signed=true" >>"$GITHUB_OUTPUT"
+          echo "Developer ID identity $identity"
       - name: Build Weft.app
         env:
           WEFT_VERSION: ${{ env.VERSION }}
+          # Empty: ad hoc.
+          WEFT_SIGN_IDENTITY: ${{ steps.devid.outputs.identity }}
         run: macos/scripts/build-app.sh
       - name: Check Weft.app
+        env:
+          SIGNED: ${{ steps.devid.outputs.signed }}
         run: |
           app=macos/build/Weft.app
           plist="$app/Contents/Info.plist"
@@ -122,6 +178,28 @@ jobs:
           [[ "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$plist")" == https://github.com/fraustiz/weft/releases/latest/download/appcast.xml ]]
           [[ -n "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$plist")" ]]
           echo "build $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")"
+          if [[ "$SIGNED" == true ]]; then
+            # Not codesign -dv's whole output: it names the developer.
+            details="$(codesign -dv "$app" 2>&1)"
+            grep -qx "TeamIdentifier=$APPLE_TEAM_ID" <<<"$details" || { echo "::error::Weft.app is not signed by team $APPLE_TEAM_ID"; exit 1; }
+            grep -q '^CodeDirectory .*flags=.*(runtime)' <<<"$details" || { echo "::error::Weft.app lacks the hardened runtime"; exit 1; }
+            grep -q '^Timestamp=' <<<"$details" || { echo "::error::Weft.app has no secure timestamp"; exit 1; }
+          fi
+      - name: Notarize Weft.app
+        if: steps.devid.outputs.signed == 'true'
+        env:
+          NOTARY_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+        run: |
+          app=macos/build/Weft.app
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/Weft-notarize.zip"
+          macos/scripts/notarize.sh "$RUNNER_TEMP/Weft-notarize.zip"
+          rm -f "$RUNNER_TEMP/Weft-notarize.zip"
+          # The ticket goes in the app, so the zip Sparkle downloads and the
+          # disk image both carry it.
+          xcrun stapler staple "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute "$app"
       - name: Zip
         run: |
           mkdir -p dist
@@ -159,6 +237,11 @@ jobs:
       - name: Disk image
         # After the appcast: generate_appcast scans dist/, and a .dmg there
         # would get an item of its own. Sparkle keeps updating from the zip.
+        env:
+          SIGNED: ${{ steps.devid.outputs.signed }}
+          IDENTITY: ${{ steps.devid.outputs.identity }}
+          NOTARY_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
         run: |
           items="$(grep -o '<item>' dist/appcast.xml | wc -l | tr -d ' ')"
           [[ "$items" == 1 ]] || { echo "::error::the appcast has $items items, expected 1"; exit 1; }
@@ -170,10 +253,18 @@ jobs:
           dmg="dist/Weft-$VERSION-mac.dmg"
           staging="$RUNNER_TEMP/dmg"
           rm -rf "$staging" && mkdir -p "$staging"
-          # ditto keeps the ad hoc signature, extended attributes and symlinks.
+          # ditto keeps the signature, the stapled ticket, extended
+          # attributes and symlinks.
           ditto macos/build/Weft.app "$staging/Weft.app"
           ln -s /Applications "$staging/Applications"
           hdiutil create -volname "Weft" -srcfolder "$staging" -ov -format UDZO "$dmg"
+          if [[ "$SIGNED" == true ]]; then
+            codesign --sign "$IDENTITY" --timestamp "$dmg"
+            macos/scripts/notarize.sh "$dmg"
+            xcrun stapler staple "$dmg"
+            xcrun stapler validate "$dmg"
+            spctl --assess --type open --context context:primary-signature "$dmg"
+          fi
           hdiutil verify "$dmg"
           mnt="$RUNNER_TEMP/dmg-mount"
           mkdir -p "$mnt"
@@ -183,6 +274,11 @@ jobs:
           [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$mnt/Weft.app/Contents/Info.plist")" == "$VERSION" ]]
           [[ "$(readlink "$mnt/Applications")" == /Applications ]]
           ls -l "$dmg"
+      - name: Remove the signing keychain and the API key
+        if: always()
+        run: |
+          if [[ -f "$KEYCHAIN" ]]; then security delete-keychain "$KEYCHAIN" || true; fi
+          rm -f "$KEYCHAIN.password" "$NOTARY_KEY_PATH"
       - uses: actions/upload-artifact@v7
         with:
           name: mac
@@ -373,10 +469,10 @@ jobs:
             -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
-      # No Apple account: testers sideload the .ipa with their own Apple ID
-      # (SideStore, AltStore), which re-signs it. The ad hoc signature only
-      # carries the entitlements, so the App Group of the share extension
-      # is registered when they re-sign it.
+      # For testers outside TestFlight: they sideload the .ipa with their
+      # own Apple ID (SideStore, AltStore), which re-signs it. The ad hoc
+      # signature only carries the entitlements, so the App Group of the
+      # share extension is registered when they re-sign it.
       - name: Version, ad hoc signature and .ipa
         working-directory: ios
         run: |
@@ -398,6 +494,132 @@ jobs:
           name: ios
           path: dist/Weft-${{ env.VERSION }}-ios.ipa
           if-no-files-found: error
+
+  testflight:
+    needs: meta
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      PUBLISH: ${{ needs.meta.outputs.publish }}
+      APPLE_TEAM_ID: FTXAB58KDV
+      API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+      API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # CFBundleVersion is the number of commits.
+          fetch-depth: 0
+      - name: Signing paths
+        run: |
+          echo "KEYCHAIN=$RUNNER_TEMP/signing.keychain-db" >>"$GITHUB_ENV"
+          echo "API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >>"$GITHUB_ENV"
+      - name: Distribution certificate and API key
+        id: signing
+        env:
+          P12: ${{ secrets.APPLE_DISTRIBUTION_CERT_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_DISTRIBUTION_CERT_PASSWORD }}
+          API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+        run: |
+          if [[ -z "$P12" ]]; then
+            echo "::warning::APPLE_DISTRIBUTION_CERT_P12 is not set: no TestFlight build"
+            echo "enabled=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -z "$API_KEY" || -z "$API_KEY_ID" || -z "$API_ISSUER_ID" ]]; then
+            echo "::error::TestFlight needs APP_STORE_CONNECT_API_KEY, APP_STORE_CONNECT_API_KEY_ID and APP_STORE_CONNECT_API_ISSUER_ID"
+            exit 1
+          fi
+          identity="$(KIND="Apple Distribution" TEAM_ID="$APPLE_TEAM_ID" .github/scripts/import-certificate.sh)"
+          (umask 077; printf '%s\n' "$API_KEY" >"$API_KEY_PATH")
+          echo "Apple Distribution identity $identity"
+          echo "identity=$identity" >>"$GITHUB_OUTPUT"
+          echo "enabled=true" >>"$GITHUB_OUTPUT"
+      - name: App Store provisioning profiles
+        id: profiles
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          IDENTITY: ${{ steps.signing.outputs.identity }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet pyjwt cryptography
+          "$RUNNER_TEMP/venv/bin/python" .github/scripts/app-store-profiles.py \
+            "$IDENTITY" group.eu.frohub.weft eu.frohub.weft.ios eu.frohub.weft.ios.share \
+            >"$RUNNER_TEMP/profiles.txt"
+          cat "$RUNNER_TEMP/profiles.txt"
+          app_profile="$(awk '$1 == "eu.frohub.weft.ios" { $1 = ""; sub(/^ /, ""); print }' "$RUNNER_TEMP/profiles.txt")"
+          share_profile="$(awk '$1 == "eu.frohub.weft.ios.share" { $1 = ""; sub(/^ /, ""); print }' "$RUNNER_TEMP/profiles.txt")"
+          [[ -n "$app_profile" && -n "$share_profile" ]]
+          echo "app=$app_profile" >>"$GITHUB_OUTPUT"
+          echo "share=$share_profile" >>"$GITHUB_OUTPUT"
+      - name: Install XcodeGen
+        if: steps.signing.outputs.enabled == 'true'
+        run: command -v xcodegen || brew install xcodegen
+      - name: Archive Weft for the App Store
+        if: steps.signing.outputs.enabled == 'true'
+        working-directory: ios
+        env:
+          APP_PROFILE: ${{ steps.profiles.outputs.app }}
+          SHARE_PROFILE: ${{ steps.profiles.outputs.share }}
+        run: |
+          xcodegen generate --spec project.yml
+          build="$(git rev-list --count HEAD)"
+          echo "Weft $VERSION ($build)"
+          # Manual signing: automatic signing would archive with a
+          # development profile, which needs a registered device.
+          xcodebuild -project Weft.xcodeproj -scheme Weft -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            -archivePath build/Weft.xcarchive \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$build" \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Apple Distribution" \
+            WEFT_APP_PROFILE="$APP_PROFILE" WEFT_SHARE_PROFILE="$SHARE_PROFILE" \
+            archive
+          app=build/Weft.xcarchive/Products/Applications/Weft.app
+          for plist in "$app/Info.plist" "$app/PlugIns/WeftShare.appex/Info.plist"; do
+            [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" == "$VERSION" ]]
+            [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")" == "$build" ]]
+          done
+          codesign -d --entitlements - --xml "$app" | grep -q group.eu.frohub.weft
+          codesign -d --entitlements - --xml "$app/PlugIns/WeftShare.appex" | grep -q group.eu.frohub.weft
+      - name: Upload to App Store Connect (tag pushes) or export (dry runs)
+        if: steps.signing.outputs.enabled == 'true'
+        working-directory: ios
+        env:
+          APP_PROFILE: ${{ steps.profiles.outputs.app }}
+          SHARE_PROFILE: ${{ steps.profiles.outputs.share }}
+        run: |
+          if [[ "$PUBLISH" == true ]]; then destination="upload"; else destination="export"; fi
+          cat >build/ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>$destination</string>
+            <key>teamID</key><string>$APPLE_TEAM_ID</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>Apple Distribution</string>
+            <key>provisioningProfiles</key><dict>
+              <key>eu.frohub.weft.ios</key><string>$APP_PROFILE</string>
+              <key>eu.frohub.weft.ios.share</key><string>$SHARE_PROFILE</string>
+            </dict>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+            <key>uploadSymbols</key><true/>
+          </dict></plist>
+          EOF
+          plutil -lint build/ExportOptions.plist
+          xcodebuild -exportArchive \
+            -archivePath build/Weft.xcarchive \
+            -exportOptionsPlist build/ExportOptions.plist \
+            -exportPath build/export \
+            -authenticationKeyPath "$API_KEY_PATH" \
+            -authenticationKeyID "$API_KEY_ID" \
+            -authenticationKeyIssuerID "$API_ISSUER_ID"
+          ls -l build/export
+      - name: Remove the signing keychain and the API key
+        if: always()
+        run: |
+          if [[ -f "$KEYCHAIN" ]]; then security delete-keychain "$KEYCHAIN" || true; fi
+          rm -f "$KEYCHAIN.password" "$API_KEY_PATH"
 
   release:
     needs: [meta, mac, android, windows, ios]

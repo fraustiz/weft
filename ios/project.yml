@@ -8,13 +8,15 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    DEVELOPMENT_TEAM: ""
+    DEVELOPMENT_TEAM: FTXAB58KDV
+    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: 1
     CODE_SIGN_STYLE: Automatic
 targets:
   Weft:
     type: application
     platform: iOS
-    sources: [Sources/WeftiOS, Resources/Assets.xcassets]
+    sources: [Sources/WeftiOS, Resources/Assets.xcassets, Resources/PrivacyInfo.xcprivacy]
     dependencies:
       - package: WeftMobile
         product: WeftMobileKit
@@ -26,16 +28,20 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Config/Shared.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Empty, except for the App Store archive of the release workflow,
+        # which signs manually with the profile it made.
+        PROVISIONING_PROFILE_SPECIFIER: $(WEFT_APP_PROFILE)
   WeftShare:
     type: app-extension
     platform: iOS
-    sources: [Sources/WeftShare]
+    sources: [Sources/WeftShare, Resources/PrivacyInfo.xcprivacy]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.frohub.weft.ios.share
         INFOPLIST_FILE: Config/Share-Info.plist
         CODE_SIGN_ENTITLEMENTS: Config/Shared.entitlements
         APPLICATION_EXTENSION_API_ONLY: YES
+        PROVISIONING_PROFILE_SPECIFIER: $(WEFT_SHARE_PROFILE)
 schemes:
   Weft:
     build:
