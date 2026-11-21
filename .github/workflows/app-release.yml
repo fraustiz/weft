@@ -614,7 +614,8 @@ jobs:
             -authenticationKeyPath "$API_KEY_PATH" \
             -authenticationKeyID "$API_KEY_ID" \
             -authenticationKeyIssuerID "$API_ISSUER_ID"
-          ls -l build/export
+          # An upload leaves nothing on disk; an export leaves the .ipa.
+          if [[ "$destination" == export ]]; then ls -l build/export; fi
       - name: Remove the signing keychain and the API key
         if: always()
         run: |
