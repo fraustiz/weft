@@ -20,17 +20,21 @@
 #    its Autoupdate tool, Updater.app and XPC services, in
 #    Contents/Frameworks; Info.plist gets the appcast's URL and the EdDSA
 #    public key updates are checked with (Weft.app only, see below);
-# 6. an ad-hoc signature (codesign -s -), inside out: not signed by a
-#    developer, so the first launch from Finder needs right-click › Open.
-#    Sparkle accepts an ad-hoc signed update because the archive is signed
-#    with the EdDSA key: the key, not the code signature, carries the trust.
+# 6. a code signature, inside out: ad hoc (codesign -s -) by default, so
+#    the first launch from Finder needs right-click › Open; or, with
+#    WEFT_SIGN_IDENTITY, a Developer ID with the hardened runtime and a
+#    secure timestamp, ready to notarize (the release workflow does that).
+#    Sparkle accepts either because the archive is signed with the EdDSA
+#    key: the key, not the code signature, carries the trust.
 #
 # Idempotent: run it again after any change. The icons are rendered again
 # only when their SVG changed. Prints the path of the app.
 #
 # Needs CMake for the adapter (brew install cmake).
 #
-# Environment: WEFT_ARCHS="aarch64-apple-darwin" for an arm64-only build;
+# Environment: WEFT_SIGN_IDENTITY="Developer ID Application: … (TEAMID)"
+# (or its SHA-1) to sign with that identity from the keychain instead of
+# ad hoc; WEFT_ARCHS="aarch64-apple-darwin" for an arm64-only build;
 # CHROME=/path/to/chrome if Chrome is elsewhere; WEFT_DEV_BUNDLE=1 for
 # build/Weft Dev.app instead, a development copy with its own identifier
 # (fr.frohub.weft.mac.dev): it shares no notification permission,
@@ -246,21 +250,34 @@ $updates_plist</dict>
 EOF
 plutil -lint -s "$app/Contents/Info.plist"
 
-echo "==> codesign (ad hoc)"
+identity="${WEFT_SIGN_IDENTITY:--}"
+if [[ "$identity" == - ]]; then
+    echo "==> codesign (ad hoc)"
+    # No timestamp server for an ad hoc signature, and no hardened runtime
+    # on the app: nothing checks it without notarization.
+    sign=(codesign --force --sign - --timestamp=none)
+    sign_executable=("${sign[@]}")
+else
+    echo "==> codesign ($identity)"
+    # Notarization wants a secure timestamp and the hardened runtime on
+    # every executable.
+    sign=(codesign --force --sign "$identity" --timestamp)
+    sign_executable=("${sign[@]}" -o runtime)
+fi
 # Inside out: what the app holds first, the app last. Sparkle in the order
 # its documentation gives for signing it again (Documentation › Sandboxing
 # and Code Signing): XPC services, Autoupdate, Updater.app, the framework;
 # the Downloader keeps its entitlements.
 sparkle="$app/Contents/Frameworks/Sparkle.framework"
-codesign --force --sign - --timestamp=none -o runtime "$sparkle/Versions/B/XPCServices/Installer.xpc"
-codesign --force --sign - --timestamp=none -o runtime --preserve-metadata=entitlements \
+"${sign[@]}" -o runtime "$sparkle/Versions/B/XPCServices/Installer.xpc"
+"${sign[@]}" -o runtime --preserve-metadata=entitlements \
     "$sparkle/Versions/B/XPCServices/Downloader.xpc"
-codesign --force --sign - --timestamp=none -o runtime "$sparkle/Versions/B/Autoupdate"
-codesign --force --sign - --timestamp=none -o runtime "$sparkle/Versions/B/Updater.app"
-codesign --force --sign - --timestamp=none -o runtime "$sparkle"
-codesign --force --sign - --timestamp=none "$app/Contents/Frameworks/MediaRemoteAdapter.framework"
-codesign --force --sign - --timestamp=none "$app/Contents/Helpers/MediaRemoteAdapterTestClient"
-codesign --force --sign - --timestamp=none "$app"
+"${sign[@]}" -o runtime "$sparkle/Versions/B/Autoupdate"
+"${sign[@]}" -o runtime "$sparkle/Versions/B/Updater.app"
+"${sign[@]}" -o runtime "$sparkle"
+"${sign[@]}" "$app/Contents/Frameworks/MediaRemoteAdapter.framework"
+"${sign_executable[@]}" "$app/Contents/Helpers/MediaRemoteAdapterTestClient"
+"${sign_executable[@]}" "$app"
 codesign --verify --deep --strict "$app"
 
 # A build is not an install: Launch Services must not take it for the

@@ -8,13 +8,15 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    DEVELOPMENT_TEAM: ""
+    DEVELOPMENT_TEAM: FTXAB58KDV
+    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: 1
     CODE_SIGN_STYLE: Automatic
 targets:
   Weft:
     type: application
     platform: iOS
-    sources: [Sources/WeftiOS, Resources/Assets.xcassets]
+    sources: [Sources/WeftiOS, Resources/Assets.xcassets, Resources/PrivacyInfo.xcprivacy]
     dependencies:
       - package: WeftMobile
         product: WeftMobileKit
@@ -29,7 +31,7 @@ targets:
   WeftShare:
     type: app-extension
     platform: iOS
-    sources: [Sources/WeftShare]
+    sources: [Sources/WeftShare, Resources/PrivacyInfo.xcprivacy]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.frohub.weft.ios.share
