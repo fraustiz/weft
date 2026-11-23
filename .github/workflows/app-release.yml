@@ -4,7 +4,8 @@ name: App release
 # version X.Y.Z, and publishes them as the GitHub release of that tag:
 #
 #   Weft-X.Y.Z-mac.dmg         the app in a disk image with an Applications
-#                              link: what people download
+#                              link, laid out to drag one onto the other
+#                              (macos/dmg): what people download
 #   Weft-X.Y.Z-mac.zip         the same app zipped with ditto: the appcast's
 #                              enclosure, what Sparkle downloads for updates
 #   appcast.xml                Sparkle's feed: the app checks
@@ -130,6 +131,15 @@ jobs:
           rustup toolchain install stable --profile minimal --target aarch64-apple-darwin --target x86_64-apple-darwin
           rustup default stable
       - uses: Swatinem/rust-cache@v2
+      - name: Python for dmgbuild
+        # dmgbuild 2 needs Python 3.10+; the runner's python3 may be older,
+        # and dmgbuild 1.x layouts no longer show their background on
+        # macOS 26. update-environment: false leaves python3 as it was.
+        id: dmgpython
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          update-environment: false
       - name: Install CMake
         # For mediaremote-adapter; usually already on the runner.
         run: command -v cmake || brew install cmake
@@ -251,13 +261,15 @@ jobs:
             exit 1
           fi
           dmg="dist/Weft-$VERSION-mac.dmg"
-          staging="$RUNNER_TEMP/dmg"
-          rm -rf "$staging" && mkdir -p "$staging"
-          # ditto keeps the signature, the stapled ticket, extended
-          # attributes and symlinks.
-          ditto macos/build/Weft.app "$staging/Weft.app"
-          ln -s /Applications "$staging/Applications"
-          hdiutil create -volname "Weft" -srcfolder "$staging" -ov -format UDZO "$dmg"
+          # dmgbuild writes the window layout (size, background, icon
+          # places) itself, without scripting Finder. It copies the app with
+          # its signature, stapled ticket and extended attributes.
+          "${{ steps.dmgpython.outputs.python-path }}" -m venv "$RUNNER_TEMP/dmgbuild"
+          "$RUNNER_TEMP/dmgbuild/bin/pip" install --quiet dmgbuild==2.0.0
+          background="$RUNNER_TEMP/background.tiff"
+          tiffutil -cathidpicheck macos/dmg/background.png macos/dmg/background@2x.png -out "$background"
+          "$RUNNER_TEMP/dmgbuild/bin/dmgbuild" -s macos/dmg/dmg-settings.py \
+            -D app=macos/build/Weft.app -D background="$background" Weft "$dmg"
           if [[ "$SIGNED" == true ]]; then
             codesign --sign "$IDENTITY" --timestamp "$dmg"
             macos/scripts/notarize.sh "$dmg"
@@ -273,6 +285,8 @@ jobs:
           codesign --verify --deep --strict "$mnt/Weft.app"
           [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$mnt/Weft.app/Contents/Info.plist")" == "$VERSION" ]]
           [[ "$(readlink "$mnt/Applications")" == /Applications ]]
+          # The window layout and its picture.
+          [[ -f "$mnt/.DS_Store" && -f "$mnt/.background.tiff" ]]
           ls -l "$dmg"
       - name: Remove the signing keychain and the API key
         if: always()
