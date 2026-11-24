@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- F-Droid updates the app: no in-app updater, so no install permission nor its receiver. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission
+        android:name="android.permission.REQUEST_INSTALL_PACKAGES"
+        tools:node="remove" />
+
+    <application>
+        <receiver
+            android:name=".update.InstallResultReceiver"
+            tools:node="remove" />
+    </application>
+
+</manifest>

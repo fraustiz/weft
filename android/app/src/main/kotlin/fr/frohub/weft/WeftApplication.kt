@@ -21,8 +21,11 @@ class WeftApplication : Application() {
     /** What the screens use. */
     val model: CoreModel by lazy { CoreModel(core, features) }
 
-    /** Checks GitHub Releases for a newer Weft and installs it. */
-    val updater: Updater by lazy { Updater(this) }
+    /**
+     * Checks GitHub Releases for a newer Weft and installs it. Null in the F-Droid and Google Play
+     * builds: the store updates the app.
+     */
+    val updater: Updater? by lazy { if (BuildConfig.UPDATER_ENABLED) Updater(this) else null }
 
     private var senderOverride: ClipboardSender? = null
 

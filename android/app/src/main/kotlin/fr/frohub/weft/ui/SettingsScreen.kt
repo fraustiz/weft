@@ -86,7 +86,7 @@ fun SettingsScreen(
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
             Spacer(Modifier.height(8.dp))
-            for (feature in Feature.entries) {
+            for (feature in Feature.entries.filter { it.available }) {
                 val on = feature in enabled
                 FeatureRow(feature, on, onToggle = { onToggle(feature, it) })
                 if (!on) continue

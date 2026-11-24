@@ -64,6 +64,39 @@ android {
         }
     }
 
+    /*
+     * Where the app is distributed. Same applicationId everywhere: one app, three channels.
+     * github: the release APK on GitHub Releases, with the in-app updater.
+     * fdroid: F-Droid updates the app itself, so no updater (nor its install permission).
+     * play: no updater (Play policy), and none of the permissions Play keeps for default SMS
+     *       and dialer apps (SMS, call log) nor the full screen intent (calling and alarm apps).
+     * Each flavor's AndroidManifest.xml removes what it drops; the fields below gate the code.
+     */
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("github") {
+            dimension = "distribution"
+            buildConfigField("boolean", "UPDATER_ENABLED", "true")
+            buildConfigField("boolean", "SMS_ENABLED", "true")
+            buildConfigField("boolean", "CALL_LOG_ENABLED", "true")
+            buildConfigField("boolean", "FULL_SCREEN_INTENT_ENABLED", "true")
+        }
+        create("fdroid") {
+            dimension = "distribution"
+            buildConfigField("boolean", "UPDATER_ENABLED", "false")
+            buildConfigField("boolean", "SMS_ENABLED", "true")
+            buildConfigField("boolean", "CALL_LOG_ENABLED", "true")
+            buildConfigField("boolean", "FULL_SCREEN_INTENT_ENABLED", "true")
+        }
+        create("play") {
+            dimension = "distribution"
+            buildConfigField("boolean", "UPDATER_ENABLED", "false")
+            buildConfigField("boolean", "SMS_ENABLED", "false")
+            buildConfigField("boolean", "CALL_LOG_ENABLED", "false")
+            buildConfigField("boolean", "FULL_SCREEN_INTENT_ENABLED", "false")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

@@ -122,9 +122,9 @@ log "building the relay and the CLI"
 (cd "$REPO_DIR" && cargo build -q -p weft-relay -p weft-cli)
 
 log "installing the app and its tests on $SERIAL"
-(cd "$ANDROID_DIR" && ./gradlew -q :app:assembleDebug :app:assembleDebugAndroidTest)
-adb_ install -r -t "$ANDROID_DIR/app/build/outputs/apk/debug/app-debug.apk" >/dev/null
-adb_ install -r -t "$ANDROID_DIR/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk" >/dev/null
+(cd "$ANDROID_DIR" && ./gradlew -q :app:assembleGithubDebug :app:assembleGithubDebugAndroidTest)
+adb_ install -r -t "$ANDROID_DIR/app/build/outputs/apk/github/debug/app-github-debug.apk" >/dev/null
+adb_ install -r -t "$ANDROID_DIR/app/build/outputs/apk/androidTest/github/debug/app-github-debug-androidTest.apk" >/dev/null
 adb_ shell pm clear "$APP_ID" >/dev/null
 adb_ shell pm grant "$APP_ID" android.permission.POST_NOTIFICATIONS 2>/dev/null || true
 

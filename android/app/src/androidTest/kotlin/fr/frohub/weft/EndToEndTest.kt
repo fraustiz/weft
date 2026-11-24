@@ -23,7 +23,7 @@ import org.junit.runner.RunWith
 
 /**
  * Steps of android/scripts/e2e.sh, against a real relay and the CLI. Each one runs only when
- * the script passes its instrumentation argument, so `connectedDebugAndroidTest` skips them.
+ * the script passes its instrumentation argument, so `connectedGithubDebugAndroidTest` skips them.
  * They run in separate instrumentation runs (separate processes), so the pairing also goes
  * through the state saved on disk.
  */

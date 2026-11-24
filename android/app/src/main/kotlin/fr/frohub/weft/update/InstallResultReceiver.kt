@@ -13,6 +13,6 @@ class InstallResultReceiver : BroadcastReceiver() {
         val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
         val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
         val confirm = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_INTENT, Intent::class.java)
-        context.weft.updater.onInstallResult(status, message, confirm)
+        context.weft.updater?.onInstallResult(status, message, confirm)
     }
 }

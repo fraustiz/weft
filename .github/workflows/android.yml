@@ -27,9 +27,9 @@ jobs:
           java-version: "21"
       - uses: android-actions/setup-android@v4
       - uses: gradle/actions/setup-gradle@v6
-      - name: Unit tests and debug build
+      - name: Unit tests and debug builds (every distribution flavor)
         working-directory: android
-        run: bash gradlew --no-daemon :protocol:testDebugUnitTest :app:testDebugUnitTest :app:assembleDebug
+        run: bash gradlew --no-daemon :protocol:testDebugUnitTest :app:testGithubDebugUnitTest :app:testFdroidDebugUnitTest :app:testPlayDebugUnitTest :app:assembleGithubDebug :app:assembleFdroidDebug :app:assemblePlayDebug
       - name: Clean build outputs
         if: always()
         run: rm -rf android/app/build android/protocol/build android/.gradle

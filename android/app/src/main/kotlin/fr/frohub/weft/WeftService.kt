@@ -54,7 +54,7 @@ class WeftService : Service() {
         weft.features.startMonitors()
         core.keepConnected(true)
         // At most once a day, and only if the user keeps automatic checks on.
-        weft.updater.checkIfDue()
+        weft.updater?.checkIfDue()
         if (watcher == null) {
             watcher = core.scope.launch {
                 var hadDevices = false
