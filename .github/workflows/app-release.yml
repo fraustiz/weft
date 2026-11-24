@@ -325,7 +325,9 @@ jobs:
         run: |
           [[ -n "$ANDROID_KEYSTORE_BASE64" ]] || { echo "::error::the ANDROID_KEYSTORE_BASE64 secret is not set"; exit 1; }
           (umask 077; printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d >"$RUNNER_TEMP/release.keystore")
-      - name: Build the release APK
+      # github: the APK published below. play: the bundle for the Play Console, kept as a
+      # workflow artifact only. fdroid: built to make sure it still does; F-Droid builds its own.
+      - name: Build the release APK and bundle
         working-directory: android
         env:
           WEFT_KEYSTORE_FILE: ${{ runner.temp }}/release.keystore
@@ -337,11 +339,11 @@ jobs:
           WEFT_VERSION_CODE="$(git rev-list --count HEAD)"
           export WEFT_VERSION_CODE
           echo "versionName $WEFT_VERSION_NAME, versionCode $WEFT_VERSION_CODE"
-          ./gradlew --no-daemon :app:assembleRelease
+          ./gradlew --no-daemon :app:assembleGithubRelease :app:bundlePlayRelease :app:assembleFdroidRelease
       - name: APK and android-update.json
         run: |
-          apk=android/app/build/outputs/apk/release/app-release.apk
-          [[ -f "$apk" ]] || { echo "::error::no signed APK at $apk"; ls android/app/build/outputs/apk/release; exit 1; }
+          apk=android/app/build/outputs/apk/github/release/app-github-release.apk
+          [[ -f "$apk" ]] || { echo "::error::no signed APK at $apk"; ls android/app/build/outputs/apk/github/release; exit 1; }
           apksigner="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -name apksigner | sort -V | tail -1)"
           "$apksigner" verify --print-certs "$apk"
           mkdir -p dist
@@ -364,6 +366,18 @@ jobs:
           path: |
             dist/weft-${{ env.VERSION }}.apk
             dist/android-update.json
+          if-no-files-found: error
+      # The Play bundle: an artifact of this run for the Play Console, not a release asset.
+      - name: Play bundle
+        run: |
+          aab=android/app/build/outputs/bundle/playRelease/app-play-release.aab
+          [[ -f "$aab" ]] || { echo "::error::no bundle at $aab"; ls android/app/build/outputs/bundle/playRelease; exit 1; }
+          mkdir -p play
+          cp "$aab" "play/weft-$VERSION-play.aab"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android-play
+          path: play/weft-${{ env.VERSION }}-play.aab
           if-no-files-found: error
 
   windows:

@@ -1,6 +1,7 @@
 package fr.frohub.weft.features
 
 import android.graphics.Bitmap
+import fr.frohub.weft.BuildConfig
 
 /**
  * The features of docs/features.md (sections 3 to 9), each with the packet types it receives and
@@ -44,6 +45,9 @@ enum class Feature(val key: String, val incoming: Set<String>, val outgoing: Set
     // Commands live on the computer: the phone only shows its list and asks it to run one.
     COMMANDS("commands", setOf(Packet.COMMAND_LIST), setOf(Packet.COMMAND_RUN)),
     ;
+
+    /** False for a feature this build leaves out (SMS on Google Play): never on, never shown. */
+    val available: Boolean get() = this != SMS || BuildConfig.SMS_ENABLED
 
     companion object {
         /** The feature a packet type belongs to; null for the types every device handles. */

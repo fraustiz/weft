@@ -45,7 +45,7 @@ class FeatureSettings(context: Context) {
         _mediaControls.value = on
     }
 
-    private fun read(): Set<Feature> = Feature.entries.filter { prefs.getBoolean(it.key, it.defaultOn) }.toSet()
+    private fun read(): Set<Feature> = Feature.entries.filter { it.available && prefs.getBoolean(it.key, it.defaultOn) }.toSet()
 
     companion object {
         private const val PREFS = "features"

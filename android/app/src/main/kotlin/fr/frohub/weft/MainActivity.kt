@@ -102,8 +102,20 @@ class MainActivity : ComponentActivity() {
             showDevice.value = intent.getStringExtra(EXTRA_SHOW_DEVICE)
         }
         setContent {
-            val updateState by updater.state.collectAsStateWithLifecycle()
-            val autoCheck by updater.autoCheck.collectAsStateWithLifecycle()
+            // The same updater for the whole process: null in builds without it (F-Droid, Play).
+            val updates = updater?.let {
+                val updateState by it.state.collectAsStateWithLifecycle()
+                val autoCheck by it.autoCheck.collectAsStateWithLifecycle()
+                UpdateControls(
+                    currentVersion = it.installedVersionName,
+                    state = updateState,
+                    autoCheck = autoCheck,
+                    onCheck = it::check,
+                    onSetAutoCheck = it::setAutoCheck,
+                    onInstall = it::downloadAndInstall,
+                    onAllowInstalls = ::openInstallPermission,
+                )
+            }
             WeftTheme {
                 WeftApp(
                     model = model,
@@ -125,15 +137,7 @@ class MainActivity : ComponentActivity() {
                     onAllowSmsAccess = if (smsAccess.value) null else ({ smsPermissions.launch(Sms.permissions().toTypedArray()) }),
                     onAllowContactsAccess = if (contactsAccess.value) null else ({ contactsPermission.launch(Manifest.permission.READ_CONTACTS) }),
                     onEnableKeyboard = if (keyboardEnabled.value) null else ::openKeyboardSettings,
-                    updates = UpdateControls(
-                        currentVersion = updater.installedVersionName,
-                        state = updateState,
-                        autoCheck = autoCheck,
-                        onCheck = updater::check,
-                        onSetAutoCheck = updater::setAutoCheck,
-                        onInstall = updater::downloadAndInstall,
-                        onAllowInstalls = ::openInstallPermission,
-                    ),
+                    updates = updates,
                     showUpdates = showUpdates.value,
                     onUpdatesShown = { showUpdates.value = false },
                     showDevice = showDevice.value,
@@ -146,7 +150,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         weft.startServiceIfPaired()
-        weft.updater.checkIfDue()
+        weft.updater?.checkIfDue()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -158,7 +162,7 @@ class MainActivity : ComponentActivity() {
     /** Android's page to let Weft install apps; the download goes on when the user is back. */
     private fun openInstallPermission() {
         try {
-            startActivity(weft.updater.permissionIntent())
+            startActivity(weft.updater?.permissionIntent() ?: return)
         } catch (_: ActivityNotFoundException) {
             startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS))
         }
@@ -173,7 +177,7 @@ class MainActivity : ComponentActivity() {
         updateSmsAccess()
         contactsAccess.value = checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
         keyboardEnabled.value = WeftKeyboard.isEnabled(this)
-        weft.updater.onResume()
+        weft.updater?.onResume()
     }
 
     /** Re-reads the SMS permissions; the receiver for new messages starts once they are granted. */

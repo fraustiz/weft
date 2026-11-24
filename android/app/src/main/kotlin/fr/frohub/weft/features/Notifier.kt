@@ -15,6 +15,7 @@ import android.os.Build
 import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import androidx.core.net.toUri
+import fr.frohub.weft.BuildConfig
 import fr.frohub.weft.R
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -29,7 +30,7 @@ class Notifier(private val context: Context) {
 
     init {
         manager.createNotificationChannels(
-            listOf(
+            listOfNotNull(
                 NotificationChannel(CHANNEL_RING, context.getString(R.string.channel_ring), NotificationManager.IMPORTANCE_HIGH).apply {
                     // The sound comes from the alarm stream (Ringer), not from the notification.
                     setSound(null, null)
@@ -40,7 +41,12 @@ class Notifier(private val context: Context) {
                     setShowBadge(false)
                 },
                 NotificationChannel(CHANNEL_FILES, context.getString(R.string.channel_files), NotificationManager.IMPORTANCE_DEFAULT),
-                NotificationChannel(CHANNEL_UPDATES, context.getString(R.string.channel_updates), NotificationManager.IMPORTANCE_DEFAULT),
+                // Only builds with the in-app updater (GitHub) tell about new versions.
+                if (BuildConfig.UPDATER_ENABLED) {
+                    NotificationChannel(CHANNEL_UPDATES, context.getString(R.string.channel_updates), NotificationManager.IMPORTANCE_DEFAULT)
+                } else {
+                    null
+                },
                 NotificationChannel(CHANNEL_MEDIA, context.getString(R.string.channel_media), NotificationManager.IMPORTANCE_LOW).apply {
                     setSound(null, null)
                     setShowBadge(false)
@@ -65,7 +71,8 @@ class Notifier(private val context: Context) {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val stop = FeatureReceiver.stopRing(context)
-        val fullScreen = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE || manager.canUseFullScreenIntent()
+        val fullScreen = BuildConfig.FULL_SCREEN_INTENT_ENABLED &&
+            (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE || manager.canUseFullScreenIntent())
         val notification = Notification.Builder(context, CHANNEL_RING)
             .setSmallIcon(R.drawable.ic_tile)
             .setContentTitle(context.getString(R.string.ring_title))

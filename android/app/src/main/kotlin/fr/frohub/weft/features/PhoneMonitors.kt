@@ -24,6 +24,7 @@ import android.telephony.TelephonyManager
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
+import fr.frohub.weft.BuildConfig
 
 private const val TAG = "WeftMonitors"
 
@@ -369,7 +370,8 @@ class CallMonitor(private val context: Context, private val onEvent: (CallEvent)
         }
     }
 
-    private fun canReadNumber() = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || context.has(Manifest.permission.READ_CALL_LOG)
+    private fun canReadNumber() = BuildConfig.CALL_LOG_ENABLED &&
+        (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || context.has(Manifest.permission.READ_CALL_LOG))
 
     companion object {
         private const val NUMBER_WAIT_MILLIS = 500L
@@ -377,6 +379,8 @@ class CallMonitor(private val context: Context, private val onEvent: (CallEvent)
         /** The permissions the Calls feature asks for when switched on. */
         fun permissions(): List<String> = buildList {
             add(Manifest.permission.READ_PHONE_STATE)
+            // Without the call log (Google Play) there is no number, so no name to look up either.
+            if (!BuildConfig.CALL_LOG_ENABLED) return@buildList
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) add(Manifest.permission.READ_CALL_LOG)
             add(Manifest.permission.READ_CONTACTS)
         }
