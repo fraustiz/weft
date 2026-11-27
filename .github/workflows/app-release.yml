@@ -28,7 +28,11 @@ name: App release
 #
 # Secrets: SPARKLE_ED_PRIVATE_KEY (the EdDSA private key whose public half
 # is macos/sparkle-public-key.txt), ANDROID_KEYSTORE_BASE64,
-# ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD.
+# ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD (the key
+# of the GitHub APK), ANDROID_UPLOAD_KEYSTORE_BASE64,
+# ANDROID_UPLOAD_KEYSTORE_PASSWORD, ANDROID_UPLOAD_KEY_ALIAS (the Google Play
+# upload key, PKCS12, store and key share the password; the Play bundle is
+# the android-play artifact of each run).
 #
 # Apple (team FTXAB58KDV, an individual Apple Developer Program account).
 # Each part turns on when its secrets are set, and is skipped with a warning
@@ -325,9 +329,9 @@ jobs:
         run: |
           [[ -n "$ANDROID_KEYSTORE_BASE64" ]] || { echo "::error::the ANDROID_KEYSTORE_BASE64 secret is not set"; exit 1; }
           (umask 077; printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d >"$RUNNER_TEMP/release.keystore")
-      # github: the APK published below. play: the bundle for the Play Console, kept as a
-      # workflow artifact only. fdroid: built to make sure it still does; F-Droid builds its own.
-      - name: Build the release APK and bundle
+      # github: the APK published below. fdroid: built to make sure it still does; F-Droid
+      # builds its own. The Play bundle is built on its own below, with the upload key.
+      - name: Build the release APK
         working-directory: android
         env:
           WEFT_KEYSTORE_FILE: ${{ runner.temp }}/release.keystore
@@ -339,7 +343,7 @@ jobs:
           WEFT_VERSION_CODE="$(git rev-list --count HEAD)"
           export WEFT_VERSION_CODE
           echo "versionName $WEFT_VERSION_NAME, versionCode $WEFT_VERSION_CODE"
-          ./gradlew --no-daemon :app:assembleGithubRelease :app:bundlePlayRelease :app:assembleFdroidRelease
+          ./gradlew --no-daemon :app:assembleGithubRelease :app:assembleFdroidRelease
       - name: APK and android-update.json
         run: |
           apk=android/app/build/outputs/apk/github/release/app-github-release.apk
@@ -368,10 +372,30 @@ jobs:
             dist/android-update.json
           if-no-files-found: error
       # The Play bundle: an artifact of this run for the Play Console, not a release asset.
+      # Signed with the upload key, not the release key: Play refuses a bundle signed with a
+      # debug certificate, and signs what it serves with its own app signing key (Play App
+      # Signing), so Play installs and GitHub installs do not update each other.
       - name: Play bundle
+        env:
+          ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          WEFT_KEYSTORE_FILE: ${{ runner.temp }}/upload.p12
+          WEFT_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+          WEFT_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          WEFT_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
         run: |
+          [[ -n "$ANDROID_UPLOAD_KEYSTORE_BASE64" ]] || { echo "::error::the ANDROID_UPLOAD_KEYSTORE_BASE64 secret is not set"; exit 1; }
+          (umask 077; printf '%s' "$ANDROID_UPLOAD_KEYSTORE_BASE64" | base64 -d >"$WEFT_KEYSTORE_FILE")
+          trap 'rm -f "$WEFT_KEYSTORE_FILE"' EXIT
+          export WEFT_VERSION_NAME="$VERSION"
+          WEFT_VERSION_CODE="$(git rev-list --count HEAD)"
+          export WEFT_VERSION_CODE
+          (cd android && ./gradlew --no-daemon :app:bundlePlayRelease)
           aab=android/app/build/outputs/bundle/playRelease/app-play-release.aab
           [[ -f "$aab" ]] || { echo "::error::no bundle at $aab"; ls android/app/build/outputs/bundle/playRelease; exit 1; }
+          # Signed, and not with the debug certificate.
+          keytool -printcert -jarfile "$aab" | tee "$RUNNER_TEMP/aab-cert.txt"
+          grep -q "Owner: CN=Fraustiz, O=Weft" "$RUNNER_TEMP/aab-cert.txt"
+          if grep -q "Android Debug" "$RUNNER_TEMP/aab-cert.txt"; then echo "::error::the Play bundle is signed with a debug certificate"; exit 1; fi
           mkdir -p play
           cp "$aab" "play/weft-$VERSION-play.aab"
       - uses: actions/upload-artifact@v7
